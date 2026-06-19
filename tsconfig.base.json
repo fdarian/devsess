@@ -1,20 +1,7 @@
 {
-	"$schema": "https://json.schemastore.org/tsconfig",
+	"extends": "@total-typescript/tsconfig/bundler/no-dom/library-monorepo",
 	"compilerOptions": {
-		"target": "ES2022",
-		"lib": ["ES2023"],
-		"module": "preserve",
-		"moduleResolution": "bundler",
-		"moduleDetection": "force",
-		"verbatimModuleSyntax": true,
-		"isolatedModules": true,
-		"resolveJsonModule": true,
-		"esModuleInterop": true,
-		"strict": true,
-		"noUncheckedIndexedAccess": true,
-		"noFallthroughCasesInSwitch": true,
-		"forceConsistentCasingInFileNames": true,
-		"skipLibCheck": true,
+		"allowImportingTsExtensions": true,
 		"noErrorTruncation": true
 	}
 }
