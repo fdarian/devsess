@@ -1,0 +1,123 @@
+# PGlite Adapter
+
+`devsess/pglite` provides a per-session [PGlite](https://pglite.dev) database that is seeded from your Drizzle migrations. Each session gets its own isolated Postgres-compatible database with no running server required — ideal for `--lite` local dev mode.
+
+## Install
+
+```bash
+bun add @electric-sql/pglite drizzle-orm
+```
+
+## The session bridge
+
+`prepareSessionPglite` is the main entry point. It takes a `DevSession` and a path to your Drizzle migrations folder, then:
+
+1. Locates (or creates) a migration dump file at `<session>/pglite.dump`
+2. Hydrates a PGlite client from that dump
+3. Applies any new Drizzle migrations that are not yet reflected in the dump
+4. Returns the ready client
+
+```ts
+import { prepareSessionPglite } from 'devsess/pglite'
+import { join } from 'node:path'
+
+// Inside run():
+const session = yield* ctx.session
+const db = yield* prepareSessionPglite(session, {
+	migrationsFolder: join(import.meta.dirname, '../drizzle'),
+})
+
+// db.client  — the PGlite client
+// db.dataDir — on-disk path to the PGlite data directory
+// db.dumpPath — path to the migration dump file
+```
+
+### Full dev script example with PGlite
+
+```ts
+// scripts/dev.ts
+import { join } from 'node:path'
+import { cli, defineDevCli } from 'devsess'
+import { prepareSessionPglite } from 'devsess/pglite'
+import { Effect } from 'effect'
+
+const main = defineDevCli({
+	name: 'web',
+	dir: join(import.meta.dirname, '..'),
+	options: {
+		lite: cli.Options.boolean('lite').pipe(
+			cli.Options.withDescription('Use a per-session PGlite database'),
+		),
+	},
+	run: (ctx, opts) =>
+		Effect.gen(function* () {
+			const session = yield* ctx.session
+			const port = yield* ctx.getStickyPort()
+			const env: Record<string, string> = { PORT: String(port) }
+
+			if (opts.lite) {
+				const db = yield* prepareSessionPglite(session, {
+					migrationsFolder: join(import.meta.dirname, '../drizzle'),
+				})
+				env.DATABASE_LITE = 'true'
+				env.DATABASE_LITE_PATH = db.dataDir
+			}
+
+			yield* ctx.runManagedSubprocess('bunx', ['vite'], { env })
+		}),
+})
+
+main(process.argv)
+```
+
+## How dumps work
+
+The first time a session starts with `--lite`, `devsess` runs all your Drizzle SQL migration files in order against a fresh PGlite instance and then serializes the result to a binary dump file (`pglite.dump`). On subsequent startups the dump is loaded directly — skipping migration replay — and only new migrations (not yet in the dump) are applied on top.
+
+This makes cold-starts fast once the dump exists, while still keeping the schema in sync with your migrations.
+
+## `openLitePglite`
+
+For use cases outside of dev sessions (e.g. tests, scripts), you can call `openLitePglite` directly:
+
+```ts
+import { openLitePglite } from 'devsess/pglite'
+import { join } from 'node:path'
+
+const client = yield* openLitePglite({
+	dataDir: '/tmp/my-pglite',
+	dumpPath: '/tmp/my-pglite.dump',
+	migrationsFolder: join(import.meta.dirname, '../drizzle'),
+})
+```
+
+It performs the same ensure-dump → hydrate → migrate flow but against paths you supply directly.
+
+## Error handling
+
+All operations in `devsess/pglite` fail with a `PgliteError` tagged error, which carries a descriptive `message` and the original `cause`. Use Effect's standard error handling to catch it:
+
+```ts
+import { PgliteError } from 'devsess/pglite'
+
+yield* prepareSessionPglite(session, { migrationsFolder: '...' }).pipe(
+	Effect.catchTag('PgliteError', (err) =>
+		Effect.logError(`PGlite failed: ${err.message}`),
+	),
+)
+```
+
+## Lower-level helpers
+
+These are exported for advanced use cases but most users only need `prepareSessionPglite` or `openLitePglite`:
+
+| Export | Description |
+|--------|-------------|
+| `buildPgliteDump(migrationsFolder, dumpPath)` | Run all migrations on a fresh PGlite and write the dump |
+| `ensurePgliteDump(migrationsFolder, dumpPath)` | Build the dump only if it does not exist yet |
+| `migratePglite(client, migrationsFolder)` | Apply pending Drizzle migrations to an open client |
+| `readSqlMigrations(migrationsFolder)` | Read migration SQL files from disk |
+| `dumpPgliteToFile(client, dumpPath)` | Serialize an open PGlite client to a dump file |
+| `createPgliteFromDump(dumpPath, dataDir)` | Hydrate a PGlite client from a dump file |
+| `getDbMigrationCount(client)` | Count migrations recorded in the DB |
+| `getExpectedMigrationCount(migrationsFolder)` | Count migration files on disk |

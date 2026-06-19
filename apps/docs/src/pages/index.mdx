@@ -1,0 +1,51 @@
+# devsess
+
+**devsess** is a pure-[Effect](https://effect.website) library for writing persistent, stateful dev scripts in Node. It has two pillars:
+
+1. **Dev Sessions** — `defineDevCli` scaffolds a CLI that creates and reuses named session directories, remembers a sticky dev-server port across restarts, manages subprocesses (killing them on exit), and lets services signal each other via "running" files.
+2. **PGlite Adapter** (`devsess/pglite`) — prepares a local [PGlite](https://pglite.dev) database per session, seeded from your Drizzle migrations, so each dev session gets its own isolated Postgres-compatible DB without a running server.
+
+## Quickstart
+
+```bash
+bun add devsess effect @effect/cli @effect/platform @effect/platform-node
+```
+
+```ts
+// scripts/dev.ts
+import { join } from 'node:path'
+import { cli, defineDevCli } from 'devsess'
+import { Effect } from 'effect'
+
+const main = defineDevCli({
+	name: 'web',
+	dir: join(import.meta.dirname, '..'),
+	options: {
+		lite: cli.Options.boolean('lite').pipe(
+			cli.Options.withDescription('Use a per-session PGlite database'),
+		),
+	},
+	run: (ctx, opts) =>
+		Effect.gen(function* () {
+			const session = yield* ctx.session
+			yield* Effect.logInfo(`[dev] session: ${session.name}`)
+
+			const port = yield* ctx.getStickyPort()
+			const env: Record<string, string> = { PORT: String(port) }
+
+			if (opts.lite) {
+				const litePath = yield* session.path('pglite')
+				env.DATABASE_LITE = 'true'
+				env.DATABASE_LITE_PATH = litePath
+			}
+
+			yield* ctx.runManagedSubprocess('bunx', ['vite'], { env })
+		}),
+})
+
+main(process.argv)
+```
+
+```bash
+bun scripts/dev.ts --lite
+```

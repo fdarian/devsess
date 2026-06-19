@@ -1,0 +1,73 @@
+# Getting Started
+
+## Installation
+
+Install `devsess` along with its peer dependencies:
+
+```bash
+bun add devsess effect @effect/cli @effect/platform @effect/platform-node
+```
+
+If you also want the per-session PGlite adapter (`devsess/pglite`):
+
+```bash
+bun add @electric-sql/pglite drizzle-orm
+```
+
+## Writing your dev script
+
+Create `scripts/dev.ts` at the root of your project:
+
+```ts
+// scripts/dev.ts
+import { join } from 'node:path'
+import { cli, defineDevCli } from 'devsess'
+import { Effect } from 'effect'
+
+const main = defineDevCli({
+	name: 'web',
+	dir: join(import.meta.dirname, '..'),
+	options: {
+		lite: cli.Options.boolean('lite').pipe(
+			cli.Options.withDescription('Use a per-session PGlite database'),
+		),
+	},
+	run: (ctx, opts) =>
+		Effect.gen(function* () {
+			const session = yield* ctx.session
+			yield* Effect.logInfo(`[dev] session: ${session.name}`)
+
+			const port = yield* ctx.getStickyPort()
+			const env: Record<string, string> = { PORT: String(port) }
+
+			if (opts.lite) {
+				const litePath = yield* session.path('pglite')
+				env.DATABASE_LITE = 'true'
+				env.DATABASE_LITE_PATH = litePath
+			}
+
+			yield* ctx.runManagedSubprocess('bunx', ['vite'], { env })
+		}),
+})
+
+main(process.argv)
+```
+
+## Running it
+
+```bash
+# Normal mode — uses a real database
+bun scripts/dev.ts
+
+# Lite mode — uses a per-session PGlite database
+bun scripts/dev.ts --lite
+```
+
+Each invocation reuses the most-recently-active session (or creates a new one on first run). Session directories live under `<dir>/.data/sessions/<slug>/`.
+
+## What happens on startup
+
+1. The most-recent session directory is found (or created) under `.data/sessions/`.
+2. A sticky port is allocated once and persisted to the session — the same port is reused across restarts.
+3. Your `run` callback receives a `ctx` (RunContext) and the parsed CLI options.
+4. Any subprocess started with `ctx.runManagedSubprocess` is killed automatically when the script exits.

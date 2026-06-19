@@ -1,0 +1,157 @@
+# API Reference
+
+## `devsess`
+
+### `defineDevCli(config)`
+
+Scaffolds a persistent dev CLI. Returns `(argv: string[]) => void`.
+
+```ts
+import { defineDevCli } from 'devsess'
+
+defineDevCli({
+	name: string,
+	dir: string,
+	options?: Record<string, cli.Options<any>>,
+	run: (ctx: RunContext, opts: ResolvedOptions) => Effect<void, any, any>,
+})
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `string` | Name of the CLI program |
+| `dir` | `string` | Project root — sessions are created under `<dir>/.data/sessions/` |
+| `options` | `Record<string, Options>` | Extra `@effect/cli` options to parse (optional) |
+| `run` | `(ctx, opts) => Effect` | Your dev script body |
+
+#### `RunContext`
+
+The `ctx` object passed to `run`:
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `ctx.session` | `Effect<DevSession>` | Resolves the current session |
+| `ctx.getStickyPort()` | `Effect<number>` | Returns the session's persistent port (allocating if needed) |
+| `ctx.runManagedSubprocess(cmd, args, opts?)` | `Effect<void>` | Start a subprocess that is killed on exit |
+| `ctx.publishRunning(data)` | `Effect<void>` | Write a "ready" signal file to the session |
+| `ctx.awaitRunning(pkg)` | `Effect<unknown>` | Poll until another service's "ready" signal appears |
+
+---
+
+### `cli`
+
+Re-export of `@effect/cli`. Use it to define options without adding `@effect/cli` as a direct import in your dev script.
+
+```ts
+import { cli } from 'devsess'
+
+cli.Options.boolean('lite')
+cli.Options.text('env')
+cli.Options.integer('workers')
+```
+
+---
+
+### `DevSession` (type)
+
+```ts
+type DevSession = {
+	name: string
+	path(rel: string): Effect<string>
+}
+```
+
+`path(rel)` resolves and ensures the subdirectory `<sessionDir>/<rel>` exists, then returns its absolute path.
+
+---
+
+### `DevSessions`
+
+Effect service tag for the sessions store. Provides `getLatestOrCreate()`.
+
+---
+
+### `makeDevSessionsLayer(rootDir: string)`
+
+Creates a Layer that provides `DevSessions`, scoped to `<rootDir>/.data/sessions/`.
+
+```ts
+import { DevSessions, makeDevSessionsLayer } from 'devsess'
+
+Effect.provide(makeDevSessionsLayer('/path/to/project'))
+```
+
+---
+
+### `SessionState.slot(schema)`
+
+Creates a typed per-session JSON slot.
+
+```ts
+import { SessionState } from 'devsess'
+import { Schema } from 'effect'
+
+const slot = SessionState.slot(Schema.Struct({ count: Schema.Number }))
+
+slot.read(session)           // Effect<Option<{ count: number }>>
+slot.write(session, { count: 1 })  // Effect<void>
+```
+
+---
+
+## `devsess/pglite`
+
+### `prepareSessionPglite(session, options)`
+
+Prepares a per-session PGlite database from Drizzle migrations. Returns `Effect<{ client, dataDir, dumpPath }>`.
+
+```ts
+import { prepareSessionPglite } from 'devsess/pglite'
+
+const { client, dataDir, dumpPath } = yield* prepareSessionPglite(session, {
+	migrationsFolder: string,
+})
+```
+
+---
+
+### `openLitePglite(options)`
+
+Opens a PGlite database at explicit paths. Returns `Effect<PGlite>`.
+
+```ts
+import { openLitePglite } from 'devsess/pglite'
+
+const client = yield* openLitePglite({
+	dataDir: string,
+	dumpPath: string,
+	migrationsFolder: string,
+})
+```
+
+---
+
+### Lower-level helpers
+
+| Export | Signature | Description |
+|--------|-----------|-------------|
+| `buildPgliteDump` | `(migrationsFolder, dumpPath) => Effect<void>` | Build dump from scratch |
+| `ensurePgliteDump` | `(migrationsFolder, dumpPath) => Effect<void>` | Build dump only if missing |
+| `migratePglite` | `(client, migrationsFolder) => Effect<void>` | Apply pending migrations |
+| `readSqlMigrations` | `(migrationsFolder) => Effect<string[]>` | Read migration SQL files |
+| `dumpPgliteToFile` | `(client, dumpPath) => Effect<void>` | Serialize client to file |
+| `createPgliteFromDump` | `(dumpPath, dataDir) => Effect<PGlite>` | Hydrate client from dump |
+| `getDbMigrationCount` | `(client) => Effect<number>` | Count applied migrations |
+| `getExpectedMigrationCount` | `(migrationsFolder) => Effect<number>` | Count migration files |
+
+---
+
+### `PgliteError`
+
+Tagged error thrown by all `devsess/pglite` operations.
+
+```ts
+import { PgliteError } from 'devsess/pglite'
+
+// { _tag: 'PgliteError', message: string, cause: unknown }
+```
