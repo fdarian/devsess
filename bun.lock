@@ -7,7 +7,6 @@
       "devDependencies": {
         "@biomejs/biome": "^2.4.15",
         "@changesets/cli": "^2.27.0",
-        "@total-typescript/tsconfig": "^1.0.4",
         "turbo": "^2.9.14",
       },
     },
@@ -21,7 +20,7 @@
         "waku": "^1.0.0-beta.3",
       },
       "devDependencies": {
-        "typescript": "^5",
+        "@devsess/config": "workspace:*",
       },
     },
     "packages/config": {
@@ -40,6 +39,7 @@
         "random-word-slugs": "^0.1.7",
       },
       "devDependencies": {
+        "@devsess/config": "workspace:*",
         "@effect/cli": "^0.75.1",
         "@effect/platform": "^0.96.1",
         "@effect/platform-node": "^0.107.0",
@@ -48,7 +48,6 @@
         "drizzle-orm": "^0.45.2",
         "effect": "^3.21.2",
         "tsup": "^8.5.1",
-        "typescript": "^5.7.2",
       },
       "peerDependencies": {
         "@effect/cli": "^0.75.1",

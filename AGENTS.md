@@ -3,6 +3,7 @@
 Monorepo for the `devsess` library — Effect-based dev-session scaffolding plus a per-session PGlite/Drizzle adapter.
 
 ## Workspaces
+- `packages/config` — shared tsconfig presets (`@devsess/config`, private)
 - `packages/devsess` — the published library (`devsess` on npm)
 - `apps/docs` — vocs documentation site
 
