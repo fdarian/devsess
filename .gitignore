@@ -141,3 +141,7 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# vocs / waku generated router types
+**/*.gen.ts
+.vocs/
