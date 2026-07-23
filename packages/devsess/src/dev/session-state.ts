@@ -1,6 +1,6 @@
-import { FileSystem } from '@effect/platform/FileSystem';
-import { Path } from '@effect/platform/Path';
 import { Effect } from 'effect';
+import { FileSystem } from 'effect/FileSystem';
+import { Path } from 'effect/Path';
 import * as S from 'effect/Schema';
 import type { DevSession } from '../dev-sessions';
 
@@ -19,7 +19,7 @@ function read(filePath: string) {
 }
 
 export namespace SessionState {
-	type Shape = S.Schema.Any;
+	type Shape = S.Top;
 
 	export function slot<T extends Shape>(schema: T) {
 		return {
@@ -28,8 +28,8 @@ export namespace SessionState {
 					const filePath = yield* getPath(session);
 					const content = yield* read(filePath);
 					if (content == null) return null;
-					return yield* S.decode(S.parseJson(schema, {}))(content).pipe(
-						Effect.catchTag('ParseError', () => Effect.succeed(null)),
+					return yield* S.decodeEffect(S.fromJsonString(schema))(content).pipe(
+						Effect.catchTag('SchemaError', () => Effect.succeed(null)),
 					);
 				}),
 			write: (session: DevSession, data: T['Type']) =>

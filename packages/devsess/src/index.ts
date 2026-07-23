@@ -1,6 +1,6 @@
-// Re-exported so consumers can declare CLI options without a direct dependency
-// on `@effect/cli`, e.g. `cli.Options.text('local')`.
-export * as cli from '@effect/cli';
+// Re-exported so consumers can declare CLI flags/arguments without a direct
+// dependency on `effect/unstable/cli`, e.g. `cli.Flag.string('local')`.
+export * as cli from 'effect/unstable/cli';
 
 export { defineDevCli } from './dev/define-cli';
 export { SessionState } from './dev/session-state';

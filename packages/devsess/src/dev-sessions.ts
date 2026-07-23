@@ -1,5 +1,7 @@
-import * as platform from '@effect/platform';
-import { Array as A, Effect, Layer, Option } from 'effect';
+import { Array as A, Context, Effect, Layer, Option } from 'effect';
+import { FileSystem } from 'effect/FileSystem';
+import { Path } from 'effect/Path';
+import type { PlatformError } from 'effect/PlatformError';
 import { generateSlug } from 'random-word-slugs';
 
 namespace DevSession {
@@ -23,32 +25,23 @@ namespace DevSession {
 
 export type DevSession = ReturnType<typeof DevSession.make>;
 
-export class DevSessions extends Effect.Tag('devsess/DevSessions')<
+export class DevSessions extends Context.Service<
 	DevSessions,
 	{
 		readonly dir: string;
 		readonly path: (relativePath: string) => string;
-		readonly getSessions: Effect.Effect<
-			Array<DevSession>,
-			platform.Error.PlatformError
-		>;
-		readonly createSession: Effect.Effect<
-			DevSession,
-			platform.Error.PlatformError
-		>;
-		readonly getLatestOrCreate: Effect.Effect<
-			DevSession,
-			platform.Error.PlatformError
-		>;
+		readonly getSessions: Effect.Effect<Array<DevSession>, PlatformError>;
+		readonly createSession: Effect.Effect<DevSession, PlatformError>;
+		readonly getLatestOrCreate: Effect.Effect<DevSession, PlatformError>;
 	}
->() {}
+>()('devsess/DevSessions') {}
 
 export const makeDevSessionsLayer = (rootDir: string) =>
 	Layer.effect(
 		DevSessions,
 		Effect.gen(function* () {
-			const fs = yield* platform.FileSystem.FileSystem;
-			const path = yield* platform.Path.Path;
+			const fs = yield* FileSystem;
+			const path = yield* Path;
 
 			yield* Effect.logDebug(`DevSessions dir: ${rootDir}`);
 			const getPath = (relativePath: string) =>
@@ -57,7 +50,7 @@ export const makeDevSessionsLayer = (rootDir: string) =>
 			const getSessions = Effect.gen(function* () {
 				const entries = yield* fs
 					.readDirectory(rootDir)
-					.pipe(Effect.catchAll(() => Effect.succeed([] as Array<string>)));
+					.pipe(Effect.catch(() => Effect.succeed([] as Array<string>)));
 
 				const possibleSessions = yield* Effect.all(
 					entries.map((entry) =>

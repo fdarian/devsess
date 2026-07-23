@@ -58,12 +58,10 @@
 		"random-word-slugs": "^0.1.7"
 	},
 	"peerDependencies": {
-		"@effect/cli": "^0.75.1",
-		"@effect/platform": "^0.96.1",
-		"@effect/platform-node": "^0.107.0",
+		"@effect/platform-node": "^4.0.0-beta.101",
 		"@electric-sql/pglite": ">=0.2.0",
 		"drizzle-orm": ">=0.30.0",
-		"effect": "^3.21.2"
+		"effect": "^4.0.0-beta.101"
 	},
 	"peerDependenciesMeta": {
 		"@electric-sql/pglite": {
@@ -75,13 +73,11 @@
 	},
 	"devDependencies": {
 		"@devsess/config": "workspace:*",
-		"@effect/cli": "^0.75.1",
-		"@effect/platform": "^0.96.1",
-		"@effect/platform-node": "^0.107.0",
+		"@effect/platform-node": "^4.0.0-beta.101",
 		"@electric-sql/pglite": "^0.5.3",
 		"@types/node": "^22.0.0",
 		"drizzle-orm": "^0.45.2",
-		"effect": "^3.21.2",
+		"effect": "^4.0.0-beta.101",
 		"tsup": "^8.5.1"
 	}
 }

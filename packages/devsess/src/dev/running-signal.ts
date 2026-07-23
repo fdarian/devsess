@@ -1,7 +1,7 @@
 import { watch as fsWatch } from 'node:fs';
-import { FileSystem } from '@effect/platform/FileSystem';
-import { Path } from '@effect/platform/Path';
 import { Deferred, Effect } from 'effect';
+import { FileSystem } from 'effect/FileSystem';
+import { Path } from 'effect/Path';
 
 /** Atomically writes `value` as JSON to `filePath` and removes it on release. */
 export const publishRunningSignal = (filePath: string, value: unknown) =>
@@ -18,7 +18,7 @@ export const publishRunningSignal = (filePath: string, value: unknown) =>
 		() =>
 			Effect.gen(function* () {
 				const fs = yield* FileSystem;
-				yield* fs.remove(filePath).pipe(Effect.catchAll(() => Effect.void));
+				yield* fs.remove(filePath).pipe(Effect.catch(() => Effect.void));
 			}),
 	);
 
@@ -40,10 +40,10 @@ export const awaitRunningSignal = <T>(
 				if (!(yield* fs.exists(filePath))) return false;
 				const raw = yield* fs
 					.readFileString(filePath)
-					.pipe(Effect.catchAll(() => Effect.succeed(null)));
+					.pipe(Effect.catch(() => Effect.succeed(null)));
 				if (raw == null) return false;
 				const parsed = yield* Effect.try(() => opts.parse(raw)).pipe(
-					Effect.catchAll(() => Effect.succeed(null)),
+					Effect.catch(() => Effect.succeed(null)),
 				);
 				if (parsed == null) return false;
 				yield* Deferred.succeed(deferred, parsed);

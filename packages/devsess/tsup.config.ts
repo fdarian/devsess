@@ -15,11 +15,9 @@ export default defineConfig({
 	dts: false,
 	// Peer dependencies must never be bundled — consumers provide a single instance.
 	external: [
-		'@effect/cli',
-		'@effect/platform',
+		'effect',
 		'@effect/platform-node',
 		'@electric-sql/pglite',
 		'drizzle-orm',
-		'effect',
 	],
 });

@@ -3,7 +3,7 @@
 Scaffold dev scripts with reusable dev sessions + a per-session PGlite/Drizzle adapter. Built on Effect, targets Node (`@effect/platform-node`).
 
 ## Stack
-- effect, @effect/cli, @effect/platform, @effect/platform-node
+- effect (v4 beta) + @effect/platform-node — CLI (`effect/unstable/cli`) and process-spawn (`effect/unstable/process`) live in core `effect` now, no more `@effect/cli`/`@effect/platform`
 - @electric-sql/pglite + drizzle-orm — optional peers, only for the `devsess/pglite` entrypoint
 
 ## Build

@@ -1,8 +1,9 @@
-import { FileSystem, Path } from '@effect/platform';
 import { PGlite } from '@electric-sql/pglite';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import { Data, Effect } from 'effect';
+import { FileSystem } from 'effect/FileSystem';
+import { Path } from 'effect/Path';
 import type { DevSession } from '../dev-sessions';
 
 export class PgliteError extends Data.TaggedError('PgliteError')<{
@@ -12,8 +13,8 @@ export class PgliteError extends Data.TaggedError('PgliteError')<{
 
 export const readSqlMigrations = (dir: string) =>
 	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem;
-		const path = yield* Path.Path;
+		const fs = yield* FileSystem;
+		const path = yield* Path;
 
 		const dirExists = yield* fs.exists(dir);
 
@@ -23,7 +24,7 @@ export const readSqlMigrations = (dir: string) =>
 
 		const files = yield* fs
 			.readDirectory(dir)
-			.pipe(Effect.catchAll(() => Effect.succeed([] as string[])));
+			.pipe(Effect.catch(() => Effect.succeed([] as string[])));
 
 		const sqlFiles = files.filter((file) => file.endsWith('.sql')).sort();
 
@@ -44,7 +45,7 @@ export const createPgliteFromDump = (opts: {
 	dumpPath: string;
 }) =>
 	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem;
+		const fs = yield* FileSystem;
 
 		if (opts.dataDir && opts.dataDir !== 'memory://') {
 			const dirExists = yield* fs.exists(opts.dataDir);
@@ -87,8 +88,8 @@ const toUint8Array = (input: File | Blob) =>
 
 export const dumpPgliteToFile = (client: PGlite, dest: string) =>
 	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem;
-		const path = yield* Path.Path;
+		const fs = yield* FileSystem;
+		const path = yield* Path;
 
 		const destDir = path.dirname(dest);
 		const dirExists = yield* fs.exists(destDir);
@@ -190,8 +191,8 @@ export const getDbMigrationCount = (client: PGlite) =>
 
 export const getExpectedMigrationCount = (migrationsFolder: string) =>
 	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem;
-		const path = yield* Path.Path;
+		const fs = yield* FileSystem;
+		const path = yield* Path;
 		const journalPath = path.join(migrationsFolder, 'meta/_journal.json');
 		const journalExists = yield* fs.exists(journalPath);
 		if (!journalExists) {
@@ -222,7 +223,7 @@ export const ensurePgliteDump = (opts: {
 	dumpPath: string;
 }) =>
 	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem;
+		const fs = yield* FileSystem;
 		const dumpExists = yield* fs.exists(opts.dumpPath);
 		if (!dumpExists) {
 			yield* buildPgliteDump(opts);
