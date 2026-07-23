@@ -5,7 +5,7 @@
 Install `devsess` along with its peer dependencies:
 
 ```bash
-bun add devsess effect @effect/cli @effect/platform @effect/platform-node
+bun add devsess effect @effect/platform-node
 ```
 
 If you also want the per-session PGlite adapter (`devsess/pglite`):
@@ -13,6 +13,8 @@ If you also want the per-session PGlite adapter (`devsess/pglite`):
 ```bash
 bun add @electric-sql/pglite drizzle-orm
 ```
+
+The example below uses the [Effect](https://effect.website) API (`devsess`). If you'd rather avoid Effect, `devsess/async` mirrors this same API with plain Promises — see the [API reference](/api).
 
 ## Writing your dev script
 
@@ -28,8 +30,8 @@ const main = defineDevCli({
 	name: 'web',
 	dir: join(import.meta.dirname, '..'),
 	options: {
-		lite: cli.Options.boolean('lite').pipe(
-			cli.Options.withDescription('Use a per-session PGlite database'),
+		lite: cli.Flag.boolean('lite').pipe(
+			cli.Flag.withDescription('Use a per-session PGlite database'),
 		),
 	},
 	run: (ctx, opts) =>

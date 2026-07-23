@@ -5,10 +5,12 @@
 1. **Dev Sessions** — `defineDevCli` scaffolds a CLI that creates and reuses named session directories, remembers a sticky dev-server port across restarts, manages subprocesses (killing them on exit), and lets services signal each other via "running" files.
 2. **PGlite Adapter** (`devsess/pglite`) — prepares a local [PGlite](https://pglite.dev) database per session, seeded from your Drizzle migrations, so each dev session gets its own isolated Postgres-compatible DB without a running server.
 
+Don't want to deal with Effect directly? `devsess/async` exposes the same dev-session scaffolding as a plain, Promise-based API.
+
 ## Quickstart
 
 ```bash
-bun add devsess effect @effect/cli @effect/platform @effect/platform-node
+bun add devsess effect @effect/platform-node
 ```
 
 ```ts
@@ -21,8 +23,8 @@ const main = defineDevCli({
 	name: 'web',
 	dir: join(import.meta.dirname, '..'),
 	options: {
-		lite: cli.Options.boolean('lite').pipe(
-			cli.Options.withDescription('Use a per-session PGlite database'),
+		lite: cli.Flag.boolean('lite').pipe(
+			cli.Flag.withDescription('Use a per-session PGlite database'),
 		),
 	},
 	run: (ctx, opts) =>

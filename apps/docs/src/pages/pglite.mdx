@@ -45,8 +45,8 @@ const main = defineDevCli({
 	name: 'web',
 	dir: join(import.meta.dirname, '..'),
 	options: {
-		lite: cli.Options.boolean('lite').pipe(
-			cli.Options.withDescription('Use a per-session PGlite database'),
+		lite: cli.Flag.boolean('lite').pipe(
+			cli.Flag.withDescription('Use a per-session PGlite database'),
 		),
 	},
 	run: (ctx, opts) =>

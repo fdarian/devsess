@@ -8,11 +8,13 @@ Scaffold dev scripts with reusable dev sessions + a per-session PGlite/Drizzle a
 
 ## Build
 - `tsup` bundles JS, `tsc -p tsconfig.build.json` emits `.d.ts` → `dist/`
-- Two entrypoints: `.` and `./pglite`. Peers are externalized — never bundled.
+- Three entrypoints: `.` (Effect API), `./pglite` (Effect PGlite/Drizzle adapter), `./async` (plain-async facade). Peers are externalized — never bundled.
 - `publishConfig` is OIDC trusted publishing (`access: public`, `provenance: true`).
 
 ## Layout
 - src/dev-sessions.ts — DevSessions service (slug-named session dirs under `.data/sessions`)
-- src/dev/define-cli.ts — `defineDevCli`, the scaffolding entrypoint
+- src/dev/define-cli.ts — `defineDevCli`, the Effect scaffolding entrypoint
+- src/dev/run-dev-cli.ts — shared CLI scaffolding (builds the `cli.Command`, wires layers) used by both the Effect and async `defineDevCli`
 - src/dev/{session-state,sticky-port,subprocess,running-signal}.ts — RunContext helpers
 - src/pglite/index.ts — pglite adapter + `prepareSessionPglite` session bridge
+- src/async/ — the `devsess/async` facade: Promise-based mirror of `defineDevCli`/`DevSessions`/`SessionState`, built on top of the Effect core (see `src/async/session.ts` for how it wraps/unwraps the Effect `DevSession`)

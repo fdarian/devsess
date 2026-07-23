@@ -12,7 +12,7 @@ import { defineDevCli } from 'devsess'
 defineDevCli({
 	name: string,
 	dir: string,
-	options?: Record<string, cli.Options<any>>,
+	options?: Record<string, cli.Flag<any>>,
 	run: (ctx: RunContext, opts: ResolvedOptions) => Effect<void, any, any>,
 })
 ```
@@ -21,7 +21,7 @@ defineDevCli({
 |-------|------|-------------|
 | `name` | `string` | Name of the CLI program |
 | `dir` | `string` | Project root — sessions are created under `<dir>/.data/sessions/` |
-| `options` | `Record<string, Options>` | Extra `@effect/cli` options to parse (optional) |
+| `options` | `Record<string, Flag>` | Extra `effect/unstable/cli` flags to parse (optional) |
 | `run` | `(ctx, opts) => Effect` | Your dev script body |
 
 #### `RunContext`
@@ -40,14 +40,14 @@ The `ctx` object passed to `run`:
 
 ### `cli`
 
-Re-export of `@effect/cli`. Use it to define options without adding `@effect/cli` as a direct import in your dev script.
+Re-export of `effect/unstable/cli`. Use it to define flags without adding `effect` as a direct import in your dev script.
 
 ```ts
 import { cli } from 'devsess'
 
-cli.Options.boolean('lite')
-cli.Options.text('env')
-cli.Options.integer('workers')
+cli.Flag.boolean('lite')
+cli.Flag.string('env')
+cli.Flag.integer('workers')
 ```
 
 ---
@@ -155,3 +155,87 @@ import { PgliteError } from 'devsess/pglite'
 
 // { _tag: 'PgliteError', message: string, cause: unknown }
 ```
+
+---
+
+## `devsess/async`
+
+Plain, Promise-based mirror of the `devsess` API above — hides Effect entirely, no `effect` import required in your dev script.
+
+### `defineDevCli(config)`
+
+Same shape as the Effect version, but `run` is `async (ctx, opts) => void` and every `ctx` member returns a `Promise` instead of an `Effect`.
+
+```ts
+import { defineDevCli } from 'devsess/async'
+
+defineDevCli({
+	name: string,
+	dir: string,
+	options?: Record<string, cli.Flag<any>>,
+	run: (ctx: AsyncRunContext, opts: ResolvedOptions) => Promise<void> | void,
+})
+```
+
+#### `AsyncRunContext`
+
+| Member | Type | Description |
+|--------|------|--------------|
+| `ctx.session()` | `Promise<DevSession>` | Resolves the current session |
+| `ctx.getStickyPort()` | `Promise<number>` | Returns the session's persistent port (allocating if needed) |
+| `ctx.runManagedSubprocess(cmd, args, opts?)` | `Promise<void>` | Start a subprocess that is killed on exit |
+| `ctx.publishRunning(data)` | `Promise<void>` | Write a "ready" signal file to the session |
+| `ctx.awaitRunning(pkg)` | `Promise<unknown>` | Poll until another service's "ready" signal appears |
+
+---
+
+### `createDevSessions(rootDir)`
+
+Async replacement for `DevSessions`/`makeDevSessionsLayer`, for use outside of `defineDevCli`.
+
+```ts
+import { createDevSessions } from 'devsess/async'
+
+const sessions = createDevSessions('/path/to/project')
+const session = await sessions.getLatestOrCreate()
+```
+
+| Member | Type |
+|--------|------|
+| `sessions.getSessions()` | `Promise<DevSession[]>` |
+| `sessions.createSession()` | `Promise<DevSession>` |
+| `sessions.getLatestOrCreate()` | `Promise<DevSession>` |
+
+---
+
+### `DevSession` (type)
+
+```ts
+type DevSession = {
+	name: string
+	path(rel: string): string
+}
+```
+
+Unlike the Effect `DevSession`, `path(rel)` runs synchronously and returns the absolute path directly (no `Promise`).
+
+---
+
+### `SessionState.slot(schema)`
+
+Same as `devsess`'s `SessionState.slot`, but `read`/`write` return Promises.
+
+```ts
+import { SessionState, Schema } from 'devsess/async'
+
+const slot = SessionState.slot(Schema.Struct({ count: Schema.Number }))
+
+await slot.read(session)                 // { count: number } | null
+await slot.write(session, { count: 1 })  // void
+```
+
+---
+
+### `cli`, `Schema`
+
+Re-exports of `effect/unstable/cli` and `effect/Schema` — same as `devsess`'s `cli`, provided so `defineDevCli`'s `options` and `SessionState.slot`'s schema can be declared without a direct `effect` import.

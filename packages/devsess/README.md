@@ -7,12 +7,12 @@ Scaffold dev scripts with reusable **dev sessions** and a per-session **PGlite +
 - **Dev sessions** — each run reuses (or creates) a named, slug-based working directory under `.data/sessions`. Sticky dev-server ports, managed subprocesses that die with your script, and cross-service "running" signal files come built in.
 - **A PGlite adapter** (`devsess/pglite`) — prepare a local Postgres-compatible database from your Drizzle migrations, scoped to the current dev session. Perfect for a `--lite` offline dev mode.
 
-It targets **Node** (`@effect/platform-node`).
+It targets **Node** (`@effect/platform-node`). The examples below use the [Effect](https://effect.website) API (`devsess`); if you'd rather not deal with Effect directly, `devsess/async` exposes the same dev-session scaffolding as a plain, Promise-based API — see [API](#api).
 
 ## Install
 
 ```bash
-bun add devsess effect @effect/cli @effect/platform @effect/platform-node
+bun add devsess effect @effect/platform-node
 ```
 
 For the PGlite adapter (`devsess/pglite`), also add:
@@ -33,8 +33,8 @@ const main = defineDevCli({
 	name: 'web',
 	dir: join(import.meta.dirname, '..'),
 	options: {
-		lite: cli.Options.boolean('lite').pipe(
-			cli.Options.withDescription('Use a per-session PGlite database'),
+		lite: cli.Flag.boolean('lite').pipe(
+			cli.Flag.withDescription('Use a per-session PGlite database'),
 		),
 	},
 	run: (ctx, opts) =>
@@ -81,10 +81,10 @@ const db = yield* prepareSessionPglite(session, {
 
 ## API
 
-From `devsess`:
+From `devsess` (the Effect API):
 
 - `defineDevCli({ name, dir, options?, run })` → `(argv) => void`
-- `cli` — re-export of `@effect/cli`
+- `cli` — re-export of `effect/unstable/cli`
 - `DevSessions`, `makeDevSessionsLayer(rootDir)`, `DevSession`
 - `SessionState.slot(schema)` — typed per-session JSON state
 
@@ -95,6 +95,12 @@ From `devsess/pglite`:
 - `buildPgliteDump`, `ensurePgliteDump`, `migratePglite`, `readSqlMigrations`,
   `dumpPgliteToFile`, `createPgliteFromDump`, `getDbMigrationCount`,
   `getExpectedMigrationCount`, and the `PgliteError` tagged error.
+
+From `devsess/async` (a plain, Promise-based mirror of the Effect API — no `effect` imports required):
+
+- `defineDevCli({ name, dir, options?, run })` — `run` is `async (ctx, opts) => void`, and `ctx`'s helpers return Promises instead of Effects
+- `createDevSessions(rootDir)` — async session manager (`getSessions`, `createSession`, `getLatestOrCreate`)
+- `SessionState`, `DevSession`, plus `cli` and `Schema` re-exports
 
 See the [full documentation](https://github.com/fdarian/devsess/tree/main/apps/docs) for details.
 
