@@ -1,7 +1,29 @@
-import { watch as fsWatch } from 'node:fs';
+import { watch as fsWatch, realpathSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join, resolve } from 'node:path';
 import { Deferred, Effect } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { Path } from 'effect/Path';
+
+const RUNNING_SIGNAL_FILE = '.data/running.json';
+
+/** Path to the running-signal file for a dev-session (or sibling package) directory. */
+export const runningSignalPath = (dir: string) =>
+	join(dir, RUNNING_SIGNAL_FILE);
+
+/**
+ * Resolves `spec` to a directory: relative/absolute paths are resolved against
+ * `fromDir`, anything else is treated as a package name and resolved via its
+ * `package.json`.
+ */
+export const resolveSiblingDir = (spec: string, fromDir: string) => {
+	if (spec.startsWith('.') || spec.startsWith('/')) {
+		return resolve(fromDir, spec);
+	}
+	const require = createRequire(join(fromDir, 'package.json'));
+	const pkgJsonPath = require.resolve(`${spec}/package.json`);
+	return dirname(realpathSync(pkgJsonPath));
+};
 
 /** Atomically writes `value` as JSON to `filePath` and removes it on release. */
 export const publishRunningSignal = (filePath: string, value: unknown) =>

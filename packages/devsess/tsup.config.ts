@@ -4,6 +4,7 @@ export default defineConfig({
 	entry: {
 		index: 'src/index.ts',
 		'pglite/index': 'src/pglite/index.ts',
+		'async/index': 'src/async/index.ts',
 	},
 	format: ['esm'],
 	target: 'node20',
