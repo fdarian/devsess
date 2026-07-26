@@ -38,8 +38,7 @@ export const createPgliteFromDump = (opts: {
 			return new PGlite(opts.dataDir);
 		}
 
-		const dumpExists = yield* fs.exists(opts.dumpPath);
-		if (!dumpExists) {
+		if (!(yield* fs.exists(opts.dumpPath))) {
 			return yield* new PgliteError({
 				message: `Dump file not found at ${opts.dumpPath}`,
 			});
@@ -228,7 +227,9 @@ export const openLitePglite = (opts: {
 		});
 		const expected = yield* getExpectedMigrationCount(opts.migrationsFolder);
 		const actual = yield* getDbMigrationCount(client);
-		if (expected > 0 && actual === 0) {
+		/** Schema is present but nothing is journaled — it predates journaled migrations. */
+		const predatesMigrationJournal = expected > 0 && actual === 0;
+		if (predatesMigrationJournal) {
 			return yield* Effect.fail(
 				new PgliteError({
 					message:
