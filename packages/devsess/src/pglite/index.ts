@@ -13,6 +13,24 @@ export class PgliteError extends Data.TaggedError('PgliteError')<{
 
 const IN_MEMORY_DATA_DIR = 'memory://';
 
+/** Drizzle's own defaults, used whenever a caller doesn't override them. */
+const DEFAULT_MIGRATIONS_TABLE = '__drizzle_migrations';
+const DEFAULT_MIGRATIONS_SCHEMA = 'drizzle';
+
+export type PgliteMigrations = {
+	migrationsFolder: string;
+	migrationsTable?: string;
+	migrationsSchema?: string;
+};
+
+/** Double-quotes an identifier part for safe interpolation into SQL. */
+const quoteIdentifierPart = (part: string) => `"${part.replaceAll('"', '""')}"`;
+
+const qualifiedMigrationsTable = (
+	migrations: Pick<PgliteMigrations, 'migrationsTable' | 'migrationsSchema'>,
+) =>
+	`${quoteIdentifierPart(migrations.migrationsSchema ?? DEFAULT_MIGRATIONS_SCHEMA)}.${quoteIdentifierPart(migrations.migrationsTable ?? DEFAULT_MIGRATIONS_TABLE)}`;
+
 /**
  * A persisted data dir that already exists holds a hydrated database, so it is
  * opened as-is rather than re-seeded from the dump. In-memory clients have
@@ -92,12 +110,17 @@ export const dumpPgliteToFile = (client: PGlite, dest: string) =>
 		yield* fs.writeFile(dest, data);
 	});
 
-export const migratePglite = (client: PGlite, migrationsFolder: string) =>
+export const migratePglite = (client: PGlite, migrations: PgliteMigrations) =>
 	Effect.tryPromise({
-		try: () => migrate(drizzle(client), { migrationsFolder }),
+		try: () =>
+			migrate(drizzle(client), {
+				migrationsFolder: migrations.migrationsFolder,
+				migrationsTable: migrations.migrationsTable,
+				migrationsSchema: migrations.migrationsSchema,
+			}),
 		catch: (error) =>
 			new PgliteError({
-				message: `Failed to migrate pglite from ${migrationsFolder}`,
+				message: `Failed to migrate pglite from ${migrations.migrationsFolder}`,
 				cause: error,
 			}),
 	});
@@ -112,8 +135,13 @@ const closePglite = (client: PGlite) =>
 			}),
 	});
 
-export const getDbMigrationCount = (client: PGlite) =>
+export const getDbMigrationCount = (
+	client: PGlite,
+	migrations?: Pick<PgliteMigrations, 'migrationsTable' | 'migrationsSchema'>,
+) =>
 	Effect.gen(function* () {
+		const qualifiedTable = qualifiedMigrationsTable(migrations ?? {});
+
 		yield* Effect.tryPromise({
 			try: () => client.waitReady,
 			catch: (error) =>
@@ -126,7 +154,8 @@ export const getDbMigrationCount = (client: PGlite) =>
 		const existsResult = yield* Effect.tryPromise({
 			try: () =>
 				client.query<{ exists: boolean }>(
-					'SELECT to_regclass(\'drizzle.__drizzle_migrations\') IS NOT NULL AS "exists"',
+					'SELECT to_regclass($1) IS NOT NULL AS "exists"',
+					[qualifiedTable],
 				),
 			catch: (error) =>
 				new PgliteError({
@@ -150,7 +179,7 @@ export const getDbMigrationCount = (client: PGlite) =>
 		const countResult = yield* Effect.tryPromise({
 			try: () =>
 				client.query<{ c: number }>(
-					'SELECT count(*)::int AS c FROM drizzle.__drizzle_migrations',
+					`SELECT count(*)::int AS c FROM ${qualifiedTable}`,
 				),
 			catch: (error) =>
 				new PgliteError({
@@ -202,21 +231,19 @@ export const getExpectedMigrationCount = (migrationsFolder: string) =>
 		return journal.entries.length;
 	});
 
-export const buildPgliteDump = (opts: {
-	migrationsFolder: string;
-	dumpPath: string;
-}) =>
+export const buildPgliteDump = (
+	opts: PgliteMigrations & { dumpPath: string },
+) =>
 	Effect.gen(function* () {
 		const client = new PGlite(IN_MEMORY_DATA_DIR);
-		yield* migratePglite(client, opts.migrationsFolder);
+		yield* migratePglite(client, opts);
 		yield* dumpPgliteToFile(client, opts.dumpPath);
 		yield* closePglite(client);
 	});
 
-export const ensurePgliteDump = (opts: {
-	migrationsFolder: string;
-	dumpPath: string;
-}) =>
+export const ensurePgliteDump = (
+	opts: PgliteMigrations & { dumpPath: string },
+) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem;
 		const dumpExists = yield* fs.exists(opts.dumpPath);
@@ -225,22 +252,17 @@ export const ensurePgliteDump = (opts: {
 		}
 	});
 
-export const openLitePglite = (opts: {
-	dataDir: string;
-	dumpPath: string;
-	migrationsFolder: string;
-}) =>
+export const openLitePglite = (
+	opts: PgliteMigrations & { dataDir: string; dumpPath: string },
+) =>
 	Effect.gen(function* () {
-		yield* ensurePgliteDump({
-			migrationsFolder: opts.migrationsFolder,
-			dumpPath: opts.dumpPath,
-		});
+		yield* ensurePgliteDump(opts);
 		const client = yield* createPgliteFromDump({
 			dataDir: opts.dataDir,
 			dumpPath: opts.dumpPath,
 		});
 		const expected = yield* getExpectedMigrationCount(opts.migrationsFolder);
-		const actual = yield* getDbMigrationCount(client);
+		const actual = yield* getDbMigrationCount(client, opts);
 		/** Schema is present but nothing is journaled — it predates journaled migrations. */
 		const predatesMigrationJournal = expected > 0 && actual === 0;
 		if (predatesMigrationJournal) {
@@ -253,7 +275,7 @@ export const openLitePglite = (opts: {
 				}),
 			);
 		}
-		yield* migratePglite(client, opts.migrationsFolder);
+		yield* migratePglite(client, opts);
 		return client;
 	});
 
@@ -266,15 +288,15 @@ export const openLitePglite = (opts: {
  */
 export const prepareSessionPglite = (
 	session: DevSession,
-	opts: { migrationsFolder: string },
+	opts: PgliteMigrations,
 ) =>
 	Effect.gen(function* () {
 		const dataDir = yield* session.path('pglite');
 		const dumpPath = yield* session.path('pglite.dump');
 		const client = yield* openLitePglite({
+			...opts,
 			dataDir,
 			dumpPath,
-			migrationsFolder: opts.migrationsFolder,
 		});
 		return { client, dataDir, dumpPath };
 	});

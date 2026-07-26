@@ -229,10 +229,45 @@ describe('migratePglite', () => {
 					const before = yield* Effect.promise(newTableQuery);
 					expect(before.rows[0]?.exists).toBe(false);
 
-					yield* migratePglite(client, migrationsFolder);
+					yield* migratePglite(client, { migrationsFolder });
 
 					const after = yield* Effect.promise(newTableQuery);
 					expect(after.rows[0]?.exists).toBe(true);
+
+					yield* closeClient(client);
+				}),
+			),
+	);
+
+	it.effect(
+		'round-trips a custom migrationsTable/migrationsSchema, and reports 0 under the default lookup',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const rootDir = yield* makeTempDir;
+					const migrationsFolder = join(rootDir, 'migrations');
+					yield* writeMigrationsFixture(migrationsFolder, { count: 2 });
+
+					const client = new PGlite(IN_MEMORY_DATA_DIR);
+					yield* Effect.promise(() => client.waitReady);
+
+					const migrationsTable = 'custom_migrations';
+					const migrationsSchema = 'custom_schema';
+
+					yield* migratePglite(client, {
+						migrationsFolder,
+						migrationsTable,
+						migrationsSchema,
+					});
+
+					const defaultCount = yield* getDbMigrationCount(client);
+					expect(defaultCount).toBe(0);
+
+					const overrideCount = yield* getDbMigrationCount(client, {
+						migrationsTable,
+						migrationsSchema,
+					});
+					expect(overrideCount).toBe(2);
 
 					yield* closeClient(client);
 				}),
