@@ -15,7 +15,7 @@ bun add @electric-sql/pglite drizzle-orm
 | `@electric-sql/pglite` | `>=0.2.0` |
 | `drizzle-orm` | `>=0.30.0` |
 
-`PGlite` below refers to `@electric-sql/pglite`'s client type.
+`PGlite` below refers to `@electric-sql/pglite`'s client type. `PgliteMigrations` below refers to `{ migrationsFolder: string, migrationsTable?: string, migrationsSchema?: string }` — `migrationsTable`/`migrationsSchema` default to Drizzle's own defaults (`__drizzle_migrations` in the `drizzle` schema) and only need setting if your `drizzle.config.ts`'s `migrations.table`/`migrations.schema` does.
 
 `prepareSessionPglite` requires the Effect `DevSession` (from `devsess`), not the `devsess/async` one — its `path()` must return an `Effect`, and the async `DevSession.path()` returns a plain `string` instead. The bridge back to the Effect session isn't exported from `devsess/async`, so there's no supported way to call `prepareSessionPglite` with a session obtained there. The rest of this entry point (`openLitePglite` and the lower-level helpers) takes plain values instead of a `DevSession`, but every export still returns an `Effect` — `devsess/async` doesn't export a way to run one, so using this entry point from an async dev script means importing `effect` yourself.
 
@@ -24,7 +24,7 @@ bun add @electric-sql/pglite drizzle-orm
 ```ts
 function prepareSessionPglite(
 	session: DevSession,
-	opts: { migrationsFolder: string }
+	opts: PgliteMigrations
 ): Effect.Effect<
 	{ client: PGlite, dataDir: string, dumpPath: string },
 	PgliteError | PlatformError,
@@ -39,10 +39,9 @@ Because the dump lives inside the session directory, it isn't shared across sess
 ## `openLitePglite`
 
 ```ts
-function openLitePglite(opts: {
+function openLitePglite(opts: PgliteMigrations & {
 	dataDir: string
 	dumpPath: string
-	migrationsFolder: string
 }): Effect.Effect<PGlite, PgliteError | PlatformError, FileSystem | Path>
 ```
 
@@ -50,7 +49,7 @@ Same ensure-dump → hydrate → migrate flow as `prepareSessionPglite`, against
 
 1. `ensurePgliteDump` — builds the dump only if `dumpPath` is missing.
 2. `createPgliteFromDump` — if `dataDir` already exists on disk, opens it directly and the dump is never read. Otherwise hydrates a new client from the dump.
-3. Staleness guard — if migrations are expected (`getExpectedMigrationCount` > 0) but the opened database has no Drizzle migration bookkeeping at all (`getDbMigrationCount` is 0), fails with a `PgliteError` naming the `rm -rf <dataDir> <dumpPath>` recovery command.
+3. Staleness guard — if migrations are expected (`getExpectedMigrationCount` > 0) but the opened database has no Drizzle migration bookkeeping at all (`getDbMigrationCount` is 0), fails with a `PgliteError` naming the `rm -rf <dataDir> <dumpPath>` recovery command. `getDbMigrationCount` looks in the same `migrationsTable`/`migrationsSchema` you passed in — if your `drizzle.config.ts` sets a custom `migrations.table`/`migrations.schema` and you don't pass the matching override here, this guard checks the wrong (empty) table and fails against a database that's actually fully migrated.
 4. `migratePglite` always runs afterward — Drizzle's `migrate()` is idempotent, so this only applies migrations added since the dump/`dataDir` was built.
 
 Restarting within an existing session costs nothing: `dataDir` already exists, so the dump is never read. The dump only earns its keep the first time a session opens a database with no `dataDir` yet.
@@ -72,10 +71,10 @@ Every `devsess/pglite` export fails with this tagged error (`_tag: 'PgliteError'
 
 | Export | Signature | Description |
 |---|---|---|
-| `ensurePgliteDump` | `(opts: { migrationsFolder: string, dumpPath: string }) => Effect<void, PgliteError \| PlatformError, FileSystem \| Path>` | Builds the dump via `buildPgliteDump`, only if `dumpPath` doesn't exist yet |
-| `buildPgliteDump` | `(opts: { migrationsFolder: string, dumpPath: string }) => Effect<void, PgliteError \| PlatformError, FileSystem \| Path>` | Runs every migration on a fresh in-memory PGlite (`memory://`) and writes the result to `dumpPath` |
+| `ensurePgliteDump` | `(opts: PgliteMigrations & { dumpPath: string }) => Effect<void, PgliteError \| PlatformError, FileSystem \| Path>` | Builds the dump via `buildPgliteDump`, only if `dumpPath` doesn't exist yet |
+| `buildPgliteDump` | `(opts: PgliteMigrations & { dumpPath: string }) => Effect<void, PgliteError \| PlatformError, FileSystem \| Path>` | Runs every migration on a fresh in-memory PGlite (`memory://`) and writes the result to `dumpPath` |
 | `createPgliteFromDump` | `(opts: { dataDir?: string, dumpPath: string }) => Effect<PGlite, PgliteError \| PlatformError, FileSystem>` | Opens `dataDir` directly if it's set, isn't `'memory://'`, and already exists; otherwise hydrates a client from `dumpPath` (fails if that's also missing) |
 | `dumpPgliteToFile` | `(client: PGlite, dest: string) => Effect<void, PgliteError \| PlatformError, FileSystem \| Path>` | Serializes an open client's data dir to `dest`, creating parent directories as needed |
-| `migratePglite` | `(client: PGlite, migrationsFolder: string) => Effect<void, PgliteError, never>` | Runs Drizzle's `migrate()` against the client |
-| `getDbMigrationCount` | `(client: PGlite) => Effect<number, PgliteError, never>` | Counts rows in `drizzle.__drizzle_migrations`; `0` if the table doesn't exist yet |
+| `migratePglite` | `(client: PGlite, migrations: PgliteMigrations) => Effect<void, PgliteError, never>` | Runs Drizzle's `migrate()` against the client |
+| `getDbMigrationCount` | `(client: PGlite, migrations?: Pick<PgliteMigrations, 'migrationsTable' \| 'migrationsSchema'>) => Effect<number, PgliteError, never>` | Counts rows in the migrations table — `drizzle.__drizzle_migrations` by default, or `migrations.migrationsSchema`/`migrations.migrationsTable` if passed; `0` if the table doesn't exist yet |
 | `getExpectedMigrationCount` | `(migrationsFolder: string) => Effect<number, PgliteError \| PlatformError, FileSystem \| Path>` | Counts entries in `<migrationsFolder>/meta/_journal.json`; fails if the journal is missing, unparseable, or has no `entries` array |

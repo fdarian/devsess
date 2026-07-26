@@ -63,7 +63,7 @@ bun scripts/dev.ts --lite
 ```ts
 prepareSessionPglite(
 	session: DevSession,
-	opts: { migrationsFolder: string },
+	opts: { migrationsFolder: string; migrationsTable?: string; migrationsSchema?: string },
 ): Effect<{ client: PGlite; dataDir: string; dumpPath: string }>
 ```
 
@@ -71,6 +71,7 @@ prepareSessionPglite(
 | --- | --- |
 | `session` | The session to scope the database to — `yield* ctx.session`. |
 | `opts.migrationsFolder` | Path to your Drizzle migrations folder. |
+| `opts.migrationsTable` / `opts.migrationsSchema` | Optional — only set these if your `drizzle.config.ts` overrides Drizzle's default migration bookkeeping location. See the [reference](/reference/pglite) for defaults. |
 | → `client` | A live PGlite connection, usable in this process. |
 | → `dataDir` | `<session>/pglite` — the on-disk path other processes point at. |
 | → `dumpPath` | `<session>/pglite.dump` — the migration snapshot, see below. |
@@ -134,6 +135,8 @@ yield* prepareSessionPglite(session, { migrationsFolder }).pipe(
 ```
 
 One specific failure is worth knowing by name: if `dataDir` already has tables but no migration journal, `prepareSessionPglite` refuses to guess and fails instead — its message tells you exactly what to delete (`rm -rf <dataDir> <dumpPath>`) so the next run rebuilds cleanly. That happens when a data directory predates this dump scheme, not in normal use.
+
+It also happens if your `drizzle.config.ts` sets a custom `migrations.table`/`migrations.schema` and `opts.migrationsTable`/`opts.migrationsSchema` don't match it: the check reads the wrong table, sees nothing, and reports a fully-migrated database as stale.
 
 ## Outside a dev session
 
