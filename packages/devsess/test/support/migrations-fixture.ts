@@ -19,6 +19,12 @@ type JournalEntry = {
  * migrations exist. Each migration is a standalone `create table` so it applies cleanly
  * regardless of how many others run before it. Self-contained (brings its own
  * `NodeServices`), so `dir` — typically from `makeTempDir` — is the only input needed.
+ *
+ * Calling this twice against the same `dir` to *extend* a fixture (e.g. `count: 1` then
+ * `count: 2`) regenerates every entry's `when`, including ones already written by the
+ * first call — it's not additive. Anyone diffing exact migration counts/timestamps
+ * across two calls should account for that rather than assuming earlier entries are
+ * untouched.
  */
 export const writeMigrationsFixture = (dir: string, opts: { count: number }) =>
 	Effect.gen(function* () {
