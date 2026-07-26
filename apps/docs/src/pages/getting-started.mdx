@@ -1,0 +1,71 @@
+# Getting Started
+
+## Install
+
+Install devsess and its peer dependencies:
+
+```bash
+bun add devsess effect @effect/platform-node
+```
+
+## Write the script
+
+Create `scripts/dev.ts`:
+
+```ts
+// scripts/dev.ts
+import { join } from 'node:path'
+import { defineDevCli } from 'devsess'
+import { Effect } from 'effect'
+
+const main = defineDevCli({
+	name: 'web',
+	dir: join(import.meta.dirname, '..'),
+	run: (ctx) =>
+		Effect.gen(function* () {
+			const session = yield* ctx.session
+			console.log(`session: ${session.name}`)
+
+			const port = yield* ctx.getStickyPort()
+			yield* ctx.runManagedSubprocess('bunx', ['vite'], {
+				env: { PORT: String(port) },
+			})
+		}),
+})
+
+main(process.argv)
+```
+
+This resolves the current session, reads a sticky port for it, and runs `vite` as a managed subprocess bound to that port.
+
+## Run it
+
+```bash
+bun scripts/dev.ts
+```
+
+You'll see something like:
+
+```
+session: walrus
+[dev] started: bunx vite (pid=41213)
+```
+
+Then whatever `vite` prints on its own — its output goes straight to your terminal, unchanged.
+
+:::warning[Add .data/ to .gitignore]
+Running the script created `.data/sessions/walrus/` in this checkout. It holds this instance's database and state — add `.data/` to your `.gitignore` before you commit.
+:::
+
+## What just happened
+
+- **Session.** devsess resolved this checkout's session — a directory under `.data/sessions/`, isolated from any other checkout of this project. It picked whichever session was modified most recently, or created one since none existed yet. Slugs are a single word, like `walrus`, not something you name. [defineDevCli →](/define-dev-cli)
+- **Sticky port.** It read the port already stored in that session and asked for it again — `getStickyPort()` hands back the same port next run, as long as it's still free. [Ports that survive restarts →](/recipes/ports)
+- **Managed subprocess.** `vite` ran under devsess's control. Ctrl-C the script and devsess kills it too — no orphaned process left behind. [Running your dev server →](/recipes/dev-server)
+- **defineDevCli.** All of it runs inside one Effect scope that `defineDevCli` sets up before your `run` function is ever called. That scope closing is what makes the cleanup above possible. [defineDevCli →](/define-dev-cli)
+
+## Where to go next
+
+- **[A database per session](/recipes/pglite)** — give each session its own Postgres, seeded from your migrations.
+- **[Wiring services together](/recipes/wiring-services)** — let one service read the port another one landed on.
+- **[devsess reference](/reference/devsess)** — every export, in full, once you're past the basics.

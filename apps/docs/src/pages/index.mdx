@@ -1,0 +1,72 @@
+# devsess
+
+devsess is a library for Node dev scripts, built on [Effect](https://effect.website), that gives every parallel checkout of your project — every git worktree, every AI agent working in its own copy — an isolated dev session.
+
+## What it solves
+
+You're not running one dev environment — you're running several at once: a couple of git worktrees, and increasingly, a handful of AI agents each working in their own worktree. Point them at the same project and they collide:
+
+- Two agents both want port 3000. Only one of them gets it.
+- Two agents point at the same local Postgres. One runs a migration and destroys what the other seeded.
+
+devsess resolves this by giving each checkout its own session directory, holding that instance's port, database, and state:
+
+:::file-tree
+- worktree-a
+  - .data
+    - sessions
+      - walrus
+        - sess.json{info="This instance's port and state"}
+        - pglite{info="This instance's database"}
+- worktree-b
+  - .data
+    - sessions
+      - piano
+        - sess.json{info="A different port, a different session"}
+        - pglite
+:::
+
+That isolation falls out of where the data lives, not from any session-switching feature: each checkout is a different `dir`, so each gets its own `<dir>/.data/sessions/`. Within a single checkout, devsess still resumes whichever session was used most recently — there's no flag to pick a specific one.
+
+devsess only targets that layer: local dev scripts on Node. It isn't a process supervisor, a task runner, or a replacement for Docker Compose.
+
+## What you get
+
+- **Ports that are free, come back the same on every restart, and can be discovered by other services.** [Ports that survive restarts →](/recipes/ports)
+- **A per-session Postgres, with no database server to run yourself.** [A database per session →](/recipes/pglite)
+- **State shared between services.** Turborepo orders your tasks; it doesn't share what they learned. devsess does. [Wiring services together →](/recipes/wiring-services)
+- **Ordinary TypeScript around startup.** Do work before or after your server comes up — rewrite `.mcp.json` once you know the port, say. [Running your dev server →](/recipes/dev-server)
+
+## What it looks like
+
+```ts
+import { join } from 'node:path'
+import { defineDevCli } from 'devsess'
+import { Effect } from 'effect'
+
+const main = defineDevCli({
+	name: 'web',
+	dir: join(import.meta.dirname, '..'),
+	run: (ctx) =>
+		Effect.gen(function* () {
+			const port = yield* ctx.getStickyPort()
+			yield* ctx.runManagedSubprocess('bunx', ['vite'], {
+				env: { PORT: String(port) },
+			})
+		}),
+})
+
+main(process.argv)
+```
+
+The port comes back the same as last time, if it's still free. `vite` doesn't outlive the script — Ctrl-C kills it too.
+
+## Where to go next
+
+- **[Getting Started](/getting-started)** — install devsess and get the script above running for real.
+- **[defineDevCli](/define-dev-cli)** — the CLI scaffold behind `ctx`, dev sessions, and what runs before your `run` function does.
+- **[devsess reference](/reference/devsess)** — every export, in full, once you're past the basics.
+
+:::tip[Not using Effect?]
+[`devsess/async`](/without-effect) wraps the same primitives in a plain Promise API — same sessions, same ports, same subprocess cleanup.
+:::

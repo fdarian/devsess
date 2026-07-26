@@ -1,0 +1,75 @@
+# Ports that survive restarts
+
+Restart your dev script and the server usually comes up somewhere new. The OAuth redirect URI you registered against `localhost:4321` stops matching. A tunnel you pointed at that port now points at nothing. Anywhere you hardcoded the URL goes stale the moment the port does.
+
+`ctx.getStickyPort()` gives you a port with three properties, and the third is the one worth building on.
+
+## Free
+
+Ask for a port and you get one nothing else on the machine is using — `getStickyPort()` is a thin wrapper around [`get-port`](https://github.com/sindresorhus/get-port), which checks with the OS before handing one back.
+
+## Reusable
+
+Restart the same session and you tend to get the same port back:
+
+```ts
+// inside run(ctx, opts)
+const port = yield* ctx.getStickyPort()
+// 4321 — the same port as last run, if nothing else has taken it
+```
+
+```ts
+ctx.getStickyPort(): Effect<number>
+```
+
+It takes no arguments — it always reads and writes the current session. Internally it pulls whatever port is stored in that session's `sess.json`, passes it to `get-port` as a preference, and writes back whichever port that call actually returns.
+
+:::warning[Best-effort, not guaranteed]
+The remembered port is a preference, not a reservation. If something else has taken it since your last run, you get a different free port instead — and that new one is what gets remembered from now on. Don't build anything that assumes the port can never change.
+:::
+
+## Discoverable
+
+Free and reusable only help the process that owns the port. What makes it worth building on: another service that depends on this one can find out which port it landed on, without you hardcoding it anywhere — see [Wiring services together](/recipes/wiring-services).
+
+## Write the port wherever it's needed
+
+`run` is ordinary TypeScript. Once you have the port, you can put it anywhere something else expects to find it — before you start the server that's actually going to bind to it.
+
+Here it keeps an MCP client config pointed at the right URL:
+
+```ts
+// scripts/dev.ts
+import { join } from 'node:path'
+import { defineDevCli } from 'devsess'
+import { Effect } from 'effect'
+import { FileSystem } from 'effect/FileSystem'
+
+const mcpConfigPath = join(import.meta.dirname, '../.mcp.json')
+
+const main = defineDevCli({
+	name: 'web',
+	dir: join(import.meta.dirname, '..'),
+	run: (ctx) =>
+		Effect.gen(function* () {
+			const port = yield* ctx.getStickyPort()
+			const fs = yield* FileSystem
+
+			const raw = yield* fs.readFileString(mcpConfigPath)
+			const config = JSON.parse(raw)
+			config.mcpServers.web.url = `http://localhost:${port}/mcp`
+			yield* fs.writeFileString(mcpConfigPath, JSON.stringify(config, null, '\t'))
+			// .mcp.json now points at this run's port, before vite ever starts
+
+			yield* ctx.runManagedSubprocess('bunx', ['vite'], {
+				env: { PORT: String(port) },
+			})
+		}),
+})
+
+main(process.argv)
+```
+
+No hook, no plugin — reading a JSON file, editing a field, and writing it back is the whole mechanism. An `.env` file, a proxy config, a second `dev.ts` in a sibling package: the same three lines work anywhere a port needs to end up.
+
+Starting the process that actually binds to this port is its own recipe — see [Running your dev server](/recipes/dev-server).

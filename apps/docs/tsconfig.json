@@ -1,0 +1,7 @@
+{
+	"extends": "@devsess/config/tsconfig",
+	"compilerOptions": {
+		"jsx": "react-jsx"
+	},
+	"include": ["**/*.ts", "**/*.tsx", "**/*.mdx"]
+}

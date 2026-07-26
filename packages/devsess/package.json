@@ -1,0 +1,90 @@
+{
+	"name": "devsess",
+	"version": "0.0.1",
+	"description": "Isolated, managed dev servers — each worktree gets its own session, with its own port and its own database",
+	"license": "Apache-2.0",
+	"homepage": "https://github.com/fdarian/devsess#readme",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/fdarian/devsess.git",
+		"directory": "packages/devsess"
+	},
+	"bugs": {
+		"url": "https://github.com/fdarian/devsess/issues"
+	},
+	"type": "module",
+	"keywords": [
+		"effect",
+		"dev",
+		"cli",
+		"dev-server",
+		"pglite",
+		"drizzle",
+		"sqlite",
+		"postgres"
+	],
+	"sideEffects": false,
+	"files": [
+		"dist",
+		"README.md"
+	],
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./pglite": {
+			"types": "./dist/pglite/index.d.ts",
+			"import": "./dist/pglite/index.js"
+		},
+		"./async": {
+			"types": "./dist/async/index.d.ts",
+			"import": "./dist/async/index.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"publishConfig": {
+		"access": "public",
+		"provenance": true
+	},
+	"scripts": {
+		"build": "tsup && tsc -p tsconfig.build.json",
+		"dev": "tsup --watch",
+		"check:type": "tsc --noEmit",
+		"check:lint": "biome check",
+		"test": "vitest run",
+		"prepack": "bun run build"
+	},
+	"dependencies": {
+		"get-port": "^7.2.0",
+		"random-word-slugs": "^0.1.7"
+	},
+	"peerDependencies": {
+		"@effect/platform-node": "^4.0.0-beta.101",
+		"@electric-sql/pglite": ">=0.2.0",
+		"drizzle-orm": ">=0.30.0",
+		"effect": "^4.0.0-beta.101"
+	},
+	"peerDependenciesMeta": {
+		"@electric-sql/pglite": {
+			"optional": true
+		},
+		"drizzle-orm": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@devsess/config": "workspace:*",
+		"@effect/platform-node": "^4.0.0-beta.101",
+		"@effect/vitest": "^4.0.0-beta.101",
+		"@electric-sql/pglite": "^0.5.3",
+		"@types/node": "^22.0.0",
+		"drizzle-orm": "^0.45.2",
+		"effect": "^4.0.0-beta.101",
+		"tsup": "^8.5.1",
+		"vitest": "^4.1.10"
+	}
+}

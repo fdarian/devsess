@@ -1,0 +1,184 @@
+# defineDevCli
+
+`defineDevCli` assembles a dev script's scaffolding into one call: an Effect runtime to run in, a CLI parser for your flags, a session directory that survives restarts, and cleanup for anything you start.
+
+## What you give it
+
+`defineDevCli` takes a `name`, a `dir`, optional `options`, and a `run` function:
+
+```ts
+// scripts/dev.ts
+import { join } from 'node:path'
+import { defineDevCli } from 'devsess'
+import { Effect } from 'effect'
+
+const main = defineDevCli({
+	name: 'web',
+	dir: join(import.meta.dirname, '..'),
+	run: (ctx, opts) =>
+		Effect.gen(function* () {
+			// the interesting part goes here
+		}),
+})
+
+main(process.argv)
+```
+
+- `name` — your CLI's program name, shown in `--help`.
+- `dir` — your project root. Sessions live under `<dir>/.data/sessions/` (see [Where a session lives](#where-a-session-lives)), and it's the directory `ctx.awaitRunning` resolves sibling packages from (see [Wiring services together](/recipes/wiring-services)). It's also why two parallel checkouts never collide — see [How a session gets picked](#how-a-session-gets-picked).
+- `options` — CLI flags. See [Flags](#flags) below.
+- `run` — your script body, called with `ctx` and the parsed flags.
+
+Full types are in the [API reference](/reference/devsess).
+
+## One scope for the whole run
+
+`defineDevCli(config)` builds a `cli.Command` from `name` and `options` right away and hands you back a plain function — `main` above. Nothing runs until you call it, typically as `main(process.argv)` on the last line of your script. That call does the actual work:
+
+1. It wires a layer — a `DevSessions` service rooted at `<dir>/.data/sessions`, merged with `@effect/platform-node`'s `NodeServices`.
+2. It wraps your entire `run` callback in `Effect.scoped(...)`.
+3. It hands that to `NodeRuntime.runMain`.
+
+The `Effect.scoped(...)` wrapper is the detail worth sitting with — most of what this library does traces back to it.
+
+A scope is a lifetime. Effects can register a release action against it — "run this when the scope closes" — and the scope guarantees that release runs exactly once, whether the effect inside finishes normally, fails, or gets interrupted (your Ctrl-C). `defineDevCli` opens exactly one scope, wraps your whole `run` callback in it, and keeps it open for as long as your script is alive.
+
+That's the mechanism behind two other pages: [Running your dev server](/recipes/dev-server) registers "kill this child" against this same scope, and [Wiring services together](/recipes/wiring-services) registers "delete this signal file" the same way. Neither depends on your `run` callback doing cleanup itself — the scope closing does it, on a normal exit, a thrown error, or Ctrl-C alike.
+
+## The ctx object
+
+`run` receives `ctx` and the parsed `opts`. `ctx` is where the pieces `defineDevCli` assembled become useful:
+
+- `ctx.session` — the session for this run. A value, not a function — `yield* ctx.session` — and cached, so calling it more than once still resolves the same session. See [How a session gets picked](#how-a-session-gets-picked).
+- `ctx.getStickyPort()` — a port that's stable across restarts, as long as it's still free. See [Ports that survive restarts](/recipes/ports).
+- `ctx.runManagedSubprocess(cmd, args, opts?)` — starts a child process tied to the scope above. See [Running your dev server](/recipes/dev-server).
+- `ctx.publishRunning(data)` / `ctx.awaitRunning(pkg)` — let sibling packages signal each other when they're ready. See [Wiring services together](/recipes/wiring-services).
+
+Full signatures are in the [API reference](/reference/devsess).
+
+## Flags
+
+`options` takes `effect/unstable/cli` flags. `devsess` re-exports that module as `cli`, so declaring one doesn't need a separate `effect/unstable/cli` import:
+
+```ts
+import { cli, defineDevCli } from 'devsess'
+
+const main = defineDevCli({
+	// ...
+	options: {
+		lite: cli.Flag.boolean('lite').pipe(
+			cli.Flag.withDescription('Use a per-session PGlite database'),
+		),
+	},
+	run: (ctx, opts) =>
+		Effect.gen(function* () {
+			if (opts.lite) {
+				// ...
+			}
+		}),
+})
+```
+
+Each key in `options` becomes a property on `opts` — here, `opts.lite`.
+
+## Dev sessions
+
+A session is a directory that outlives your script. `ctx.session` resolves to it, and `ctx.getStickyPort()` and `SessionState` (below) read and write inside it.
+
+### Where a session lives
+
+It lives at `<dir>/.data/sessions/<slug>/` — `<slug>` a single generated noun, like `walrus` or `piano`, not a name you choose.
+
+:::file-tree
+- my-app
+  - .data
+    - sessions
+      - walrus the current session
+        - sess.json{info="Sticky port and any SessionState slots"}
+        - pglite a per-session PGlite database directory
+      - piano an older session, now idle
+    - running.json cross-package signal — not session-scoped
+  - scripts
+    - dev.ts
+:::
+
+### How a session gets picked
+
+Every run of `defineDevCli` tries to reuse the last session — the one most recently touched — or creates a new one with a random slug if none exist yet. There's no flag to choose a specific session: whichever one you touched last is the one you get.
+
+That's enough for isolation. Every checkout — every git worktree — has its own `dir`, so its own `.data/sessions/` tree. Two agents working in two worktrees never draw from the same pool of sessions, so they never collide: each gets its own port, its own database. Isolation comes from running two different checkouts, not from any session-switching feature inside devsess.
+
+You can create more sessions yourself — see [the lower-level API](#the-lower-level-api) — but `defineDevCli` still always takes the newest one. An idle session, like `piano` above, just waits until it happens to become the newest again.
+
+### What lives inside a session
+
+`SessionState.slot(schema)` gives you `{ read(session), write(session, data) }` for a schema you define. Every slot — yours and the library's own — reads and writes the same file: `<session>/sess.json`. `write` shallow-merges your data into whatever's already there, so distinct slots coexist as long as their keys don't collide. If two slots use the same key, whichever writes last wins, silently.
+
+```ts
+import { SessionState } from 'devsess'
+import { Schema } from 'effect'
+
+const LastBranch = SessionState.slot(Schema.Struct({ branch: Schema.String }))
+
+// inside run(ctx, opts):
+const state = yield* LastBranch.read(session)
+// { branch: string } | null
+yield* LastBranch.write(session, { branch: 'main' })
+```
+
+`read` resolves to `T | null`, not an `Option`. `null` covers two different cases — the file doesn't exist yet, or it exists but fails to decode against your schema — so treat it as "nothing usable here," not as "definitely missing."
+
+Running signals — the mechanism behind `ctx.publishRunning` and `ctx.awaitRunning` — aren't part of a session at all. They read and write a file scoped to your project directory, not any session directory, so a fresh session doesn't reset them. See [Wiring services together](/recipes/wiring-services).
+
+## Gotchas
+
+**`session.path(rel)` doesn't create the directory.** It resolves a path inside the session and returns it as an `Effect<string>` — pure path math, no directory or file gets created as a side effect.
+
+```ts
+import { FileSystem } from 'effect/FileSystem'
+
+// inside run(ctx, opts):
+const fs = yield* FileSystem
+
+const dir = yield* session.path('pglite')
+// '/my-app/.data/sessions/walrus/pglite'
+
+yield* fs.makeDirectory(dir, { recursive: true })
+```
+
+Skip the `makeDirectory` call and anything that assumes the path already exists on disk — writing a file under it, pointing a subprocess at it — fails.
+
+**"Most recently touched" is filesystem mtime, not a bookkeeping record.** There's no separate "last active" field. A subprocess writing into the directory, a `SessionState.write` call, anything that touches the session directory refreshes its mtime and keeps it the one `defineDevCli` picks next.
+
+**`SessionState.write` isn't atomic.** There's no temp-file-and-rename step. A `sess.json` corrupted mid-write makes the next `write` fail with a `SessionStateError` (`devsess`'s tagged error for unparseable session state) — `read` keeps degrading the same corruption to `null` instead.
+
+**`--version` always prints `0.0.0`.** It's hardcoded in the CLI scaffolding, unrelated to the version of `devsess` you have installed.
+
+## The lower-level API
+
+Outside `defineDevCli` — a script, a test, tooling that isn't a CLI — use `DevSessions` and `makeDevSessionsLayer` directly.
+
+Easy to get backwards: `makeDevSessionsLayer` takes the sessions root itself — `join(dir, '.data/sessions')`, the same path `defineDevCli` builds internally — not your project's `dir`.
+
+```ts
+import { join } from 'node:path'
+import { NodeServices } from '@effect/platform-node'
+import { DevSessions, makeDevSessionsLayer } from 'devsess'
+import { Effect, Layer } from 'effect'
+
+const program = Effect.gen(function* () {
+	const sessions = yield* DevSessions
+	return yield* sessions.getLatestOrCreate
+	// DevSession
+})
+
+const layer = makeDevSessionsLayer(
+	join('/path/to/project', '.data/sessions'),
+).pipe(Layer.provide(NodeServices.layer))
+
+Effect.runPromise(Effect.provide(program, layer))
+```
+
+`makeDevSessionsLayer` only builds the `DevSessions` service itself — it still needs `FileSystem` and `Path` to do anything, which is what `NodeServices.layer` supplies here. Inside `defineDevCli` this wiring happens for you; called directly, it's yours to provide.
+
+This is the same service `defineDevCli` wires up internally — an escape hatch, not a separate feature. Full signature in the [API reference](/reference/devsess).
