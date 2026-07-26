@@ -34,7 +34,6 @@ The `ctx` object passed to `run`. Mirrors [`RunContext`](/reference/devsess) —
 Differences from the Effect `RunContext` that bite:
 - **`session` is a function**, not a value — call `await ctx.session()` every time you need it. It's still resolved at most once per run internally (`Effect.cached`), so repeated calls don't repeat the session lookup.
 - **`getStickyPort()` is not cached**, same as the Effect version — every call re-reads the stored port and re-asks `get-port`. Call it once per run and reuse the number.
-- **The missing-sibling crash in `awaitRunning` still applies** — if the target package's `.data` directory doesn't exist yet (its dev script has never run), this throws instead of waiting. See [RunContext](/reference/devsess).
 
 Otherwise identical: `runManagedSubprocess` merges `env` over `process.env` and inherits stdio; `publishRunning` writes atomically and deletes its file on process exit; `awaitRunning` has no timeout.
 

@@ -72,6 +72,10 @@ export const awaitRunningSignal = <T>(
 				return true;
 			});
 
+			// fsWatch throws synchronously if `dir` doesn't exist yet — e.g. a sibling
+			// package's dev script has never run — so ensure it's there first.
+			yield* fs.makeDirectory(dir, { recursive: true });
+
 			yield* Effect.acquireRelease(
 				Effect.sync(() =>
 					// Watch parent dir — the file may not exist yet, and watching a missing file errors.

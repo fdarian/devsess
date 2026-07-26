@@ -63,7 +63,7 @@ The `ctx` object passed to `run`.
 
 **`publishRunning(data)`** — writes `data` as JSON to `<dir>/.data/running.json`, atomically (temp file, then rename, so readers never see a partial write). Deletes that file when its scope closes, so a crashed or exited publisher leaves no stale signal behind.
 
-**`awaitRunning<T>(pkg)`** — reads *another* package's running-signal file, not this project's own. `pkg` starting with `.` or `/` resolves as a path relative to `dir`; anything else is resolved as a package name via `require.resolve('<pkg>/package.json')`. Waits using `fs.watch` on the parent directory (no polling), plus one immediate read to catch the already-published case. **No timeout** — waits indefinitely. If the sibling's `.data` directory doesn't exist yet — i.e. its dev script has never run — this crashes with an unrecoverable defect instead of waiting: `fs.watch` throws synchronously on a missing directory, and that throw isn't routed through the typed `PlatformError` channel.
+**`awaitRunning<T>(pkg)`** — reads *another* package's running-signal file, not this project's own. `pkg` starting with `.` or `/` resolves as a path relative to `dir`; anything else is resolved as a package name via `require.resolve('<pkg>/package.json')`. Creates the sibling's `.data` directory if it doesn't exist yet (`fs.watch` would otherwise throw synchronously on a missing directory), then waits using `fs.watch` on it (no polling), plus one immediate read to catch the already-published case. **No timeout** — waits indefinitely.
 
 Running signals are **not session-scoped** — they coordinate across sibling packages in a monorepo, keyed by project directory. See [Wiring services together](/recipes/wiring-services).
 
