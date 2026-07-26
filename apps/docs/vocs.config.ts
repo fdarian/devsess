@@ -60,4 +60,5 @@ export default defineConfig({
 			],
 		},
 	],
+  renderStrategy: 'full-static',
 });
