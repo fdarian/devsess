@@ -27,11 +27,9 @@ export const createPgliteFromDump = (opts: {
 
 		const dumpExists = yield* fs.exists(opts.dumpPath);
 		if (!dumpExists) {
-			return yield* Effect.fail(
-				new PgliteError({
-					message: `Dump file not found at ${opts.dumpPath}`,
-				}),
-			);
+			return yield* new PgliteError({
+				message: `Dump file not found at ${opts.dumpPath}`,
+			});
 		}
 
 		const buffer = yield* fs.readFile(opts.dumpPath);
