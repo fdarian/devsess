@@ -9,3 +9,4 @@ export {
 	DevSessions,
 	makeDevSessionsLayer,
 } from './dev-sessions';
+export type { DevPlatform, DevServices } from './platform';

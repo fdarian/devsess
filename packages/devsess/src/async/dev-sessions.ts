@@ -1,6 +1,6 @@
-import { NodeServices } from '@effect/platform-node';
 import { Effect, Layer } from 'effect';
 import { DevSessions, makeDevSessionsLayer } from '../dev-sessions';
+import type { DevServices } from '../platform';
 import { type DevSession, toAsyncSession } from './session';
 
 export type DevSessionManager = {
@@ -11,16 +11,18 @@ export type DevSessionManager = {
 };
 
 /**
- * Creates a manager for slug-named dev session directories under `rootDir`.
+ * Creates a manager for slug-named dev session directories under `rootDir`, using the
+ * caller-supplied platform `services` layer (e.g. `NodeServices.layer`).
  *
  * `makeDevSessionsLayer` only wires lazy service methods when built (no directory
  * IO happens at build time — see `src/dev-sessions.ts`), so it's cheap to re-provide
  * the same `layer` value on every call rather than resolving a shared runtime once.
  */
-export const createDevSessions = (rootDir: string): DevSessionManager => {
-	const layer = makeDevSessionsLayer(rootDir).pipe(
-		Layer.provide(NodeServices.layer),
-	);
+export const createDevSessions = (
+	rootDir: string,
+	services: Layer.Layer<DevServices>,
+): DevSessionManager => {
+	const layer = makeDevSessionsLayer(rootDir).pipe(Layer.provide(services));
 
 	const run = <A, E>(effect: Effect.Effect<A, E, DevSessions>): Promise<A> =>
 		Effect.runPromise(Effect.provide(effect, layer));

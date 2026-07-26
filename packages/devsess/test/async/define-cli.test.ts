@@ -1,12 +1,18 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { NodeRuntime, NodeServices } from '@effect/platform-node';
 import { describe, expect, it } from '@effect/vitest';
 import { generateSlug } from 'random-word-slugs';
 import { afterEach, beforeEach, vi } from 'vitest';
 import { defineDevCli } from '../../src/async/define-cli';
 import { createDevSessions } from '../../src/async/dev-sessions';
 import { unwrapSession } from '../../src/async/session';
+
+const testPlatform = {
+	services: NodeServices.layer,
+	runMain: NodeRuntime.runMain,
+};
 
 /**
  * Unlike `src/dev/run-dev-cli.test.ts`, `run` here is a plain (possibly async) function,
@@ -32,6 +38,7 @@ const invokeAsyncCli = <T>(config: {
 			name: 'test-cli',
 			dir: config.dir,
 			options: config.options,
+			platform: testPlatform,
 			run: async (ctx, opts) => {
 				try {
 					resolve(await config.run(ctx, opts));
@@ -197,7 +204,10 @@ describe('defineDevCli (async)', () => {
 				run: async (ctx) => (await ctx.session()).name,
 			});
 
-			const manager = createDevSessions(join(rootDir, '.data/sessions'));
+			const manager = createDevSessions(
+				join(rootDir, '.data/sessions'),
+				NodeServices.layer,
+			);
 			const reused = await manager.getLatestOrCreate();
 
 			expect(reused.name).toBe(cliSessionName);

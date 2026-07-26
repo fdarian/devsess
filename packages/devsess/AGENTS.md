@@ -1,9 +1,10 @@
 # devsess
 
-Scaffold dev scripts with reusable dev sessions + a per-session PGlite/Drizzle adapter. Built on Effect, targets Node (`@effect/platform-node`).
+Scaffold dev scripts with reusable dev sessions + a per-session PGlite/Drizzle adapter. Built on Effect; platform-agnostic (Node or Bun) — the caller supplies the platform.
 
 ## Stack
-- effect (v4 beta) + @effect/platform-node — CLI (`effect/unstable/cli`) and process-spawn (`effect/unstable/process`) live in core `effect` now, no more `@effect/cli`/`@effect/platform`
+- effect (v4 beta) — CLI (`effect/unstable/cli`) and process-spawn (`effect/unstable/process`) live in core `effect` now, no more `@effect/cli`/`@effect/platform`
+- src/platform.ts — `DevServices` (union of the core `effect` tags devsess needs: `ChildProcessSpawner | FileSystem | Path | Stdio | Terminal`) and `DevPlatform` (`{ services, runMain }`). devsess has no platform package of its own; callers pass `@effect/platform-node`'s or `@effect/platform-bun`'s `NodeServices`/`BunServices` + `NodeRuntime`/`BunRuntime` as `platform` to `defineDevCli`. `@effect/platform-node` stays a devDependency, for tests only.
 - @electric-sql/pglite + drizzle-orm — optional peers, only for the `devsess/pglite` entrypoint
 
 ## Build

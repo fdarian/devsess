@@ -15,10 +15,5 @@ export default defineConfig({
 	// Declarations are emitted by `tsc -p tsconfig.build.json` (see build script).
 	dts: false,
 	// Peer dependencies must never be bundled — consumers provide a single instance.
-	external: [
-		'effect',
-		'@effect/platform-node',
-		'@electric-sql/pglite',
-		'drizzle-orm',
-	],
+	external: ['effect', '@electric-sql/pglite', 'drizzle-orm'],
 });

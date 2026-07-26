@@ -1,9 +1,9 @@
-import type { NodeServices } from '@effect/platform-node';
 import { Effect, type Scope } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { PlatformError } from 'effect/PlatformError';
 import { type DevSession, DevSessions } from '../dev-sessions';
+import type { DevPlatform, DevServices } from '../platform';
 import { type CommandConfig, runDevCli } from './run-dev-cli';
 import {
 	awaitRunningSignal,
@@ -29,19 +29,21 @@ type RunContext = {
 type RunEffect = Effect.Effect<
 	void,
 	unknown,
-	DevSessions | NodeServices.NodeServices | Scope.Scope
+	DevSessions | DevServices | Scope.Scope
 >;
 
 export const defineDevCli = (config: {
 	name: string;
 	dir: string;
 	options?: CommandConfig;
+	platform: DevPlatform;
 	run: (ctx: RunContext, opts: Record<string, unknown>) => RunEffect;
 }): ((argv: string[]) => void) =>
 	runDevCli({
 		name: config.name,
 		dir: config.dir,
 		options: config.options,
+		platform: config.platform,
 		makeHandler: (opts) =>
 			Effect.gen(function* () {
 				const sessions = yield* DevSessions;

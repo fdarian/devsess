@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { NodeRuntime, NodeServices } from '@effect/platform-node';
 import { describe, expect, it } from '@effect/vitest';
 import { Cause, Effect } from 'effect';
 import * as cli from 'effect/unstable/cli';
@@ -8,6 +9,11 @@ import { generateSlug } from 'random-word-slugs';
 import { beforeEach, vi } from 'vitest';
 import { defineDevCli } from '../../src/dev/define-cli';
 import { makeTempDir } from '../support/temp-dir';
+
+const testPlatform = {
+	services: NodeServices.layer,
+	runMain: NodeRuntime.runMain,
+};
 
 /**
  * `defineDevCli` (built on `runDevCli`, see `src/dev/run-dev-cli.ts`) drives
@@ -45,6 +51,7 @@ const invokeCli = <T>(config: {
 			name: 'test-cli',
 			dir: config.dir,
 			options: config.options,
+			platform: testPlatform,
 			run: (ctx, opts) =>
 				config.run(ctx, opts).pipe(
 					Effect.tap((result) => Effect.sync(() => resolve(result))),
@@ -187,6 +194,7 @@ describe('defineDevCli', () => {
 			const runCli = defineDevCli({
 				name: 'test-cli',
 				dir: '/tmp/devsess-test-version-unused',
+				platform: testPlatform,
 				run: () => Effect.void,
 			});
 			runCli(['--version']);
