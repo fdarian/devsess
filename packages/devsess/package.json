@@ -1,6 +1,6 @@
 {
 	"name": "devsess",
-	"version": "0.0.1",
+	"version": "0.1.0",
 	"description": "Isolated, managed dev servers — each worktree gets its own session, with its own port and its own database",
 	"license": "Apache-2.0",
 	"homepage": "https://github.com/fdarian/devsess#readme",
