@@ -92,7 +92,7 @@ From `devsess/pglite`:
 
 - `prepareSessionPglite(session, { migrationsFolder })`
 - `openLitePglite({ dataDir, dumpPath, migrationsFolder })`
-- `buildPgliteDump`, `ensurePgliteDump`, `migratePglite`, `readSqlMigrations`,
+- `buildPgliteDump`, `ensurePgliteDump`, `migratePglite`,
   `dumpPgliteToFile`, `createPgliteFromDump`, `getDbMigrationCount`,
   `getExpectedMigrationCount`, and the `PgliteError` tagged error.
 

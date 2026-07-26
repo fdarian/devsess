@@ -11,35 +11,6 @@ export class PgliteError extends Data.TaggedError('PgliteError')<{
 	cause?: unknown;
 }> {}
 
-export const readSqlMigrations = (dir: string) =>
-	Effect.gen(function* () {
-		const fs = yield* FileSystem;
-		const path = yield* Path;
-
-		const dirExists = yield* fs.exists(dir);
-
-		if (!dirExists) {
-			return '';
-		}
-
-		const files = yield* fs
-			.readDirectory(dir)
-			.pipe(Effect.catch(() => Effect.succeed([] as string[])));
-
-		const sqlFiles = files.filter((file) => file.endsWith('.sql')).sort();
-
-		if (sqlFiles.length === 0) {
-			return '';
-		}
-
-		const sqlContents = yield* Effect.all(
-			sqlFiles.map((file) => fs.readFileString(path.join(dir, file))),
-			{ concurrency: 'unbounded' },
-		);
-
-		return sqlContents.join('\n');
-	});
-
 export const createPgliteFromDump = (opts: {
 	dataDir?: string;
 	dumpPath: string;
