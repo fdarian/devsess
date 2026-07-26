@@ -1,0 +1,86 @@
+# devsess/async
+
+Promise-based facade over the same core as `devsess`, for dev scripts that would rather not import `effect` directly. Mirrors [`devsess`](/reference/devsess) member-for-member — this page states only the differences. See [Without Effect](/without-effect).
+
+Needs the same peers as `devsess` installed (`effect`, `@effect/platform-node`) even though you don't import `effect` yourself — see [Getting Started](/getting-started).
+
+## `defineDevCli`
+
+```ts
+function defineDevCli(config: {
+	name: string
+	dir: string
+	options?: CommandConfig
+	run: (ctx: AsyncRunContext, opts: Record<string, unknown>) => Promise<void> | void
+}): (argv: string[]) => void
+```
+
+Same `name` / `dir` / `options` and runtime sequence as the [Effect version](/reference/devsess), including the hardcoded `--version` of `0.0.0`. `run` returns `Promise<void> | void` instead of an `Effect`, and every `ctx` member returns a `Promise`.
+
+Each `ctx` call runs against the single process-lifetime scope `defineDevCli` opens internally — not a fresh scope per call — so a subprocess started via `ctx.runManagedSubprocess` or a file written by `ctx.publishRunning` stays alive until the CLI process itself ends, not until that individual Promise settles.
+
+## `AsyncRunContext`
+
+The `ctx` object passed to `run`. Mirrors [`RunContext`](/reference/devsess) — every member returns a `Promise` instead of an `Effect`.
+
+| Member | Type |
+|---|---|
+| `session()` | `() => Promise<DevSession>` |
+| `getStickyPort()` | `() => Promise<number>` |
+| `runManagedSubprocess(cmd, args, opts?)` | `(cmd: string, args: string[], opts?: { env?: Record<string, string> }) => Promise<ExitCode>` |
+| `publishRunning(data)` | `(data: unknown) => Promise<void>` |
+| `awaitRunning<T>(pkg)` | `(pkg: string) => Promise<T>` |
+
+Differences from the Effect `RunContext` that bite:
+- **`session` is a function**, not a value — call `await ctx.session()` every time you need it. It's still resolved at most once per run internally (`Effect.cached`), so repeated calls don't repeat the session lookup.
+- **`getStickyPort()` is not cached**, same as the Effect version — every call re-reads the stored port and re-asks `get-port`. Call it once per run and reuse the number.
+- **The missing-sibling crash in `awaitRunning` still applies** — if the target package's `.data` directory doesn't exist yet (its dev script has never run), this throws instead of waiting. See [RunContext](/reference/devsess).
+
+Otherwise identical: `runManagedSubprocess` merges `env` over `process.env` and inherits stdio; `publishRunning` writes atomically and deletes its file on process exit; `awaitRunning` has no timeout.
+
+## `DevSession`
+
+```ts
+type DevSession = {
+	readonly name: string
+	readonly lastModifiedAt: Date | null
+	path(relativePath: string): string
+	toString(): string
+}
+```
+
+Same fields as the [Effect `DevSession`](/reference/devsess), except **`path(relativePath)` is synchronous** and returns `string` directly — no `Effect`, no `Promise`. Safe because the underlying Effect `path` is pure (`Effect.succeed`); it's run with `Effect.runSync` internally. Still doesn't create the directory.
+
+This session isn't interchangeable with the Effect one: `prepareSessionPglite` (`devsess/pglite`) expects a session whose `path()` returns an `Effect`, and the bridge back to that shape isn't exported from this package. See [devsess/pglite](/reference/pglite).
+
+## `createDevSessions`
+
+```ts
+function createDevSessions(rootDir: string): DevSessionManager
+
+type DevSessionManager = {
+	readonly dir: string
+	getSessions(): Promise<Array<DevSession>>
+	createSession(): Promise<DevSession>
+	getLatestOrCreate(): Promise<DevSession>
+}
+```
+
+Replaces the Effect API's [`DevSessions`](/reference/devsess) and [`makeDevSessionsLayer`](/reference/devsess) for use outside `defineDevCli`. Each call builds its own layer — cheap, no I/O happens until a method runs — and runs each method with `Effect.runPromise` against it.
+
+## `SessionState.slot`
+
+```ts
+namespace SessionState {
+	function slot<T extends Schema.Codec<unknown, unknown, never>>(schema: T): {
+		read: (session: DevSession) => Promise<T['Type'] | null>
+		write: (session: DevSession, data: T['Type']) => Promise<void>
+	}
+}
+```
+
+Same behavior as the [Effect version](/reference/devsess): one shared `sess.json` per session, shallow-merged writes, `read` resolves `null` on both a missing file and a decode failure, and `write` is not atomic and throws on a corrupt file rather than failing typed. Narrower schema constraint: `Schema.Codec<unknown, unknown, never>` instead of `Schema.Top`, because decoding runs with only `NodeServices | Scope` available — a schema that needs extra decoding services doesn't fit here.
+
+## `cli`, `Schema`
+
+Re-exports of `effect/unstable/cli` and `effect/Schema` — so `defineDevCli`'s `options` and `SessionState.slot`'s schema can be declared without adding `effect` as a direct import. Unlike `devsess/async`, the core `devsess` entry point does **not** re-export `Schema` — Effect users import it from `effect` directly.

@@ -3,7 +3,7 @@ import { defineConfig } from 'vocs/config';
 export default defineConfig({
 	title: 'devsess',
 	description:
-		'Effect-based dev sessions, sticky ports, managed subprocesses, and per-session PGlite databases for your local dev scripts.',
+		'Isolated, managed dev servers — each worktree gets its own session, with its own port and its own database.',
 	sidebar: [
 		{
 			text: 'Introduction',
@@ -14,16 +14,50 @@ export default defineConfig({
 			link: '/getting-started',
 		},
 		{
-			text: 'Dev Sessions',
-			link: '/dev-sessions',
+			text: 'defineDevCli',
+			link: '/define-dev-cli',
 		},
 		{
-			text: 'PGlite Adapter',
-			link: '/pglite',
+			text: 'Using without Effect',
+			link: '/without-effect',
 		},
 		{
-			text: 'API Reference',
-			link: '/api',
+			text: 'Recipes',
+			items: [
+				{
+					text: 'Ports that Survive Restarts',
+					link: '/recipes/ports',
+				},
+				{
+					text: 'Running your Dev Server',
+					link: '/recipes/dev-server',
+				},
+				{
+					text: 'A Database per Session',
+					link: '/recipes/pglite',
+				},
+				{
+					text: 'Wiring Services Together',
+					link: '/recipes/wiring-services',
+				},
+			],
+		},
+		{
+			text: 'Reference',
+			items: [
+				{
+					text: 'devsess',
+					link: '/reference/devsess',
+				},
+				{
+					text: 'devsess/async',
+					link: '/reference/async',
+				},
+				{
+					text: 'devsess/pglite',
+					link: '/reference/pglite',
+				},
+			],
 		},
 	],
 });

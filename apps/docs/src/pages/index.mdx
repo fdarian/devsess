@@ -1,53 +1,72 @@
 # devsess
 
-**devsess** is a pure-[Effect](https://effect.website) library for writing persistent, stateful dev scripts in Node. It has two pillars:
+devsess is a library for Node dev scripts, built on [Effect](https://effect.website), that gives every parallel checkout of your project — every git worktree, every AI agent working in its own copy — an isolated dev session.
 
-1. **Dev Sessions** — `defineDevCli` scaffolds a CLI that creates and reuses named session directories, remembers a sticky dev-server port across restarts, manages subprocesses (killing them on exit), and lets services signal each other via "running" files.
-2. **PGlite Adapter** (`devsess/pglite`) — prepares a local [PGlite](https://pglite.dev) database per session, seeded from your Drizzle migrations, so each dev session gets its own isolated Postgres-compatible DB without a running server.
+## What it solves
 
-Don't want to deal with Effect directly? `devsess/async` exposes the same dev-session scaffolding as a plain, Promise-based API.
+You're not running one dev environment — you're running several at once: a couple of git worktrees, and increasingly, a handful of AI agents each working in their own worktree. Point them at the same project and they collide:
 
-## Quickstart
+- Two agents both want port 3000. Only one of them gets it.
+- Two agents point at the same local Postgres. One runs a migration and destroys what the other seeded.
 
-```bash
-bun add devsess effect @effect/platform-node
-```
+devsess resolves this by giving each checkout its own session directory, holding that instance's port, database, and state:
+
+:::file-tree
+- worktree-a
+  - .data
+    - sessions
+      - walrus
+        - sess.json{info="This instance's port and state"}
+        - pglite{info="This instance's database"}
+- worktree-b
+  - .data
+    - sessions
+      - piano
+        - sess.json{info="A different port, a different session"}
+        - pglite
+:::
+
+That isolation falls out of where the data lives, not from any session-switching feature: each checkout is a different `dir`, so each gets its own `<dir>/.data/sessions/`. Within a single checkout, devsess still resumes whichever session was used most recently — there's no flag to pick a specific one.
+
+devsess only targets that layer: local dev scripts on Node. It isn't a process supervisor, a task runner, or a replacement for Docker Compose.
+
+## What you get
+
+- **Ports that are free, come back the same on every restart, and can be discovered by other services.** [Ports that survive restarts →](/recipes/ports)
+- **A per-session Postgres, with no database server to run yourself.** [A database per session →](/recipes/pglite)
+- **State shared between services.** Turborepo orders your tasks; it doesn't share what they learned. devsess does. [Wiring services together →](/recipes/wiring-services)
+- **Ordinary TypeScript around startup.** Do work before or after your server comes up — rewrite `.mcp.json` once you know the port, say. [Running your dev server →](/recipes/dev-server)
+
+## What it looks like
 
 ```ts
-// scripts/dev.ts
 import { join } from 'node:path'
-import { cli, defineDevCli } from 'devsess'
+import { defineDevCli } from 'devsess'
 import { Effect } from 'effect'
 
 const main = defineDevCli({
 	name: 'web',
 	dir: join(import.meta.dirname, '..'),
-	options: {
-		lite: cli.Flag.boolean('lite').pipe(
-			cli.Flag.withDescription('Use a per-session PGlite database'),
-		),
-	},
-	run: (ctx, opts) =>
+	run: (ctx) =>
 		Effect.gen(function* () {
-			const session = yield* ctx.session
-			yield* Effect.logInfo(`[dev] session: ${session.name}`)
-
 			const port = yield* ctx.getStickyPort()
-			const env: Record<string, string> = { PORT: String(port) }
-
-			if (opts.lite) {
-				const litePath = yield* session.path('pglite')
-				env.DATABASE_LITE = 'true'
-				env.DATABASE_LITE_PATH = litePath
-			}
-
-			yield* ctx.runManagedSubprocess('bunx', ['vite'], { env })
+			yield* ctx.runManagedSubprocess('bunx', ['vite'], {
+				env: { PORT: String(port) },
+			})
 		}),
 })
 
 main(process.argv)
 ```
 
-```bash
-bun scripts/dev.ts --lite
-```
+The port comes back the same as last time, if it's still free. `vite` doesn't outlive the script — Ctrl-C kills it too.
+
+## Where to go next
+
+- **[Getting Started](/getting-started)** — install devsess and get the script above running for real.
+- **[defineDevCli](/define-dev-cli)** — the CLI scaffold behind `ctx`, dev sessions, and what runs before your `run` function does.
+- **[devsess reference](/reference/devsess)** — every export, in full, once you're past the basics.
+
+:::tip[Not using Effect?]
+[`devsess/async`](/without-effect) wraps the same primitives in a plain Promise API — same sessions, same ports, same subprocess cleanup.
+:::

@@ -1,0 +1,153 @@
+# A database per session
+
+Two AI agents, each working in their own git worktree, point at the same local Postgres. One runs a migration to try something — it breaks the other one too, same database, same tables, and neither instance knows the other exists. Switching branches by hand causes a smaller version of the same problem: the schema under your feet changes and you didn't touch the database at all.
+
+A shared local database can't tell your worktrees apart. What one instance does to it, every instance sees, whether it asked for that or not.
+
+`devsess/pglite` fixes this by giving every session its own [PGlite](https://pglite.dev) database — a Postgres-compatible database with no server process, seeded from your Drizzle migrations, living inside that session's directory. It persists across restarts of that session and disappears the moment the session does. Each worktree resolves to its own session — a different `dir` means a different `.data/sessions/` tree, see [defineDevCli](/define-dev-cli#dev-sessions) — so each one's database ends up isolated the same way: by living somewhere the others don't look.
+
+## Install
+
+On top of the [core install](/getting-started), `devsess/pglite` needs two peer dependencies:
+
+```bash
+bun add @electric-sql/pglite drizzle-orm
+```
+
+Both are optional peers of `devsess` — nothing else pulls them in.
+
+## Wire it into your dev script
+
+Gate it behind a flag, so the default is still whatever real database you normally use:
+
+```ts
+// scripts/dev.ts
+import { join } from 'node:path'
+import { cli, defineDevCli } from 'devsess'
+import { prepareSessionPglite } from 'devsess/pglite'
+import { Effect } from 'effect'
+
+const main = defineDevCli({
+	name: 'web',
+	dir: join(import.meta.dirname, '..'),
+	options: {
+		lite: cli.Flag.boolean('lite').pipe(
+			cli.Flag.withDescription('Use a per-session PGlite database'),
+		),
+	},
+	run: (ctx, opts) =>
+		Effect.gen(function* () {
+			const session = yield* ctx.session
+			const port = yield* ctx.getStickyPort()
+			const env: Record<string, string> = { PORT: String(port) }
+
+			if (opts.lite) {
+				const db = yield* prepareSessionPglite(session, {
+					migrationsFolder: join(import.meta.dirname, '../drizzle'),
+				})
+				env.DATABASE_LITE = 'true'
+				env.DATABASE_LITE_PATH = db.dataDir
+			}
+
+			yield* ctx.runManagedSubprocess('bunx', ['vite'], { env })
+		}),
+})
+
+main(process.argv)
+```
+
+```bash
+bun scripts/dev.ts --lite
+```
+
+```ts
+prepareSessionPglite(
+	session: DevSession,
+	opts: { migrationsFolder: string },
+): Effect<{ client: PGlite; dataDir: string; dumpPath: string }>
+```
+
+| | |
+| --- | --- |
+| `session` | The session to scope the database to — `yield* ctx.session`. |
+| `opts.migrationsFolder` | Path to your Drizzle migrations folder. |
+| → `client` | A live PGlite connection, usable in this process. |
+| → `dataDir` | `<session>/pglite` — the on-disk path other processes point at. |
+| → `dumpPath` | `<session>/pglite.dump` — the migration snapshot, see below. |
+
+It resolves once the database is fully ready: dump built if it needed to be, migrations applied. The example above forwards `dataDir` to `vite` as `DATABASE_LITE_PATH`, since `vite` is a separate process and can't use `client`.
+
+## Why it's fast on the second run
+
+The first time a session boots with `--lite`, there's no on-disk PGlite data for it yet. `prepareSessionPglite` spins up a scratch, in-memory PGlite, replays every migration in your Drizzle folder against it, and serializes the result to `<session>/pglite.dump`. It then hydrates the session's real data directory, `<session>/pglite`, from that dump instead of running the migrations again by hand.
+
+Once that data directory exists on disk, every later restart of the same session skips the dump entirely — PGlite reopens the directory as-is, and only whatever migrations you've added since get applied on top. The dump's job is seeding a database that doesn't exist yet; a database that already exists is cheaper to open than to rebuild.
+
+That also means the dump doesn't carry over between sessions. It lives at `<session>/pglite.dump`, inside the session directory, so a brand-new session replays your full migration history once, same as the first session did. What it buys you is real, though: cold starts stay cheap as your migration count grows, instead of getting slower every time you add one.
+
+## Branching a database
+
+Your main worktree already has a real, seeded database — you ran the app, signed up, clicked through whatever your seed data covers. A second worktree's session doesn't inherit any of that: `--lite` there replays your migrations into an empty database, same as the first worktree's did the first time.
+
+To start the second worktree from the first one's data instead of from scratch, copy the session's data across by hand — the same idea as [Neon](https://neon.com/)'s database branching, done locally.
+
+:::note[There's no branching API]
+devsess doesn't know these two sessions are related. This is a manual copy of two directories, not a `branchSession` call — there's no `--from-session` flag, no branching export anywhere in the package. Do it again by hand whenever the second worktree needs to catch back up.
+:::
+
+Start the second worktree's dev script once first — Ctrl-C it as soon as it's up — so its session directory actually exists. Then copy the first session's data into it:
+
+:::file-tree
+- my-app
+  - .data
+    - sessions
+      - walrus main worktree, already seeded
+        - pglite{info="Data directory — copy this"}
+        - pglite.dump{info="Copy this too, or the new session rebuilds it from scratch"}
+- my-app-2
+  - .data
+    - sessions
+      - +piano second worktree, freshly created and empty
+:::
+
+```bash
+cp -r my-app/.data/sessions/walrus/pglite my-app-2/.data/sessions/piano/pglite
+cp my-app/.data/sessions/walrus/pglite.dump my-app-2/.data/sessions/piano/pglite.dump
+```
+
+Copy `pglite` — the data directory — before the second worktree's dev script has ever opened a database at that path; `createPgliteFromDump` treats an existing `dataDir` as the whole answer and never looks at the dump once it's there. Copying `pglite.dump` alongside it isn't strictly required — `pglite` alone is a complete database — but it's cheap insurance: delete `piano`'s `pglite` later and the dump saves it from a full migration replay.
+
+Run the second worktree's dev script again after copying, and it opens with all of the first session's data already there. Any migration the second worktree's branch has that the first doesn't gets applied automatically the moment its dev script starts — `prepareSessionPglite` always runs pending migrations after opening, copied data or not.
+
+## When it fails
+
+Everything in `devsess/pglite` fails with a `PgliteError` — always a `message`, and a `cause` when there is one:
+
+```ts
+import { PgliteError } from 'devsess/pglite'
+
+yield* prepareSessionPglite(session, { migrationsFolder }).pipe(
+	Effect.catchTag('PgliteError', (error) =>
+		Effect.logError(`[dev] pglite setup failed: ${error.message}`, error.cause),
+	),
+)
+```
+
+One specific failure is worth knowing by name: if `dataDir` already has tables but no migration journal, `prepareSessionPglite` refuses to guess and fails instead — its message tells you exactly what to delete (`rm -rf <dataDir> <dumpPath>`) so the next run rebuilds cleanly. That happens when a data directory predates this dump scheme, not in normal use.
+
+## Outside a dev session
+
+For tests or one-off scripts, call `openLitePglite` directly with paths of your own instead of a session:
+
+```ts
+import { join } from 'node:path'
+import { openLitePglite } from 'devsess/pglite'
+
+const client = yield* openLitePglite({
+	dataDir: 'memory://',
+	dumpPath: '/tmp/my-app-test.dump',
+	migrationsFolder: join(import.meta.dirname, '../drizzle'),
+})
+```
+
+`dataDir: 'memory://'` never counts as "already on disk," so every call rebuilds from the dump — a fresh database per test run, without replaying your full migration history to get it. Full signature and the rest of the exports are in the [`devsess/pglite` reference](/reference/pglite).

@@ -1,0 +1,100 @@
+# Running your dev server
+
+You Ctrl-C your dev script. The terminal gives your prompt back. Run it again and it fails with something like `address already in use` — or two copies of your dev server end up fighting over the same port. The first `vite` never actually stopped; your script exited, but the process it spawned didn't.
+
+`ctx.runManagedSubprocess` starts your dev server as a child process whose lifetime is tied to your script's, so it can't outlive it.
+
+## What "managed" buys you
+
+`runManagedSubprocess` registers the child against the same [scope `defineDevCli` opens for your whole run](/define-dev-cli#one-scope-for-the-whole-run). When that scope closes — your script exits, throws, or you interrupt it — the child gets killed as part of closing it. You don't call anything to make that happen; it follows from starting the process this way instead of with `node:child_process` directly.
+
+```ts
+// inside run(ctx, opts)
+const port = yield* ctx.getStickyPort()
+
+const exitCode = yield* ctx.runManagedSubprocess('bunx', ['vite'], {
+	env: { PORT: String(port) },
+})
+```
+
+```ts
+ctx.runManagedSubprocess(
+	cmd: string,
+	args: string[],
+	opts?: { env?: Record<string, string> },
+): Effect<ExitCode>
+```
+
+| Parameter | Type | |
+| --- | --- | --- |
+| `cmd` | `string` | The executable to run. |
+| `args` | `string[]` | Arguments passed to it. |
+| `opts.env` | `Record<string, string>` | Extra environment variables, **merged over `process.env`** — they add and override, they don't replace it. |
+
+Resolves to the child's exit code, once the child exits. Full types in the [reference](/reference/devsess).
+
+## Doing work before or after the server starts
+
+`run` is sequential code, not a config file. Nothing stops you from doing work before the call that starts the server, or after it — resolve a port, seed something the server expects to find on disk, write a config file, *then* start it:
+
+```ts
+// scripts/dev.ts
+import { join } from 'node:path'
+import { defineDevCli } from 'devsess'
+import { Effect } from 'effect'
+import { FileSystem } from 'effect/FileSystem'
+
+const main = defineDevCli({
+	name: 'web',
+	dir: join(import.meta.dirname, '..'),
+	run: (ctx) =>
+		Effect.gen(function* () {
+			const port = yield* ctx.getStickyPort()
+
+			const session = yield* ctx.session
+			const uploadsDir = yield* session.path('uploads')
+			// '/my-app/.data/sessions/walrus/uploads'
+
+			const fs = yield* FileSystem
+			yield* fs.makeDirectory(uploadsDir, { recursive: true })
+			yield* fs.writeFileString(
+				join(import.meta.dirname, '../.env.local'),
+				`PORT=${port}\nUPLOADS_DIR=${uploadsDir}\n`,
+			)
+
+			const exitCode = yield* ctx.runManagedSubprocess('bunx', ['vite'], {
+				env: { PORT: String(port), UPLOADS_DIR: uploadsDir },
+			})
+			yield* Effect.logInfo(`vite exited with code ${exitCode}`)
+		}),
+})
+
+main(process.argv)
+```
+
+Everything above `runManagedSubprocess` runs before the server does. Everything below it runs once the server has stopped — the call doesn't resolve until the child exits, which [Behavior worth knowing](#behavior-worth-knowing) below says more about.
+
+## Injecting environment variables
+
+This is how state from elsewhere reaches your server: resolve another service's port, then hand it over as a variable.
+
+```ts
+// inside run(ctx, opts)
+yield* ctx.runManagedSubprocess('bunx', ['vite'], {
+	env: { OTHER_SERVICE_URL: `http://localhost:${otherPort}` },
+})
+```
+
+See [Wiring services together](/recipes/wiring-services) for where `otherPort` comes from.
+
+Because the merge is one-directional, you can add a variable or override one, but you can't unset something your script already inherited.
+
+## Behavior worth knowing
+
+A few things about `runManagedSubprocess(cmd, args, opts?)` are easy to assume wrong:
+
+- **Output is inherited, not captured.** stdin, stdout, and stderr are all `inherit` — the child's output goes straight to your terminal, unchanged. There's no buffered log to read back in your script.
+- **The effect resolves to the child's exit code** — if the child exits on its own. A long-running dev server usually doesn't; more often your script exits or gets interrupted first, which kills the child instead of waiting around for that exit code.
+- **A failed kill is logged, not thrown.** If `proc.kill()` fails during cleanup — the process already exited, say — `runManagedSubprocess` logs it and moves on instead of failing your script.
+
+Watch for `[dev] started: <cmd> <args> (pid=…)` and `[dev] stopping: <cmd> <args> (pid=…)` in your terminal — that's this lifecycle, logged as it happens.
