@@ -49,7 +49,7 @@ The `ctx` object passed to `run`.
 |---|---|
 | `session` | `Effect.Effect<DevSession, PlatformError>` |
 | `getStickyPort()` | `() => Effect.Effect<number, PlatformError \| SessionStateError, FileSystem \| Path>` |
-| `runManagedSubprocess(cmd, args, opts?)` | `(cmd: string, args: string[], opts?: { env?: Record<string, string> }) => Effect.Effect<ExitCode, PlatformError, ChildProcessSpawner>` |
+| `runManagedSubprocess(cmd, args, opts?)` | `(cmd: string, args: string[], opts?: { env?: Record<string, string> }) => Effect.Effect<ExitCode, PlatformError, Scope.Scope \| ChildProcessSpawner>` |
 | `publishRunning(data)` | `(data: unknown) => Effect.Effect<void, PlatformError, Scope.Scope \| FileSystem \| Path>` |
 | `awaitRunning<T>(pkg)` | `(pkg: string) => Effect.Effect<T, PlatformError, FileSystem \| Path>` |
 
