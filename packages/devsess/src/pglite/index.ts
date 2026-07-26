@@ -184,7 +184,21 @@ export const getExpectedMigrationCount = (migrationsFolder: string) =>
 			);
 		}
 		const content = yield* fs.readFileString(journalPath);
-		const journal = JSON.parse(content) as { entries: unknown[] };
+		const journal = yield* Effect.try({
+			try: () => JSON.parse(content) as { entries: unknown[] },
+			catch: (cause) =>
+				new PgliteError({
+					message: `Failed to parse migration journal at ${journalPath}`,
+					cause,
+				}),
+		});
+		if (!Array.isArray(journal.entries)) {
+			return yield* Effect.fail(
+				new PgliteError({
+					message: `Migration journal at ${journalPath} is missing an "entries" array`,
+				}),
+			);
+		}
 		return journal.entries.length;
 	});
 

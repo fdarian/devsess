@@ -78,4 +78,4 @@ Every `devsess/pglite` export fails with this tagged error (`_tag: 'PgliteError'
 | `dumpPgliteToFile` | `(client: PGlite, dest: string) => Effect<void, PgliteError \| PlatformError, FileSystem \| Path>` | Serializes an open client's data dir to `dest`, creating parent directories as needed |
 | `migratePglite` | `(client: PGlite, migrationsFolder: string) => Effect<void, PgliteError, never>` | Runs Drizzle's `migrate()` against the client |
 | `getDbMigrationCount` | `(client: PGlite) => Effect<number, PgliteError, never>` | Counts rows in `drizzle.__drizzle_migrations`; `0` if the table doesn't exist yet |
-| `getExpectedMigrationCount` | `(migrationsFolder: string) => Effect<number, PgliteError \| PlatformError, FileSystem \| Path>` | Counts entries in `<migrationsFolder>/meta/_journal.json`; fails if the journal is missing |
+| `getExpectedMigrationCount` | `(migrationsFolder: string) => Effect<number, PgliteError \| PlatformError, FileSystem \| Path>` | Counts entries in `<migrationsFolder>/meta/_journal.json`; fails if the journal is missing, unparseable, or has no `entries` array |
