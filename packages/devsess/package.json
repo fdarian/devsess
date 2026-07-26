@@ -1,7 +1,7 @@
 {
 	"name": "devsess",
 	"version": "0.0.1",
-	"description": "Scaffold dev scripts with reusable dev sessions and a PGlite + Drizzle adapter, built on Effect.",
+	"description": "Isolated, managed dev servers — each worktree gets its own session, with its own port and its own database",
 	"license": "Apache-2.0",
 	"homepage": "https://github.com/fdarian/devsess#readme",
 	"repository": {
