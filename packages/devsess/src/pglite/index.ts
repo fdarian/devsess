@@ -11,6 +11,22 @@ export class PgliteError extends Data.TaggedError('PgliteError')<{
 	cause?: unknown;
 }> {}
 
+const IN_MEMORY_DATA_DIR = 'memory://';
+
+/**
+ * A persisted data dir that already exists holds a hydrated database, so it is
+ * opened as-is rather than re-seeded from the dump. In-memory clients have
+ * nothing to reuse.
+ */
+const shouldReuseExistingDatabase = (dataDir: string | undefined) =>
+	Effect.gen(function* () {
+		if (!dataDir || dataDir === IN_MEMORY_DATA_DIR) {
+			return false;
+		}
+		const fs = yield* FileSystem;
+		return yield* fs.exists(dataDir);
+	});
+
 export const createPgliteFromDump = (opts: {
 	dataDir?: string;
 	dumpPath: string;
@@ -18,11 +34,8 @@ export const createPgliteFromDump = (opts: {
 	Effect.gen(function* () {
 		const fs = yield* FileSystem;
 
-		if (opts.dataDir && opts.dataDir !== 'memory://') {
-			const dirExists = yield* fs.exists(opts.dataDir);
-			if (dirExists) {
-				return new PGlite(opts.dataDir);
-			}
+		if (yield* shouldReuseExistingDatabase(opts.dataDir)) {
+			return new PGlite(opts.dataDir);
 		}
 
 		const dumpExists = yield* fs.exists(opts.dumpPath);
@@ -181,7 +194,7 @@ export const buildPgliteDump = (opts: {
 	dumpPath: string;
 }) =>
 	Effect.gen(function* () {
-		const client = new PGlite('memory://');
+		const client = new PGlite(IN_MEMORY_DATA_DIR);
 		yield* migratePglite(client, opts.migrationsFolder);
 		yield* dumpPgliteToFile(client, opts.dumpPath);
 		yield* closePglite(client);
