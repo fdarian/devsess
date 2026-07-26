@@ -6,6 +6,10 @@ export default defineConfig({
 		'Effect-based dev sessions, sticky ports, managed subprocesses, and per-session PGlite databases for your local dev scripts.',
 	sidebar: [
 		{
+			text: 'Introduction',
+			link: '/',
+		},
+		{
 			text: 'Getting Started',
 			link: '/getting-started',
 		},
