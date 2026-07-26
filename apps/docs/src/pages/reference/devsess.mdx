@@ -2,10 +2,14 @@
 
 The Effect-based core: `defineDevCli` scaffolds a persistent dev CLI backed by a session store, a sticky port, managed subprocesses, and cross-package running signals. See [defineDevCli](/define-dev-cli) for sessions and the CLI scaffold, and [Running your dev server](/recipes/dev-server) for subprocess lifetime.
 
-Peers: `effect` (`^4.0.0-beta.101`), `@effect/platform-node` (`^4.0.0-beta.101`).
+Peer: `effect` (`^4.0.0-beta.101`). No platform package is a peer — `devsess` depends on neither; supply one yourself as `platform` (below).
 
 ```bash
 bun add devsess effect @effect/platform-node
+```
+
+```bash
+bun add devsess effect @effect/platform-bun
 ```
 
 ## `defineDevCli`
@@ -14,11 +18,12 @@ bun add devsess effect @effect/platform-node
 function defineDevCli(config: {
 	name: string
 	dir: string
+	platform: DevPlatform
 	options?: CommandConfig
 	run: (ctx: RunContext, opts: Record<string, unknown>) => Effect.Effect<
 		void,
 		unknown,
-		DevSessions | NodeServices.NodeServices | Scope.Scope
+		DevSessions | DevServices | Scope.Scope
 	>
 }): (argv: string[]) => void
 ```
@@ -29,15 +34,29 @@ Returns a function — call it with `process.argv`.
 |---|---|---|
 | `name` | `string` | CLI program name, passed to `cli.Command.make` |
 | `dir` | `string` | Project root. Sessions live under `<dir>/.data/sessions/`; the running-signal file lives at `<dir>/.data/running.json` |
+| `platform` | `DevPlatform` | The caller-supplied runtime — see [`DevPlatform`](#devplatform-devservices) below |
 | `options` | `CommandConfig` (optional) | Flag/argument config — the second parameter type of `effect/unstable/cli`'s `Command.make` |
 | `run` | see above | Script body. `opts` is the parsed CLI options |
 
 `CommandConfig` is `typeof cli.Command.make extends (name: string, config: infer C, ...rest) => unknown ? C : never` — in practice, the flag/argument record you'd pass as `Command.make`'s second argument.
 
 On invocation:
-1. Builds a layer from `makeDevSessionsLayer(join(dir, '.data/sessions'))` merged with `NodeServices.layer`.
-2. Runs `run` via `NodeRuntime.runMain(Effect.scoped(...))` — the entire run is one Effect scope, which is why managed subprocesses and running-signal files clean up on exit or interruption.
+1. Builds a layer from `makeDevSessionsLayer(join(dir, '.data/sessions'))` merged with `platform.services`.
+2. Runs `run` via `platform.runMain(Effect.scoped(...))` — the entire run is one Effect scope, which is why managed subprocesses and running-signal files clean up on exit or interruption.
 3. Always resolves the session with `getLatestOrCreate` — there's no flag or option to target a specific session.
+
+## `DevPlatform`, `DevServices`
+
+```ts
+type DevServices = ChildProcessSpawner | FileSystem | Path | Stdio | Terminal
+
+type DevPlatform = {
+	readonly services: Layer.Layer<DevServices>
+	readonly runMain: RunMain // same shape as NodeRuntime.runMain / BunRuntime.runMain
+}
+```
+
+`devsess` needs these core `effect` service tags and a way to run its main Effect, but depends on no platform package to supply them — you pass a `DevPlatform` to `defineDevCli`. Both `@effect/platform-node`'s `{ NodeServices.layer, NodeRuntime.runMain }` and `@effect/platform-bun`'s `{ BunServices.layer, BunRuntime.runMain }` satisfy it, since each platform's service union is a superset of `DevServices`.
 
 `--version` always prints `0.0.0`, regardless of the installed package version — it's hardcoded in the shared CLI scaffolding, not derived from `package.json`.
 
@@ -53,7 +72,7 @@ The `ctx` object passed to `run`.
 | `publishRunning(data)` | `(data: unknown) => Effect.Effect<void, PlatformError, Scope.Scope \| FileSystem \| Path>` |
 | `awaitRunning<T>(pkg)` | `(pkg: string) => Effect.Effect<T, PlatformError, FileSystem \| Path>` |
 
-`ExitCode` (`effect/unstable/process`) is a branded `number`. `FileSystem`, `Path`, and `ChildProcessSpawner` come from `NodeServices.layer`, already provided by `defineDevCli` — you never supply them yourself.
+`ExitCode` (`effect/unstable/process`) is a branded `number`. `FileSystem`, `Path`, and `ChildProcessSpawner` come from the `platform.services` layer you passed to `defineDevCli`, already provided — you never supply them yourself a second time.
 
 **`session`** — a value, not a function. Built once per run as `Effect.cached(sessions.getLatestOrCreate)`, so every `yield* ctx.session` after the first is free and resolves to the identical `DevSession`.
 

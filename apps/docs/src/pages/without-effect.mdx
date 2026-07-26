@@ -2,7 +2,7 @@
 
 You want the session scaffolding — sessions, sticky ports, managed subprocesses — but you don't write Effect, and you're not about to learn it to run a dev script. `devsess/async` is the same machinery as [Getting Started](/getting-started), behind plain `async`/`await` instead of `Effect.gen`.
 
-It still needs `effect` and `@effect/platform-node` sitting in `node_modules` — `devsess/async` is built on the same Effect core underneath, it only keeps that out of your own code. Install is otherwise identical to the [core install](/getting-started).
+It still needs `effect` and a platform package (`@effect/platform-node` or `@effect/platform-bun`) sitting in `node_modules` — `devsess/async` is built on the same Effect core underneath, it only keeps that out of your own code. Install is otherwise identical to the [core install](/getting-started#install).
 
 ## The same script, rewritten
 
@@ -12,11 +12,13 @@ With Effect:
 // scripts/dev.ts
 import { join } from 'node:path'
 import { defineDevCli } from 'devsess'
+import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
 
 const main = defineDevCli({
 	name: 'web',
 	dir: join(import.meta.dirname, '..'),
+	platform: { services: NodeServices.layer, runMain: NodeRuntime.runMain },
 	run: (ctx) =>
 		Effect.gen(function* () {
 			const session = yield* ctx.session
@@ -39,10 +41,12 @@ With `devsess/async`:
 // scripts/dev.ts
 import { join } from 'node:path'
 import { defineDevCli } from 'devsess/async'
+import { NodeRuntime, NodeServices } from '@effect/platform-node'
 
 const main = defineDevCli({
 	name: 'web',
 	dir: join(import.meta.dirname, '..'),
+	platform: { services: NodeServices.layer, runMain: NodeRuntime.runMain },
 	run: async (ctx) => {
 		const session = await ctx.session()
 		console.log(`[dev] session: ${session.name}`)
@@ -58,13 +62,13 @@ const main = defineDevCli({
 main(process.argv)
 ```
 
-No `effect` import, no generator function — otherwise the same script.
+No `effect` import, no generator function — otherwise the same script. `platform` is still built from `effect`'s platform packages either way; see [Getting Started](/getting-started#install).
 
 ## Differences that actually bite
 
 - **`ctx.session` is a function, not a value.** The Effect API hands you an `Effect` you resolve with `yield* ctx.session`. `devsess/async` hands you a function: `await ctx.session()`. Call it as many times as you want — it's still resolved once per run internally, so repeat calls are free, not repeat work.
 - **`session.path(rel)` is synchronous.** No `await`, no `yield*` — it returns a `string` directly: `const dir = session.path('cache')`. It still doesn't create the directory, same as the Effect version.
-- **`createDevSessions(rootDir)` replaces `DevSessions` and `makeDevSessionsLayer`.** No service tag, no Layer — for anything you do outside `defineDevCli`. Its `rootDir` is the sessions directory itself, not your project root: pass `<project>/.data/sessions`, or you'll get session directories somewhere `defineDevCli` never looks.
+- **`createDevSessions(rootDir, services)` replaces `DevSessions` and `makeDevSessionsLayer`.** No service tag, no Layer of your own to build — for anything you do outside `defineDevCli`. Its `rootDir` is the sessions directory itself, not your project root: pass `<project>/.data/sessions`, or you'll get session directories somewhere `defineDevCli` never looks. `services` is the same platform layer you'd pass as `defineDevCli`'s `platform.services` — `NodeServices.layer` or `BunServices.layer`.
 - **`cli` and `Schema` are both re-exported — but only from `devsess/async`.** `import { cli, Schema } from 'devsess/async'` covers flags (`cli.Flag...`) and `SessionState` schemas (`Schema.Struct(...)`) without ever importing `effect`. The core `devsess` package re-exports `cli` too, but not `Schema` — Effect users are already importing from `effect` for everything else, so it doesn't bother.
 
 A script or a test reaches for `createDevSessions` directly:
@@ -73,9 +77,11 @@ A script or a test reaches for `createDevSessions` directly:
 // scripts/seed.ts
 import { join } from 'node:path'
 import { createDevSessions } from 'devsess/async'
+import { NodeServices } from '@effect/platform-node'
 
 const sessions = createDevSessions(
 	join(import.meta.dirname, '..', '.data/sessions'),
+	NodeServices.layer,
 )
 const session = await sessions.getLatestOrCreate()
 ```

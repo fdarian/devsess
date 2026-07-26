@@ -42,6 +42,7 @@ Here it keeps an MCP client config pointed at the right URL:
 // scripts/dev.ts
 import { join } from 'node:path'
 import { defineDevCli } from 'devsess'
+import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 
@@ -50,6 +51,7 @@ const mcpConfigPath = join(import.meta.dirname, '../.mcp.json')
 const main = defineDevCli({
 	name: 'web',
 	dir: join(import.meta.dirname, '..'),
+	platform: { services: NodeServices.layer, runMain: NodeRuntime.runMain },
 	run: (ctx) =>
 		Effect.gen(function* () {
 			const port = yield* ctx.getStickyPort()

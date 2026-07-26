@@ -25,11 +25,13 @@ Gate it behind a flag, so the default is still whatever real database you normal
 import { join } from 'node:path'
 import { cli, defineDevCli } from 'devsess'
 import { prepareSessionPglite } from 'devsess/pglite'
+import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
 
 const main = defineDevCli({
 	name: 'web',
 	dir: join(import.meta.dirname, '..'),
+	platform: { services: NodeServices.layer, runMain: NodeRuntime.runMain },
 	options: {
 		lite: cli.Flag.boolean('lite').pipe(
 			cli.Flag.withDescription('Use a per-session PGlite database'),

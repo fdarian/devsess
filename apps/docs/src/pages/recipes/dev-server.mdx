@@ -41,12 +41,14 @@ Resolves to the child's exit code, once the child exits. Full types in the [refe
 // scripts/dev.ts
 import { join } from 'node:path'
 import { defineDevCli } from 'devsess'
+import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 
 const main = defineDevCli({
 	name: 'web',
 	dir: join(import.meta.dirname, '..'),
+	platform: { services: NodeServices.layer, runMain: NodeRuntime.runMain },
 	run: (ctx) =>
 		Effect.gen(function* () {
 			const port = yield* ctx.getStickyPort()

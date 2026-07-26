@@ -2,25 +2,31 @@
 
 ## Install
 
-Install devsess and its peer dependencies:
+devsess needs `effect`, plus whichever platform you run scripts on — it doesn't declare a peer on either, so install the one you use directly:
 
 ```bash
 bun add devsess effect @effect/platform-node
 ```
 
+```bash
+bun add devsess effect @effect/platform-bun
+```
+
 ## Write the script
 
-Create `scripts/dev.ts`:
+Create `scripts/dev.ts`, passing the platform package you installed as `platform`:
 
 ```ts
 // scripts/dev.ts
 import { join } from 'node:path'
 import { defineDevCli } from 'devsess'
+import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
 
 const main = defineDevCli({
 	name: 'web',
 	dir: join(import.meta.dirname, '..'),
+	platform: { services: NodeServices.layer, runMain: NodeRuntime.runMain },
 	run: (ctx) =>
 		Effect.gen(function* () {
 			const session = yield* ctx.session
@@ -34,6 +40,14 @@ const main = defineDevCli({
 })
 
 main(process.argv)
+```
+
+On Bun, the shape is identical — swap the import and the two values:
+
+```ts
+import { BunRuntime, BunServices } from '@effect/platform-bun'
+
+platform: { services: BunServices.layer, runMain: BunRuntime.runMain },
 ```
 
 This resolves the current session, reads a sticky port for it, and runs `vite` as a managed subprocess bound to that port.

@@ -12,11 +12,13 @@
 // packages/db/scripts/dev.ts
 import { join } from 'node:path'
 import { defineDevCli } from 'devsess'
+import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
 
 const main = defineDevCli({
 	name: 'db',
 	dir: join(import.meta.dirname, '..'),
+	platform: { services: NodeServices.layer, runMain: NodeRuntime.runMain },
 	run: (ctx) =>
 		Effect.gen(function* () {
 			const port = yield* ctx.getStickyPort()
@@ -41,6 +43,7 @@ main(process.argv)
 // apps/web/scripts/dev.ts
 import { join } from 'node:path'
 import { defineDevCli } from 'devsess'
+import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
 
 type DbRunning = { port: number }
@@ -48,6 +51,7 @@ type DbRunning = { port: number }
 const main = defineDevCli({
 	name: 'web',
 	dir: join(import.meta.dirname, '..'),
+	platform: { services: NodeServices.layer, runMain: NodeRuntime.runMain },
 	run: (ctx) =>
 		Effect.gen(function* () {
 			const db = yield* ctx.awaitRunning<DbRunning>('@repo/db')
