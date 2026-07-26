@@ -15,6 +15,7 @@
 		"dev": "bun --filter '*' dev",
 		"docs": "bun --filter docs dev",
 		"check": "turbo run check",
+		"test": "turbo run test",
 		"format": "biome check --write",
 		"changeset": "changeset",
 		"ci:version": "changeset version",
