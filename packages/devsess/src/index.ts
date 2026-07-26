@@ -3,7 +3,7 @@
 export * as cli from 'effect/unstable/cli';
 
 export { defineDevCli } from './dev/define-cli';
-export { SessionState } from './dev/session-state';
+export { SessionState, SessionStateError } from './dev/session-state';
 export {
 	type DevSession,
 	DevSessions,

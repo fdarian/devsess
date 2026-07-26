@@ -150,7 +150,7 @@ Skip the `makeDirectory` call and anything that assumes the path already exists 
 
 **"Most recently touched" is filesystem mtime, not a bookkeeping record.** There's no separate "last active" field. A subprocess writing into the directory, a `SessionState.write` call, anything that touches the session directory refreshes its mtime and keeps it the one `defineDevCli` picks next.
 
-**`SessionState.write` isn't atomic.** There's no temp-file-and-rename step. A `sess.json` corrupted mid-write makes the next `read` or `write` throw instead of failing typed — treat it as a defect, not a recoverable error.
+**`SessionState.write` isn't atomic.** There's no temp-file-and-rename step. A `sess.json` corrupted mid-write makes the next `write` fail with a `SessionStateError` (`devsess`'s tagged error for unparseable session state) — `read` keeps degrading the same corruption to `null` instead.
 
 **`--version` always prints `0.0.0`.** It's hardcoded in the CLI scaffolding, unrelated to the version of `devsess` you have installed.
 

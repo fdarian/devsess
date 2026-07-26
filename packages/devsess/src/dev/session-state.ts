@@ -1,8 +1,13 @@
-import { Effect } from 'effect';
+import { Data, Effect } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { Path } from 'effect/Path';
 import * as S from 'effect/Schema';
 import type { DevSession } from '../dev-sessions';
+
+export class SessionStateError extends Data.TaggedError('SessionStateError')<{
+	message: string;
+	cause?: unknown;
+}> {}
 
 function getPath(session: DevSession) {
 	return session.path('sess.json');
@@ -39,10 +44,14 @@ export namespace SessionState {
 					const filePath = yield* getPath(session);
 					yield* fs.makeDirectory(path.dirname(filePath), { recursive: true });
 					const existing = yield* read(filePath);
-					const parsed = JSON.parse(existing ?? '{}') as Record<
-						string,
-						unknown
-					>;
+					const parsed = yield* Effect.try({
+						try: () => JSON.parse(existing ?? '{}') as Record<string, unknown>,
+						catch: (cause) =>
+							new SessionStateError({
+								message: `Failed to parse ${filePath} as JSON`,
+								cause,
+							}),
+					});
 					const merged = { ...parsed, ...(data as Record<string, unknown>) };
 					yield* fs.writeFileString(filePath, JSON.stringify(merged));
 				}),

@@ -78,7 +78,9 @@ namespace SessionState {
 }
 ```
 
-Same behavior as the [Effect version](/reference/devsess): one shared `sess.json` per session, shallow-merged writes, `read` resolves `null` on both a missing file and a decode failure, and `write` is not atomic and throws on a corrupt file rather than failing typed. Narrower schema constraint: `Schema.Codec<unknown, unknown, never>` instead of `Schema.Top`, because decoding runs with only `NodeServices | Scope` available — a schema that needs extra decoding services doesn't fit here.
+Same behavior as the [Effect version](/reference/devsess): one shared `sess.json` per session, shallow-merged writes, `read` resolves `null` on both a missing file and a decode failure, and `write` is not atomic — a corrupt file makes it reject with a `SessionStateError` instead of merging into it. Narrower schema constraint: `Schema.Codec<unknown, unknown, never>` instead of `Schema.Top`, because decoding runs with only `NodeServices | Scope` available — a schema that needs extra decoding services doesn't fit here.
+
+`devsess/async` re-exports `SessionStateError` (the same class as [the Effect version](/reference/devsess)) so you can identify it without importing from `devsess` directly, e.g. `error instanceof SessionStateError` or `error._tag === 'SessionStateError'`.
 
 ## `cli`, `Schema`
 
