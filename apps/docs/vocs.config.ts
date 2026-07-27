@@ -74,6 +74,5 @@ export default defineConfig({
 			],
 		},
 	],
-	renderStrategy: 'full-static',
 	socials: [{ icon: 'github', link: 'https://github.com/fdarian/devsess' }],
 });
