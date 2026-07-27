@@ -1,9 +1,19 @@
-import { defineConfig } from 'vocs/config';
+import { readFileSync } from 'node:fs';
+import { Changelog, defineConfig } from 'vocs/config';
+
+const devsessVersion = JSON.parse(
+	readFileSync(
+		new URL('../../packages/devsess/package.json', import.meta.url),
+		'utf-8',
+	),
+).version;
 
 export default defineConfig({
 	title: 'devsess',
 	description:
 		'Isolated, managed dev servers — each worktree gets its own session, with its own port and its own database.',
+	changelog: Changelog.github({ repo: 'fdarian/devsess' }),
+	topNav: [{ text: `v${devsessVersion}`, link: '/changelog' }],
 	sidebar: [
 		{
 			text: 'Introduction',
@@ -41,6 +51,10 @@ export default defineConfig({
 					link: '/recipes/wiring-services',
 				},
 			],
+		},
+		{
+			text: 'Changelog',
+			link: '/changelog',
 		},
 		{
 			text: 'Reference',
