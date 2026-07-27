@@ -16,3 +16,5 @@ Monorepo for the `devsess` library — Effect-based dev-session scaffolding plus
 
 ## Releasing
 Push to `main` drives Changesets; publishing is OIDC trusted publishing (no npm token). See `.github/workflows/release.yml`.
+
+A changeset body is a changelog entry, not a PR description — one line by default, expanded only when a consumer must act to upgrade (breaking change, migration, new install requirement). Rationale goes in the PR. Never use `##` headings: the default `@changesets/cli/changelog` formatter renders the whole body as one list item, so headings end up nested inside a bullet. One changeset per logical change, not per PR.
