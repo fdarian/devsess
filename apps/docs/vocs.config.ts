@@ -1,12 +1,9 @@
-import { readFileSync } from 'node:fs';
 import { Changelog, defineConfig } from 'vocs/config';
+import devsessPackageJson from '../../packages/devsess/package.json' with {
+	type: 'json',
+};
 
-const devsessVersion = JSON.parse(
-	readFileSync(
-		new URL('../../packages/devsess/package.json', import.meta.url),
-		'utf-8',
-	),
-).version;
+const devsessVersion = devsessPackageJson.version;
 
 export default defineConfig({
 	title: 'devsess',
