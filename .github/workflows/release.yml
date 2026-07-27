@@ -20,6 +20,7 @@ name: release
 on:
   push:
     branches: [main]
+    paths: ['.changeset/**']
 
 concurrency:
   group: release-${{ github.ref }}
