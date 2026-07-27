@@ -1,6 +1,7 @@
+import { join } from 'node:path';
 import { NodeServices } from '@effect/platform-node';
 import { Layer } from 'effect';
-import { makeDevSessionsLayer } from '../../src/dev-sessions';
+import { DevSessions } from '../../src/dev-sessions';
 
 /**
  * `DevSessions` rooted at `dir`, with the Node platform services (`FileSystem`, `Path`,
@@ -8,4 +9,12 @@ import { makeDevSessionsLayer } from '../../src/dev-sessions';
  * dir with `makeTempDir` first, then `Effect.provide(makeTestDevSessionsLayer(dir))`.
  */
 export const makeTestDevSessionsLayer = (dir: string) =>
-	makeDevSessionsLayer(dir).pipe(Layer.provideMerge(NodeServices.layer));
+	DevSessions.layerAt(dir).pipe(Layer.provideMerge(NodeServices.layer));
+
+/**
+ * Where `DevSessions.layerAt(rootDir)` (and thus `makeTestDevSessionsLayer`) actually
+ * stores session directories — tests that poke the filesystem directly (rather than
+ * going through `getSessions`/`createSession`) need this to find them.
+ */
+export const sessionsStorageDir = (rootDir: string) =>
+	join(rootDir, '.data', 'sessions');

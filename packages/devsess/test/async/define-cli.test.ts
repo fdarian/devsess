@@ -204,10 +204,7 @@ describe('defineDevCli (async)', () => {
 				run: async (ctx) => (await ctx.session()).name,
 			});
 
-			const manager = createDevSessions(
-				join(rootDir, '.data/sessions'),
-				NodeServices.layer,
-			);
+			const manager = createDevSessions(rootDir, NodeServices.layer);
 			const reused = await manager.getLatestOrCreate();
 
 			expect(reused.name).toBe(cliSessionName);

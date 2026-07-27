@@ -13,17 +13,30 @@ import * as pkgPglite from 'devsess/pglite';
  */
 describe('the root entrypoint (.)', () => {
 	it('exports the Effect-based API', () => {
-		expect(typeof pkg.defineDevCli).toBe('function');
 		expect(typeof pkg.DevSessions).toBe('function');
-		expect(typeof pkg.makeDevSessionsLayer).toBe('function');
+		expect(typeof pkg.DevSessions.layer).toBe('object');
+		expect(typeof pkg.DevSessions.layerAt).toBe('function');
+		expect(typeof pkg.CurrentSession).toBe('function');
+		expect(typeof pkg.CurrentSession.layer).toBe('object');
+		expect(typeof pkg.CurrentSession.layerOf).toBe('function');
+		expect(typeof pkg.ProjectRootNotFoundError).toBe('function');
+		expect(typeof pkg.getStickyPort).toBe('function');
+		expect(typeof pkg.runManagedSubprocess).toBe('function');
+		expect(typeof pkg.publishRunning).toBe('function');
+		expect(typeof pkg.awaitRunning).toBe('function');
 		expect(typeof pkg.SessionState).toBe('object');
 		expect(typeof pkg.SessionState.slot).toBe('function');
 		expect(typeof pkg.SessionStateError).toBe('function');
-		expect(typeof pkg.cli).toBe('object');
 	});
 
 	it('deliberately does not re-export Schema (unlike ./async)', () => {
 		expect('Schema' in pkg).toBe(false);
+	});
+
+	it('no longer re-exports defineDevCli, cli, or DevPlatform/DevServices', () => {
+		expect('defineDevCli' in pkg).toBe(false);
+		expect('cli' in pkg).toBe(false);
+		expect('makeDevSessionsLayer' in pkg).toBe(false);
 	});
 });
 
