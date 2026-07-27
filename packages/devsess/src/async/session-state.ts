@@ -1,7 +1,7 @@
 import type { Layer } from 'effect';
 import type * as S from 'effect/Schema';
 import { SessionState as EffectSessionState } from '../dev/session-state';
-import type { DevServices } from '../platform';
+import type { DevServices } from './platform';
 import { run } from './run';
 import { type DevSession, unwrapSession } from './session';
 

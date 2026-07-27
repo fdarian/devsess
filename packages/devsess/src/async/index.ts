@@ -5,8 +5,8 @@ export { Schema } from 'effect';
 export * as cli from 'effect/unstable/cli';
 
 export { SessionStateError } from '../dev/session-state';
-export type { DevPlatform, DevServices } from '../platform';
 export { defineDevCli } from './define-cli';
 export { createDevSessions, type DevSessionManager } from './dev-sessions';
+export type { DevPlatform, DevServices } from './platform';
 export type { DevSession } from './session';
 export { SessionState } from './session-state';

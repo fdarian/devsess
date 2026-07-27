@@ -1,8 +1,7 @@
-import { join } from 'node:path';
 import { Effect, Layer, type Scope } from 'effect';
 import * as cli from 'effect/unstable/cli';
-import { type DevSessions, makeDevSessionsLayer } from '../dev-sessions';
-import type { DevPlatform, DevServices } from '../platform';
+import { DevSessions } from '../dev-sessions';
+import type { DevPlatform, DevServices } from './platform';
 
 export type CommandConfig = typeof cli.Command.make extends (
 	name: string,
@@ -17,11 +16,9 @@ type CliHandler = (
 ) => Effect.Effect<void, unknown, DevSessions | DevServices | Scope.Scope>;
 
 /**
- * Shared CLI scaffolding used by both `defineDevCli` facades (`src/dev/define-cli.ts`
- * for Effect, `src/async/define-cli.ts` for plain-async): builds the `cli.Command`,
- * wires the per-project `DevSessions` + caller-supplied platform services layer, and
- * runs it via `platform.runMain`. Only the effectful `makeHandler` differs between the
- * two.
+ * CLI scaffolding for the plain-async `defineDevCli` facade (`src/async/define-cli.ts`):
+ * builds the `cli.Command`, wires the per-project `DevSessions` + caller-supplied
+ * platform services layer, and runs it via `platform.runMain`.
  */
 export const runDevCli = (config: {
 	name: string;
@@ -35,7 +32,7 @@ export const runDevCli = (config: {
 	);
 
 	return (argv) => {
-		const layer = makeDevSessionsLayer(join(config.dir, '.data/sessions')).pipe(
+		const layer = DevSessions.layerAt(config.dir).pipe(
 			Layer.provideMerge(config.platform.services),
 		);
 
