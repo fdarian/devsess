@@ -14,8 +14,8 @@ export default defineConfig({
 			link: '/getting-started',
 		},
 		{
-			text: 'defineDevCli',
-			link: '/define-dev-cli',
+			text: 'Writing a dev CLI',
+			link: '/writing-a-dev-cli',
 		},
 		{
 			text: 'Using without Effect',

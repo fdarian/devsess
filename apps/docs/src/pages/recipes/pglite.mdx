@@ -4,7 +4,7 @@ Two AI agents, each working in their own git worktree, point at the same local P
 
 A shared local database can't tell your worktrees apart. What one instance does to it, every instance sees, whether it asked for that or not.
 
-`devsess/pglite` fixes this by giving every session its own [PGlite](https://pglite.dev) database — a Postgres-compatible database with no server process, seeded from your Drizzle migrations, living inside that session's directory. It persists across restarts of that session and disappears the moment the session does. Each worktree resolves to its own session — a different `dir` means a different `.data/sessions/` tree, see [defineDevCli](/define-dev-cli#dev-sessions) — so each one's database ends up isolated the same way: by living somewhere the others don't look.
+`devsess/pglite` fixes this by giving every session its own [PGlite](https://pglite.dev) database — a Postgres-compatible database with no server process, seeded from your Drizzle migrations, living inside that session's directory. It persists across restarts of that session and disappears the moment the session does. Each worktree resolves to its own session — a different project root means a different `.data/sessions/` tree, see [Writing a dev CLI](/writing-a-dev-cli#dev-sessions) — so each one's database ends up isolated the same way: by living somewhere the others don't look.
 
 ## Install
 
@@ -22,40 +22,44 @@ Gate it behind a flag, so the default is still whatever real database you normal
 
 ```ts
 // scripts/dev.ts
-import { join } from 'node:path'
-import { cli, defineDevCli } from 'devsess'
+import { CurrentSession, DevSessions, getStickyPort, runManagedSubprocess } from 'devsess'
 import { prepareSessionPglite } from 'devsess/pglite'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
+import { Command, Flag } from 'effect/unstable/cli'
 
-const main = defineDevCli({
-	name: 'web',
-	dir: join(import.meta.dirname, '..'),
-	platform: { services: NodeServices.layer, runMain: NodeRuntime.runMain },
-	options: {
-		lite: cli.Flag.boolean('lite').pipe(
-			cli.Flag.withDescription('Use a per-session PGlite database'),
+const web = Command.make(
+	'web',
+	{
+		lite: Flag.boolean('lite').pipe(
+			Flag.withDescription('Use a per-session PGlite database'),
 		),
 	},
-	run: (ctx, opts) =>
+	(opts) =>
 		Effect.gen(function* () {
-			const session = yield* ctx.session
-			const port = yield* ctx.getStickyPort()
+			const sessions = yield* DevSessions
+			const session = yield* CurrentSession
+			const port = yield* getStickyPort(session)
 			const env: Record<string, string> = { PORT: String(port) }
 
 			if (opts.lite) {
 				const db = yield* prepareSessionPglite(session, {
-					migrationsFolder: join(import.meta.dirname, '../drizzle'),
+					migrationsFolder: sessions.path('drizzle'),
 				})
 				env.DATABASE_LITE = 'true'
 				env.DATABASE_LITE_PATH = db.dataDir
 			}
 
-			yield* ctx.runManagedSubprocess('bunx', ['vite'], { env })
-		}),
-})
+			yield* runManagedSubprocess('bunx', ['vite'], { env })
+		}).pipe(Effect.provide(CurrentSession.layer)),
+)
 
-main(process.argv)
+Command.run(web, { version: '0.1.0' }).pipe(
+	Effect.provide(DevSessions.layer),
+	Effect.provide(NodeServices.layer),
+	Effect.scoped,
+	NodeRuntime.runMain,
+)
 ```
 
 ```bash
@@ -71,7 +75,7 @@ prepareSessionPglite(
 
 | | |
 | --- | --- |
-| `session` | The session to scope the database to — `yield* ctx.session`. |
+| `session` | The session to scope the database to — `yield* CurrentSession`. |
 | `opts.migrationsFolder` | Path to your Drizzle migrations folder. |
 | `opts.migrationsTable` / `opts.migrationsSchema` | Optional — only set these if your `drizzle.config.ts` overrides Drizzle's default migration bookkeeping location. See the [reference](/reference/pglite) for defaults. |
 | → `client` | A live PGlite connection, usable in this process. |

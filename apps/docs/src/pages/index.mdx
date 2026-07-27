@@ -40,25 +40,27 @@ devsess only targets that layer: local dev scripts on Node. It isn't a process s
 ## What it looks like
 
 ```ts
-import { join } from 'node:path'
-import { defineDevCli } from 'devsess'
+import { CurrentSession, DevSessions, getStickyPort, runManagedSubprocess } from 'devsess'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
+import { Command } from 'effect/unstable/cli'
 
-const main = defineDevCli({
-	name: 'web',
-	dir: join(import.meta.dirname, '..'),
-	platform: { services: NodeServices.layer, runMain: NodeRuntime.runMain },
-	run: (ctx) =>
-		Effect.gen(function* () {
-			const port = yield* ctx.getStickyPort()
-			yield* ctx.runManagedSubprocess('bunx', ['vite'], {
-				env: { PORT: String(port) },
-			})
-		}),
-})
+const web = Command.make('web', {}, () =>
+	Effect.gen(function* () {
+		const session = yield* CurrentSession
+		const port = yield* getStickyPort(session)
+		yield* runManagedSubprocess('bunx', ['vite'], {
+			env: { PORT: String(port) },
+		})
+	}).pipe(Effect.provide(CurrentSession.layer)),
+)
 
-main(process.argv)
+Command.run(web, { version: '0.1.0' }).pipe(
+	Effect.provide(DevSessions.layer),
+	Effect.provide(NodeServices.layer),
+	Effect.scoped,
+	NodeRuntime.runMain,
+)
 ```
 
 The port comes back the same as last time, if it's still free. `vite` doesn't outlive the script — Ctrl-C kills it too.
@@ -66,7 +68,7 @@ The port comes back the same as last time, if it's still free. `vite` doesn't ou
 ## Where to go next
 
 - **[Getting Started](/getting-started)** — install devsess and get the script above running for real.
-- **[defineDevCli](/define-dev-cli)** — the CLI scaffold behind `ctx`, dev sessions, and what runs before your `run` function does.
+- **[Writing a dev CLI](/writing-a-dev-cli)** — `DevSessions`, `CurrentSession`, dev sessions, and what a scope buys you.
 - **[devsess reference](/reference/devsess)** — every export, in full, once you're past the basics.
 
 :::tip[Not using Effect?]

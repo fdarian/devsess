@@ -1,80 +1,83 @@
 # Wiring services together
 
-`apps/web` needs to talk to `packages/db` — specifically, whatever port `packages/db` landed on this run, since `getStickyPort()` decides that at runtime, not you. [Turborepo](https://turborepo.dev/) will happily run `packages/db`'s dev task before `apps/web`'s, but running first isn't the same as handing anything off: Turborepo schedules tasks and caches their output — it doesn't share state between them. `apps/web` still has no way to find out what port the other task's server actually bound to.
+`apps/web` needs to talk to `packages/db` — specifically, whatever port `packages/db` landed on this run, since `getStickyPort` decides that at runtime, not you. [Turborepo](https://turborepo.dev/) will happily run `packages/db`'s dev task before `apps/web`'s, but running first isn't the same as handing anything off: Turborepo schedules tasks and caches their output — it doesn't share state between them. `apps/web` still has no way to find out what port the other task's server actually bound to.
 
-`ctx.publishRunning` and `ctx.awaitRunning` are that hand-off. One script publishes whatever JSON describes its own readiness; another reads it back — waiting for it to show up, if it has to.
+`publishRunning` and `awaitRunning` are that hand-off. One script publishes whatever JSON describes its own readiness; another reads it back — waiting for it to show up, if it has to.
 
 ## Publish on one side, await on the other
 
-`packages/db`'s dev script announces readiness with `ctx.publishRunning`:
+`packages/db`'s dev script announces readiness with `publishRunning`:
 
 ```ts
 // packages/db/scripts/dev.ts
-import { join } from 'node:path'
-import { defineDevCli } from 'devsess'
+import { CurrentSession, DevSessions, getStickyPort, publishRunning } from 'devsess'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
+import { Command } from 'effect/unstable/cli'
 
-const main = defineDevCli({
-	name: 'db',
-	dir: join(import.meta.dirname, '..'),
-	platform: { services: NodeServices.layer, runMain: NodeRuntime.runMain },
-	run: (ctx) =>
-		Effect.gen(function* () {
-			const port = yield* ctx.getStickyPort()
+const db = Command.make('db', {}, () =>
+	Effect.gen(function* () {
+		const session = yield* CurrentSession
+		const port = yield* getStickyPort(session)
 
-			// ...however packages/db decides it's actually ready: run
-			// migrations, start its own managed subprocess, whatever applies.
+		// ...however packages/db decides it's actually ready: run
+		// migrations, start its own managed subprocess, whatever applies.
 
-			yield* ctx.publishRunning({ port })
+		yield* publishRunning({ port })
 
-			// The signal disappears the moment this script exits — keep it
-			// running for as long as packages/db should count as up.
-			yield* Effect.never
-		}),
-})
+		// The signal disappears the moment this script exits — keep it
+		// running for as long as packages/db should count as up.
+		yield* Effect.never
+	}).pipe(Effect.provide(CurrentSession.layer)),
+)
 
-main(process.argv)
+Command.run(db, { version: '0.1.0' }).pipe(
+	Effect.provide(DevSessions.layer),
+	Effect.provide(NodeServices.layer),
+	Effect.scoped,
+	NodeRuntime.runMain,
+)
 ```
 
-`apps/web`'s dev script reads that port back with `ctx.awaitRunning`, and builds its own connection string from it:
+`apps/web`'s dev script reads that port back with `awaitRunning`, and builds its own connection string from it:
 
 ```ts
 // apps/web/scripts/dev.ts
-import { join } from 'node:path'
-import { defineDevCli } from 'devsess'
+import { DevSessions, awaitRunning, runManagedSubprocess } from 'devsess'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
+import { Command } from 'effect/unstable/cli'
 
 type DbRunning = { port: number }
 
-const main = defineDevCli({
-	name: 'web',
-	dir: join(import.meta.dirname, '..'),
-	platform: { services: NodeServices.layer, runMain: NodeRuntime.runMain },
-	run: (ctx) =>
-		Effect.gen(function* () {
-			const db = yield* ctx.awaitRunning<DbRunning>('@repo/db')
-			// { port: 55211 } — whatever packages/db published
+const web = Command.make('web', {}, () =>
+	Effect.gen(function* () {
+		const db = yield* awaitRunning<DbRunning>('@repo/db')
+		// { port: 55211 } — whatever packages/db published
 
-			yield* ctx.runManagedSubprocess('bunx', ['vite'], {
-				env: { DATABASE_URL: `postgres://localhost:${db.port}/app` },
-			})
-		}),
-})
+		yield* runManagedSubprocess('bunx', ['vite'], {
+			env: { DATABASE_URL: `postgres://localhost:${db.port}/app` },
+		})
+	}),
+)
 
-main(process.argv)
+Command.run(web, { version: '0.1.0' }).pipe(
+	Effect.provide(DevSessions.layer),
+	Effect.provide(NodeServices.layer),
+	Effect.scoped,
+	NodeRuntime.runMain,
+)
 ```
 
 ```ts
-ctx.publishRunning(data: unknown): Effect<void>
-ctx.awaitRunning<T>(pkg: string): Effect<T>
+publishRunning(data: unknown): Effect<void>
+awaitRunning<T>(pkg: string): Effect<T>
 ```
 
 | | |
 | --- | --- |
-| `data` | Any JSON-serializable value. Written to `<dir>/.data/running.json`. |
-| `pkg` | A package name, resolved via `require.resolve`. A spec starting with `.` or `/` is treated as a path relative to your `dir` instead. |
+| `data` | Any JSON-serializable value. Written to `<root>/.data/running.json`, `<root>` being whatever `DevSessions` resolved. |
+| `pkg` | A package name, resolved via `require.resolve`. A spec starting with `.` or `/` is treated as a path relative to `<root>` instead. |
 | `T` | What you expect the publisher wrote — unchecked, so it's an assertion, not a validation. |
 
 Whatever JSON you pass to `publishRunning` comes back out of `awaitRunning` unchanged — a port here, but equally a connection string, a signing key, or a tunnel URL generated once per session. Handing it to your own server afterward is the same `env` mechanism as any other startup value — see [Running your dev server](/recipes/dev-server).
@@ -85,8 +88,8 @@ Whatever JSON you pass to `publishRunning` comes back out of `awaitRunning` unch
 
 ## Easy to get wrong
 
-- **It isn't session-scoped.** The signal file lives at `<dir>/.data/running.json`, where `dir` is the *project directory* you pass to `defineDevCli` — `packages/db`'s repo root, not any session directory inside it. [Dev sessions](/define-dev-cli#dev-sessions) and running signals are unrelated mechanisms that happen to both live under `.data/`.
-- **`awaitRunning` takes a package name, not a path — unless you want a path.** `ctx.awaitRunning('@repo/db')` resolves `@repo/db` via `require.resolve('@repo/db/package.json')`, the same way any other Node import would — so `@repo/db` needs to actually resolve from `apps/web`, which usually means it's a workspace dependency of `apps/web`, or hoisted there by your package manager. A spec starting with `.` or `/` skips that and resolves as a path relative to `dir` instead, e.g. `ctx.awaitRunning('../../packages/db')`.
+- **It isn't session-scoped.** The signal file lives at `<root>/.data/running.json`, where `<root>` is whatever `DevSessions` resolved — `packages/db`'s repo root, not any session directory inside it. [Dev sessions](/writing-a-dev-cli#dev-sessions) and running signals are unrelated mechanisms that happen to both live under `.data/`.
+- **`awaitRunning` takes a package name, not a path — unless you want a path.** `awaitRunning('@repo/db')` resolves `@repo/db` via `require.resolve('@repo/db/package.json')`, the same way any other Node import would — so `@repo/db` needs to actually resolve from `apps/web`, which usually means it's a workspace dependency of `apps/web`, or hoisted there by your package manager. A spec starting with `.` or `/` skips that and resolves as a path relative to `<root>` instead, e.g. `awaitRunning('../../packages/db')`.
 - **`awaitRunning` works even if the dependency has never run.** `packages/db`'s `.data` directory might not exist yet — `awaitRunning` creates it before watching, so a first-ever run of `apps/web` waits normally instead of crashing.
 - **There's no timeout.** `awaitRunning` waits forever, by design. If `apps/web` hangs instead of crashing, check whether `packages/db` ever actually calls `publishRunning` — a script that never gets there looks identical to one that's still starting up.
 - **Publishing is what makes this trustworthy.** `publishRunning` writes to a temp file and renames it into place, so `awaitRunning` never reads a half-written file — and it deletes that file the moment its own scope closes, whenever `packages/db`'s script exits, for any reason. A crashed or Ctrl-C'd publisher can't leave a stale "ready" file behind for `apps/web` to trust.

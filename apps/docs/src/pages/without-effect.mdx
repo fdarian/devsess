@@ -10,29 +10,30 @@ With Effect:
 
 ```ts
 // scripts/dev.ts
-import { join } from 'node:path'
-import { defineDevCli } from 'devsess'
+import { CurrentSession, DevSessions, getStickyPort, runManagedSubprocess } from 'devsess'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
+import { Command } from 'effect/unstable/cli'
 
-const main = defineDevCli({
-	name: 'web',
-	dir: join(import.meta.dirname, '..'),
-	platform: { services: NodeServices.layer, runMain: NodeRuntime.runMain },
-	run: (ctx) =>
-		Effect.gen(function* () {
-			const session = yield* ctx.session
-			yield* Effect.logInfo(`[dev] session: ${session.name}`)
+const web = Command.make('web', {}, () =>
+	Effect.gen(function* () {
+		const session = yield* CurrentSession
+		yield* Effect.logInfo(`[dev] session: ${session.name}`)
 
-			const port = yield* ctx.getStickyPort()
+		const port = yield* getStickyPort(session)
 
-			yield* ctx.runManagedSubprocess('bunx', ['vite'], {
-				env: { PORT: String(port) },
-			})
-		}),
-})
+		yield* runManagedSubprocess('bunx', ['vite'], {
+			env: { PORT: String(port) },
+		})
+	}).pipe(Effect.provide(CurrentSession.layer)),
+)
 
-main(process.argv)
+Command.run(web, { version: '0.1.0' }).pipe(
+	Effect.provide(DevSessions.layer),
+	Effect.provide(NodeServices.layer),
+	Effect.scoped,
+	NodeRuntime.runMain,
+)
 ```
 
 With `devsess/async`:
@@ -66,10 +67,10 @@ No `effect` import, no generator function — otherwise the same script. `platfo
 
 ## Differences that actually bite
 
-- **`ctx.session` is a function, not a value.** The Effect API hands you an `Effect` you resolve with `yield* ctx.session`. `devsess/async` hands you a function: `await ctx.session()`. Call it as many times as you want — it's still resolved once per run internally, so repeat calls are free, not repeat work.
+- **`ctx.session` is a function, not a value.** The Effect API hands you `CurrentSession`, a service tag you resolve with `yield* CurrentSession`. `devsess/async` hands you a function: `await ctx.session()`. Call it as many times as you want — it's still resolved once per run internally, so repeat calls are free, not repeat work.
 - **`session.path(rel)` is synchronous.** No `await`, no `yield*` — it returns a `string` directly: `const dir = session.path('cache')`. It still doesn't create the directory, same as the Effect version.
-- **`createDevSessions(rootDir, services)` replaces `DevSessions` and `makeDevSessionsLayer`.** No service tag, no Layer of your own to build — for anything you do outside `defineDevCli`. Its `rootDir` is the sessions directory itself, not your project root: pass `<project>/.data/sessions`, or you'll get session directories somewhere `defineDevCli` never looks. `services` is the same platform layer you'd pass as `defineDevCli`'s `platform.services` — `NodeServices.layer` or `BunServices.layer`.
-- **`cli` and `Schema` are both re-exported — but only from `devsess/async`.** `import { cli, Schema } from 'devsess/async'` covers flags (`cli.Flag...`) and `SessionState` schemas (`Schema.Struct(...)`) without ever importing `effect`. The core `devsess` package re-exports `cli` too, but not `Schema` — Effect users are already importing from `effect` for everything else, so it doesn't bother.
+- **`createDevSessions(rootDir, services)` replaces `DevSessions` and `CurrentSession`.** No service tag, no Layer of your own to build — for anything you do outside `defineDevCli`. `rootDir` is your project root, same convention as the Effect API's `DevSessions.layerAt(rootDir)` — sessions live under `<rootDir>/.data/sessions`, so don't pre-join that path yourself. `services` is the same platform layer you'd pass as `defineDevCli`'s `platform.services` — `NodeServices.layer` or `BunServices.layer`.
+- **`cli` and `Schema` are both re-exported — but only from `devsess/async`.** `import { cli, Schema } from 'devsess/async'` covers flags (`cli.Flag...`) and `SessionState` schemas (`Schema.Struct(...)`) without ever importing `effect`. The core `devsess` package doesn't re-export either — Effect users build a `Command` straight from `effect/unstable/cli` and import `Schema` from `effect` directly.
 
 A script or a test reaches for `createDevSessions` directly:
 
@@ -79,10 +80,7 @@ import { join } from 'node:path'
 import { createDevSessions } from 'devsess/async'
 import { NodeServices } from '@effect/platform-node'
 
-const sessions = createDevSessions(
-	join(import.meta.dirname, '..', '.data/sessions'),
-	NodeServices.layer,
-)
+const sessions = createDevSessions(join(import.meta.dirname, '..'), NodeServices.layer)
 const session = await sessions.getLatestOrCreate()
 ```
 
@@ -96,4 +94,4 @@ const session = await sessions.getLatestOrCreate()
 
 If your dev script needs [a database per session](/recipes/pglite), that piece has to be written against the Effect API. You can still write the rest of the script with `devsess/async` and drop into `Effect.gen`/`Effect.runPromise` for that one piece — but at that point you're back to an `effect` import, at least in that one file.
 
-Everything else carries over exactly: [dev sessions](/define-dev-cli#dev-sessions) (including `SessionState`), [sticky ports](/recipes/ports), [managed subprocess](/recipes/dev-server) lifetime, and [running signals](/recipes/wiring-services). Same underlying code, wrapped in Promises instead of Effects.
+Everything else carries over exactly: [dev sessions](/writing-a-dev-cli#dev-sessions) (including `SessionState`), [sticky ports](/recipes/ports), [managed subprocess](/recipes/dev-server) lifetime, and [running signals](/recipes/wiring-services). Same underlying code, wrapped in Promises instead of Effects.

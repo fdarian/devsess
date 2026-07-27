@@ -1,0 +1,174 @@
+# Writing a dev CLI
+
+devsess doesn't wrap `effect/unstable/cli` for you — you write a stock `Command.make(...)`, and devsess gives you services and layers that plug into it: a session directory that survives restarts, a sticky port, managed subprocesses, and cross-package running signals.
+
+## Building the command
+
+```ts
+// scripts/dev.ts
+import { CurrentSession, DevSessions, getStickyPort, runManagedSubprocess } from 'devsess'
+import { NodeRuntime, NodeServices } from '@effect/platform-node'
+import { Effect } from 'effect'
+import { Command } from 'effect/unstable/cli'
+
+const web = Command.make('web', {}, () =>
+	Effect.gen(function* () {
+		// the interesting part goes here
+	}).pipe(Effect.provide(CurrentSession.layer)),
+)
+
+Command.run(web, { version: '0.1.0' }).pipe(
+	Effect.provide(DevSessions.layer),
+	Effect.provide(NodeServices.layer),
+	Effect.scoped,
+	NodeRuntime.runMain,
+)
+```
+
+- `Command.make(name, config, handler)` and `Command.run(command, { version })` are plain `effect/unstable/cli` — nothing devsess-specific. `name` shows in `--help`; `config` is your flags (see [Flags](#flags)); `version` is whatever `--version` should print.
+- `DevSessions.layer` provides the session store, rooted at your project — see [Dev sessions](#dev-sessions) for how that root gets picked.
+- `CurrentSession.layer` provides the resolved session for this run — but only around the handler, not around `Command.run`. See below for why.
+- `NodeServices.layer` (or `@effect/platform-bun`'s `BunServices.layer`) supplies the `FileSystem`/`Path`/`ChildProcessSpawner`/etc. devsess and `effect/unstable/cli` need underneath. devsess depends on neither platform package itself — you supply whichever one you run scripts with.
+- `Effect.scoped` is yours to add — see [One scope for the whole run](#one-scope-for-the-whole-run).
+
+Full types are in the [API reference](/reference/devsess).
+
+## Why `CurrentSession.layer` sits on the handler
+
+`CurrentSession` resolves (or creates) a session via `DevSessions#getLatestOrCreate`, cached for the run — `yield* CurrentSession` twice in one handler resolves the identical session both times.
+
+Provide it around each command's own handler:
+
+```ts
+const web = Command.make('web', {}, () =>
+	myHandler.pipe(Effect.provide(CurrentSession.layer)),
+)
+```
+
+not around `Command.run`:
+
+```ts
+// don't do this — resolves (and creates) a session for --help too
+Command.run(web, { version: '0.1.0' }).pipe(
+	Effect.provide(CurrentSession.layer),
+	Effect.provide(DevSessions.layer),
+	// ...
+)
+```
+
+A `Layer`'s build effect runs the moment it's provided, regardless of what the effect it wraps ends up doing. Wrapping the whole `Command.run` call means that build effect runs before argv parsing has even decided whether this invocation is `--help`, `--version`, or a bad flag — none of which ever reach a handler. Scoping `CurrentSession.layer` to the handler is what keeps those from creating a session at all. If you have more than one command, provide it around each handler that needs it.
+
+`CurrentSession.layerOf(session)` pins an explicit session instead of resolving one — useful in tests.
+
+## Flags
+
+`Command.make`'s second argument takes `effect/unstable/cli`'s `Flag`s directly:
+
+```ts
+import { CurrentSession } from 'devsess'
+import { Effect } from 'effect'
+import { Command, Flag } from 'effect/unstable/cli'
+
+const web = Command.make(
+	'web',
+	{
+		lite: Flag.boolean('lite').pipe(
+			Flag.withDescription('Use a per-session PGlite database'),
+		),
+	},
+	(opts) =>
+		Effect.gen(function* () {
+			if (opts.lite) {
+				// ...
+			}
+		}).pipe(Effect.provide(CurrentSession.layer)),
+)
+```
+
+Each key in the config becomes a property on the handler's argument — here, `opts.lite`.
+
+## Dev sessions
+
+A session is a directory that outlives your script. `CurrentSession` resolves to it, and `getStickyPort`/`SessionState` (below) read and write inside it.
+
+`DevSessions` itself also exposes `dir` (the resolved project root) and `path(relative)` (joins onto that root, not into any session) — useful for reaching a project file, like a Drizzle migrations folder, without your own `node:path` import. See [A database per session](/recipes/pglite).
+
+### Where a session lives
+
+It lives at `<root>/.data/sessions/<slug>/` — `<slug>` a single generated noun, like `walrus` or `piano`, not a name you choose.
+
+:::file-tree
+- my-app
+  - .data
+    - sessions
+      - walrus the current session
+        - sess.json{info="Sticky port and any SessionState slots"}
+        - pglite a per-session PGlite database directory
+      - piano an older session, now idle
+    - running.json cross-package signal — not session-scoped
+  - scripts
+    - dev.ts
+:::
+
+`<root>` is whatever `DevSessions.layer` resolved. It walks up from `process.cwd()` to the nearest ancestor containing a `package.json` — in a monorepo, running your script from `apps/web` resolves to `apps/web`, not the repo root. If no ancestor has one, it fails with `ProjectRootNotFoundError` (naming the directory it started the search from) instead of silently falling back to `process.cwd()` — a wrong root means sessions get written somewhere surprising. Pass an explicit root instead with `DevSessions.layerAt(rootDir)` if you don't want auto-detection.
+
+### How a session gets picked
+
+Every resolution of `CurrentSession` tries to reuse the last session — the one most recently touched — or creates a new one with a random slug if none exist yet. There's no flag to choose a specific session: whichever one you touched last is the one you get.
+
+That's enough for isolation. Every checkout — every git worktree — auto-detects its own root, so its own `.data/sessions/` tree. Two agents working in two worktrees never draw from the same pool of sessions, so they never collide: each gets its own port, its own database. Isolation comes from running two different checkouts, not from any session-switching feature inside devsess.
+
+You can create more sessions yourself with `DevSessions#createSession`, but `CurrentSession` still always resolves the newest one. An idle session, like `piano` above, just waits until it happens to become the newest again.
+
+### What lives inside a session
+
+`SessionState.slot(schema)` gives you `{ read(session), write(session, data) }` for a schema you define. Every slot — yours and the library's own — reads and writes the same file: `<session>/sess.json`. `write` shallow-merges your data into whatever's already there, so distinct slots coexist as long as their keys don't collide. If two slots use the same key, whichever writes last wins, silently.
+
+```ts
+import { CurrentSession, SessionState } from 'devsess'
+import { Schema } from 'effect'
+
+const LastBranch = SessionState.slot(Schema.Struct({ branch: Schema.String }))
+
+// inside a handler, with CurrentSession.layer provided:
+const session = yield* CurrentSession
+const state = yield* LastBranch.read(session)
+// { branch: string } | null
+yield* LastBranch.write(session, { branch: 'main' })
+```
+
+`read` resolves to `T | null`, not an `Option`. `null` covers two different cases — the file doesn't exist yet, or it exists but fails to decode against your schema — so treat it as "nothing usable here," not as "definitely missing."
+
+Running signals — the mechanism behind `publishRunning`/`awaitRunning` — aren't part of a session at all. They read and write a file scoped to the project root (`DevSessions#dir`), not any session directory, so a fresh session doesn't reset them. See [Wiring services together](/recipes/wiring-services).
+
+## One scope for the whole run
+
+`runManagedSubprocess` and `publishRunning` both register cleanup — "kill this child," "delete this signal file" — against whatever scope is open when they run. `Effect.scoped` opens one; wrap it around `Command.run(...)` itself, not around an individual handler, so every command shares the same scope for as long as the process is alive.
+
+A scope is a lifetime. Effects can register a release action against it — "run this when the scope closes" — and the scope guarantees that release runs exactly once, whether the effect inside finishes normally, fails, or gets interrupted (your Ctrl-C). Put `Effect.scoped` around the outermost pipeline and it stays open for as long as your script is alive; put it around just a handler instead and cleanup fires the moment that one handler returns, not when the process actually exits.
+
+That's the mechanism behind two other pages: [Running your dev server](/recipes/dev-server) registers "kill this child" against this scope, and [Wiring services together](/recipes/wiring-services) registers "delete this signal file" the same way. Neither depends on your handler doing cleanup itself — the scope closing does it, on a normal exit, a thrown error, or Ctrl-C alike.
+
+## Gotchas
+
+**`session.path(rel)` doesn't create the directory.** It resolves a path inside the session and returns it as an `Effect<string>` — pure path math, no directory or file gets created as a side effect.
+
+```ts
+import { CurrentSession } from 'devsess'
+import { FileSystem } from 'effect/FileSystem'
+
+// inside a handler
+const session = yield* CurrentSession
+const fs = yield* FileSystem
+
+const dir = yield* session.path('pglite')
+// '/my-app/.data/sessions/walrus/pglite'
+
+yield* fs.makeDirectory(dir, { recursive: true })
+```
+
+Skip the `makeDirectory` call and anything that assumes the path already exists on disk — writing a file under it, pointing a subprocess at it — fails.
+
+**"Most recently touched" is filesystem mtime, not a bookkeeping record.** There's no separate "last active" field. A subprocess writing into the directory, a `SessionState.write` call, anything that touches the session directory refreshes its mtime and keeps it the one `CurrentSession` resolves next.
+
+**`SessionState.write` isn't atomic.** There's no temp-file-and-rename step. A `sess.json` corrupted mid-write makes the next `write` fail with a `SessionStateError` (`devsess`'s tagged error for unparseable session state) — `read` keeps degrading the same corruption to `null` instead.
