@@ -2,7 +2,6 @@ import { Effect, type Scope } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner';
-import { type CommandConfig, runDevCli } from '../dev/run-dev-cli';
 import {
 	awaitRunningSignal,
 	publishRunningSignal,
@@ -12,9 +11,11 @@ import {
 import { getStickyPort } from '../dev/sticky-port';
 import { runManagedSubprocess } from '../dev/subprocess';
 import { DevSessions } from '../dev-sessions';
+import type { DevPlatform } from './platform';
+import { type CommandConfig, runDevCli } from './run-dev-cli';
 import { type DevSession, toAsyncSession } from './session';
 
-/** Promise-returning mirror of the Effect core's `RunContext` (see `src/dev/define-cli.ts`). */
+/** Promise-returning mirror of the Effect core's free functions (`getStickyPort`, `runManagedSubprocess`, `publishRunning`, `awaitRunning`), bundled into a single per-run context. */
 type AsyncRunContext = {
 	session: () => Promise<DevSession>;
 	getStickyPort: () => Promise<number>;
@@ -29,6 +30,7 @@ export const defineDevCli = (config: {
 	name: string;
 	dir: string;
 	options?: CommandConfig;
+	platform: DevPlatform;
 	run: (
 		ctx: AsyncRunContext,
 		opts: Record<string, unknown>,
@@ -38,6 +40,7 @@ export const defineDevCli = (config: {
 		name: config.name,
 		dir: config.dir,
 		options: config.options,
+		platform: config.platform,
 		makeHandler: (opts) =>
 			Effect.gen(function* () {
 				const sessions = yield* DevSessions;

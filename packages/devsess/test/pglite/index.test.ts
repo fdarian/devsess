@@ -16,7 +16,10 @@ import {
 	PgliteError,
 	prepareSessionPglite,
 } from '../../src/pglite';
-import { makeTestDevSessionsLayer } from '../support/dev-sessions-layer';
+import {
+	makeTestDevSessionsLayer,
+	sessionsStorageDir,
+} from '../support/dev-sessions-layer';
 import { writeMigrationsFixture } from '../support/migrations-fixture';
 import { runTest } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
@@ -391,9 +394,10 @@ describe('prepareSessionPglite', () => {
 				const migrationsFolder = join(rootDir, 'migrations');
 				yield* writeMigrationsFixture(migrationsFolder, { count: 1 });
 
-				const sessionsDir = join(rootDir, 'sessions');
+				const sessionsRoot = join(rootDir, 'sessions');
+				const storageDir = sessionsStorageDir(sessionsRoot);
 				const devSessions = yield* DevSessions.pipe(
-					Effect.provide(makeTestDevSessionsLayer(sessionsDir)),
+					Effect.provide(makeTestDevSessionsLayer(sessionsRoot)),
 				);
 				const session = yield* devSessions.createSession;
 
@@ -404,8 +408,8 @@ describe('prepareSessionPglite', () => {
 					},
 				);
 
-				expect(dataDir).toBe(join(sessionsDir, session.name, 'pglite'));
-				expect(dumpPath).toBe(join(sessionsDir, session.name, 'pglite.dump'));
+				expect(dataDir).toBe(join(storageDir, session.name, 'pglite'));
+				expect(dumpPath).toBe(join(storageDir, session.name, 'pglite.dump'));
 
 				const count = yield* getDbMigrationCount(client);
 				expect(count).toBe(1);

@@ -7,12 +7,13 @@ Scaffold dev scripts with reusable **dev sessions** and a per-session **PGlite +
 - **Dev sessions** — each run reuses (or creates) a named, slug-based working directory under `.data/sessions`. Sticky dev-server ports, managed subprocesses that die with your script, and cross-service "running" signal files come built in.
 - **A PGlite adapter** (`devsess/pglite`) — prepare a local Postgres-compatible database from your Drizzle migrations, scoped to the current dev session. Perfect for a `--lite` offline dev mode.
 
-It targets **Node** (`@effect/platform-node`). The examples below use the [Effect](https://effect.website) API (`devsess`); if you'd rather not deal with Effect directly, `devsess/async` exposes the same dev-session scaffolding as a plain, Promise-based API — see [API](#api).
+It runs on **Node or Bun** — devsess depends on neither directly, you supply whichever platform package's layer you use (`NodeServices.layer`/`BunServices.layer`, or the equivalent `platform` object for `devsess/async`). The examples below use the [Effect](https://effect.website) API (`devsess`); if you'd rather not deal with Effect directly, `devsess/async` exposes the same dev-session scaffolding as a plain, Promise-based API — see [API](#api).
 
 ## Install
 
 ```bash
 bun add devsess effect @effect/platform-node
+# or, on Bun: bun add devsess effect @effect/platform-bun
 ```
 
 For the PGlite adapter (`devsess/pglite`), also add:
@@ -25,24 +26,24 @@ bun add @electric-sql/pglite drizzle-orm
 
 ```ts
 // scripts/dev.ts
-import { join } from 'node:path';
-import { cli, defineDevCli } from 'devsess';
+import { CurrentSession, DevSessions, getStickyPort, runManagedSubprocess } from 'devsess';
+import { NodeRuntime, NodeServices } from '@effect/platform-node';
 import { Effect } from 'effect';
+import { Command, Flag } from 'effect/unstable/cli';
 
-const main = defineDevCli({
-	name: 'web',
-	dir: join(import.meta.dirname, '..'),
-	options: {
-		lite: cli.Flag.boolean('lite').pipe(
-			cli.Flag.withDescription('Use a per-session PGlite database'),
+const web = Command.make(
+	'web',
+	{
+		lite: Flag.boolean('lite').pipe(
+			Flag.withDescription('Use a per-session PGlite database'),
 		),
 	},
-	run: (ctx, opts) =>
+	(opts) =>
 		Effect.gen(function* () {
-			const session = yield* ctx.session;
+			const session = yield* CurrentSession;
 			yield* Effect.logInfo(`[dev] session: ${session.name}`);
 
-			const port = yield* ctx.getStickyPort();
+			const port = yield* getStickyPort(session);
 			const env: Record<string, string> = { PORT: String(port) };
 
 			if (opts.lite) {
@@ -51,16 +52,23 @@ const main = defineDevCli({
 				env.DATABASE_LITE_PATH = litePath;
 			}
 
-			yield* ctx.runManagedSubprocess('bunx', ['vite'], { env });
-		}),
-});
+			yield* runManagedSubprocess('bunx', ['vite'], { env });
+		}).pipe(Effect.provide(CurrentSession.layer)),
+);
 
-main(process.argv);
+Command.run(web, { version: '0.1.0' }).pipe(
+	Effect.provide(DevSessions.layer),
+	Effect.provide(NodeServices.layer),
+	Effect.scoped,
+	NodeRuntime.runMain,
+);
 ```
 
 ```bash
 bun scripts/dev.ts --lite
 ```
+
+`DevSessions.layer` auto-detects your project root (the nearest ancestor with a `package.json`) — no `dir` to pass. `CurrentSession.layer` sits on the handler, not around `Command.run`, so a `--help`/`--version` invocation never resolves (or creates) a session.
 
 ## Per-session PGlite
 
@@ -68,12 +76,14 @@ bun scripts/dev.ts --lite
 client, validates and applies migrations — all scoped to the active dev session:
 
 ```ts
+import { DevSessions, CurrentSession } from 'devsess';
 import { prepareSessionPglite } from 'devsess/pglite';
 
-// inside run():
-const session = yield* ctx.session;
+// inside a handler, with CurrentSession.layer provided:
+const sessions = yield* DevSessions;
+const session = yield* CurrentSession;
 const db = yield* prepareSessionPglite(session, {
-	migrationsFolder: join(import.meta.dirname, '../drizzle'),
+	migrationsFolder: sessions.path('drizzle'),
 });
 // db.client — a ready PGlite client
 // db.dataDir — its on-disk path (e.g. pass as DATABASE_LITE_PATH)
@@ -83,10 +93,13 @@ const db = yield* prepareSessionPglite(session, {
 
 From `devsess` (the Effect API):
 
-- `defineDevCli({ name, dir, options?, run })` → `(argv) => void`
-- `cli` — re-export of `effect/unstable/cli`
-- `DevSessions`, `makeDevSessionsLayer(rootDir)`, `DevSession`
+- `DevSessions` — session-store service. `.layer` auto-detects the project root; `.layerAt(rootDir)` overrides it
+- `CurrentSession` — resolved-session service for the current run. `.layer` resolves via `DevSessions`; `.layerOf(session)` pins one
+- `ProjectRootNotFoundError` — raised by `DevSessions.layer` when no ancestor of `process.cwd()` has a `package.json`
+- `getStickyPort(session)`, `runManagedSubprocess(cmd, args, opts?)`, `publishRunning(data)`, `awaitRunning(pkg)` — free functions; only `getStickyPort` takes a `DevSession`
 - `SessionState.slot(schema)` — typed per-session JSON state
+
+Build your CLI with a stock `Command.make(...)` from `effect/unstable/cli` — devsess no longer wraps it.
 
 From `devsess/pglite`:
 
@@ -98,8 +111,8 @@ From `devsess/pglite`:
 
 From `devsess/async` (a plain, Promise-based mirror of the Effect API — no `effect` imports required):
 
-- `defineDevCli({ name, dir, options?, run })` — `run` is `async (ctx, opts) => void`, and `ctx`'s helpers return Promises instead of Effects
-- `createDevSessions(rootDir)` — async session manager (`getSessions`, `createSession`, `getLatestOrCreate`)
+- `defineDevCli({ name, dir, platform, options?, run })` — `run` is `async (ctx, opts) => void`, and `ctx`'s helpers return Promises instead of Effects
+- `createDevSessions(rootDir, services)` — async session manager (`getSessions`, `createSession`, `getLatestOrCreate`)
 - `SessionState`, `DevSession`, plus `cli` and `Schema` re-exports
 
 See the [full documentation](https://github.com/fdarian/devsess/tree/main/apps/docs) for details.

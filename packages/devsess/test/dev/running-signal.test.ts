@@ -3,11 +3,14 @@ import { dirname, join, resolve } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 import { Effect, Fiber } from 'effect';
 import {
+	awaitRunning,
 	awaitRunningSignal,
+	publishRunning,
 	publishRunningSignal,
 	resolveSiblingDir,
 	runningSignalPath,
 } from '../../src/dev/running-signal';
+import { makeTestDevSessionsLayer } from '../support/dev-sessions-layer';
 import { runTest } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
 
@@ -199,4 +202,66 @@ describe('resolveSiblingDir', () => {
 			resolveSiblingDir('devsess-package-that-does-not-exist', packageDir),
 		).toThrow();
 	});
+});
+
+// `publishRunning`/`awaitRunning` are the `DevSessions`-aware free functions the
+// Effect-based `RunContext` used to bind (`ctx.publishRunning`/`ctx.awaitRunning`) —
+// they derive the signal path from `DevSessions#dir` instead of taking one directly.
+
+describe('publishRunning', () => {
+	it.live(
+		'writes to <DevSessions.dir>/.data/running.json, not under a session dir',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const rootDir = yield* makeTempDir;
+					const signalPath = join(rootDir, '.data/running.json');
+
+					// Assert inside the scope: `publishRunning`'s `acquireRelease` removes
+					// the file the moment the scope closes, same as `publishRunningSignal`.
+					yield* Effect.scoped(
+						Effect.gen(function* () {
+							yield* publishRunning({ pid: 1234 }).pipe(
+								Effect.provide(makeTestDevSessionsLayer(rootDir)),
+							);
+
+							expect(existsSync(signalPath)).toBe(true);
+							expect(JSON.parse(readFileSync(signalPath, 'utf8'))).toEqual({
+								pid: 1234,
+							});
+						}),
+					);
+
+					expect(existsSync(signalPath)).toBe(false);
+				}),
+			),
+	);
+});
+
+describe('awaitRunning', () => {
+	it.live('resolves the signal published by a sibling package', () =>
+		runTest(
+			Effect.gen(function* () {
+				const rootDir = yield* makeTempDir;
+				const siblingDir = join(rootDir, 'sibling');
+
+				yield* Effect.scoped(
+					Effect.gen(function* () {
+						yield* publishRunningSignal(runningSignalPath(siblingDir), {
+							ready: true,
+						});
+
+						const result = yield* awaitRunning<{ ready: boolean }>(
+							'./sibling',
+						).pipe(
+							Effect.provide(makeTestDevSessionsLayer(rootDir)),
+							Effect.timeout('2 seconds'),
+						);
+
+						expect(result).toEqual({ ready: true });
+					}),
+				);
+			}),
+		),
+	);
 });

@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { Deferred, Effect } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { Path } from 'effect/Path';
+import { DevSessions } from '../dev-sessions';
 
 const RUNNING_SIGNAL_FILE = '.data/running.json';
 
@@ -92,3 +93,26 @@ export const awaitRunningSignal = <T>(
 			return yield* Deferred.await(deferred);
 		}),
 	);
+
+/**
+ * Publishes `value` at the project root's running-signal file, so a sibling package's
+ * dev script can `awaitRunning` it. Removed when the enclosing scope closes.
+ */
+export const publishRunning = (value: unknown) =>
+	Effect.gen(function* () {
+		const sessions = yield* DevSessions;
+		yield* publishRunningSignal(runningSignalPath(sessions.dir), value);
+	});
+
+/**
+ * Awaits the running-signal file of another package in the workspace (`pkg`, resolved
+ * relative to the project root the same way `resolveSiblingDir` resolves any spec).
+ */
+export const awaitRunning = <T>(pkg: string) =>
+	Effect.gen(function* () {
+		const sessions = yield* DevSessions;
+		return yield* awaitRunningSignal<T>(
+			runningSignalPath(resolveSiblingDir(pkg, sessions.dir)),
+			{ parse: (raw) => JSON.parse(raw) as T },
+		);
+	});

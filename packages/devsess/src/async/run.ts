@@ -1,10 +1,9 @@
-import { NodeServices } from '@effect/platform-node';
-import { Effect, type Scope } from 'effect';
+import { Effect, type Layer, type Scope } from 'effect';
+import type { DevServices } from './platform';
 
-const nodeLayer = NodeServices.layer;
-
-/** Runs an Effect that only needs the shared Node platform services (+ an optional Scope) as a Promise. */
-export const runNode = <A, E>(
-	effect: Effect.Effect<A, E, NodeServices.NodeServices | Scope.Scope>,
+/** Runs an Effect that only needs the caller-supplied platform services (+ an optional Scope) as a Promise. */
+export const run = <A, E>(
+	effect: Effect.Effect<A, E, DevServices | Scope.Scope>,
+	services: Layer.Layer<DevServices>,
 ): Promise<A> =>
-	Effect.runPromise(Effect.scoped(Effect.provide(effect, nodeLayer)));
+	Effect.runPromise(Effect.scoped(Effect.provide(effect, services)));

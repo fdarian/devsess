@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { NodeServices } from '@effect/platform-node';
 import { describe, expect, it } from '@effect/vitest';
@@ -5,8 +6,11 @@ import { Effect, Layer, Option } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { generateSlug } from 'random-word-slugs';
 import { vi } from 'vitest';
-import { DevSessions, makeDevSessionsLayer } from '../src/dev-sessions';
-import { makeTestDevSessionsLayer } from './support/dev-sessions-layer';
+import { DevSessions, ProjectRootNotFoundError } from '../src/dev-sessions';
+import {
+	makeTestDevSessionsLayer,
+	sessionsStorageDir,
+} from './support/dev-sessions-layer';
 import { runTest } from './support/run-test';
 import { makeTempDir } from './support/temp-dir';
 
@@ -75,17 +79,22 @@ describe('getLatestOrCreate', () => {
 		runTest(
 			Effect.gen(function* () {
 				const rootDir = yield* makeTempDir;
+				const storageDir = sessionsStorageDir(rootDir);
 				const fs = yield* FileSystem;
 
-				yield* fs.makeDirectory(join(rootDir, 'older'), { recursive: true });
-				yield* fs.makeDirectory(join(rootDir, 'newer'), { recursive: true });
+				yield* fs.makeDirectory(join(storageDir, 'older'), {
+					recursive: true,
+				});
+				yield* fs.makeDirectory(join(storageDir, 'newer'), {
+					recursive: true,
+				});
 				yield* fs.utimes(
-					join(rootDir, 'older'),
+					join(storageDir, 'older'),
 					new Date('2020-01-01'),
 					new Date('2020-01-01'),
 				);
 				yield* fs.utimes(
-					join(rootDir, 'newer'),
+					join(storageDir, 'newer'),
 					new Date('2024-01-01'),
 					new Date('2024-01-01'),
 				);
@@ -104,25 +113,26 @@ describe('getLatestOrCreate', () => {
 		runTest(
 			Effect.gen(function* () {
 				const rootDir = yield* makeTempDir;
+				const storageDir = sessionsStorageDir(rootDir);
 				const fs = yield* FileSystem;
 
 				// Both dirs are created "now", so without the mtime override the
 				// null-mtime dir would actually look newest.
-				yield* fs.makeDirectory(join(rootDir, 'null-mtime'), {
+				yield* fs.makeDirectory(join(storageDir, 'null-mtime'), {
 					recursive: true,
 				});
-				yield* fs.makeDirectory(join(rootDir, 'old-but-real-mtime'), {
+				yield* fs.makeDirectory(join(storageDir, 'old-but-real-mtime'), {
 					recursive: true,
 				});
 				yield* fs.utimes(
-					join(rootDir, 'old-but-real-mtime'),
+					join(storageDir, 'old-but-real-mtime'),
 					new Date('2020-01-01'),
 					new Date('2020-01-01'),
 				);
 
 				// `withNullMtime` must come last: `Layer.merge` resolves colliding tags
 				// (here, `FileSystem`) in favor of the later layer.
-				const devSessionsLayer = makeDevSessionsLayer(rootDir).pipe(
+				const devSessionsLayer = DevSessions.layerAt(rootDir).pipe(
 					Layer.provide(
 						Layer.merge(NodeServices.layer, withNullMtime('null-mtime')),
 					),
@@ -149,7 +159,7 @@ describe('getLatestOrCreate', () => {
 
 				yield* devSessions.getLatestOrCreate;
 
-				expect(yield* fs.exists(missingRoot)).toBe(true);
+				expect(yield* fs.exists(sessionsStorageDir(missingRoot))).toBe(true);
 			}),
 		),
 	);
@@ -176,12 +186,13 @@ describe('getSessions', () => {
 		runTest(
 			Effect.gen(function* () {
 				const rootDir = yield* makeTempDir;
+				const storageDir = sessionsStorageDir(rootDir);
 				const fs = yield* FileSystem;
-				yield* fs.makeDirectory(join(rootDir, 'a-session'), {
+				yield* fs.makeDirectory(join(storageDir, 'a-session'), {
 					recursive: true,
 				});
 				yield* fs.writeFileString(
-					join(rootDir, 'stray-file.txt'),
+					join(storageDir, 'stray-file.txt'),
 					'not a session',
 				);
 
@@ -199,11 +210,12 @@ describe('getSessions', () => {
 		runTest(
 			Effect.gen(function* () {
 				const rootDir = yield* makeTempDir;
+				const storageDir = sessionsStorageDir(rootDir);
 				const fs = yield* FileSystem;
 				const names = Array.from({ length: 25 }, (_, i) => `session-${i}`);
 				yield* Effect.all(
 					names.map((name) =>
-						fs.makeDirectory(join(rootDir, name), { recursive: true }),
+						fs.makeDirectory(join(storageDir, name), { recursive: true }),
 					),
 					{ concurrency: 'unbounded' },
 				);
@@ -236,7 +248,9 @@ describe('createSession', () => {
 				const session = yield* devSessions.createSession;
 
 				expect(session.name).toBe('fresh-otter');
-				expect(yield* fs.exists(join(nestedRoot, 'fresh-otter'))).toBe(true);
+				expect(
+					yield* fs.exists(join(sessionsStorageDir(nestedRoot), 'fresh-otter')),
+				).toBe(true);
 			}),
 		),
 	);
@@ -256,9 +270,110 @@ describe('DevSession.path', () => {
 				const session = yield* devSessions.createSession;
 				const resolved = yield* session.path('nested/db.sqlite');
 
-				expect(resolved).toBe(join(rootDir, 'quiet-otter', 'nested/db.sqlite'));
+				expect(resolved).toBe(
+					join(sessionsStorageDir(rootDir), 'quiet-otter', 'nested/db.sqlite'),
+				);
 				expect(yield* fs.exists(resolved)).toBe(false);
 			}),
 		),
+	);
+});
+
+describe('DevSessions.layerAt', () => {
+	it.effect(
+		'dir/path resolve against rootDir itself, while sessions live under .data/sessions',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					vi.mocked(generateSlug).mockClear();
+					vi.mocked(generateSlug).mockReturnValueOnce('rooted-otter');
+					const rootDir = yield* makeTempDir;
+					const fs = yield* FileSystem;
+
+					const devSessions = yield* DevSessions.pipe(
+						Effect.provide(DevSessions.layerAt(rootDir)),
+					);
+
+					expect(devSessions.dir).toBe(rootDir);
+					expect(devSessions.path('drizzle')).toBe(join(rootDir, 'drizzle'));
+
+					const session = yield* devSessions.createSession;
+					expect(session.name).toBe('rooted-otter');
+					expect(
+						yield* fs.exists(join(sessionsStorageDir(rootDir), 'rooted-otter')),
+					).toBe(true);
+				}),
+			),
+	);
+
+	it.effect(
+		'merely providing the layer does not touch the session store (no eager CurrentSession)',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					vi.mocked(generateSlug).mockClear();
+					const rootDir = yield* makeTempDir;
+					const fs = yield* FileSystem;
+
+					yield* DevSessions.pipe(Effect.provide(DevSessions.layerAt(rootDir)));
+
+					expect(yield* fs.exists(sessionsStorageDir(rootDir))).toBe(false);
+					expect(generateSlug).not.toHaveBeenCalled();
+				}),
+			),
+	);
+});
+
+describe('DevSessions.layer', () => {
+	it.effect(
+		'auto-detects the project root by walking up from cwd to the nearest package.json',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					// macOS's tmp dir is a symlink (`/var/...` -> `/private/var/...`), and
+					// `process.cwd()` resolves it — normalize both sides before comparing.
+					const rootDir = realpathSync(yield* makeTempDir);
+					const fs = yield* FileSystem;
+					const nested = join(rootDir, 'apps', 'web');
+					yield* fs.makeDirectory(nested, { recursive: true });
+					yield* fs.writeFileString(join(rootDir, 'package.json'), '{}');
+
+					const originalCwd = process.cwd();
+					process.chdir(nested);
+					try {
+						const devSessions = yield* DevSessions.pipe(
+							Effect.provide(DevSessions.layer),
+						);
+						expect(devSessions.dir).toBe(rootDir);
+					} finally {
+						process.chdir(originalCwd);
+					}
+				}),
+			),
+	);
+
+	it.effect(
+		'fails with ProjectRootNotFoundError naming the search start when no ancestor has a package.json',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const rootDir = realpathSync(yield* makeTempDir);
+
+					const originalCwd = process.cwd();
+					process.chdir(rootDir);
+					try {
+						const error = yield* DevSessions.pipe(
+							Effect.provide(DevSessions.layer),
+							Effect.flip,
+						);
+						expect(error).toBeInstanceOf(ProjectRootNotFoundError);
+						expect((error as ProjectRootNotFoundError).searchedFrom).toBe(
+							rootDir,
+						);
+					} finally {
+						process.chdir(originalCwd);
+					}
+				}),
+			),
 	);
 });

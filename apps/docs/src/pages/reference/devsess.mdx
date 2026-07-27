@@ -1,71 +1,79 @@
 # devsess
 
-The Effect-based core: `defineDevCli` scaffolds a persistent dev CLI backed by a session store, a sticky port, managed subprocesses, and cross-package running signals. See [defineDevCli](/define-dev-cli) for sessions and the CLI scaffold, and [Running your dev server](/recipes/dev-server) for subprocess lifetime.
+The Effect-based core: `DevSessions` and `CurrentSession` (services + layers), and free functions for sticky ports, managed subprocesses, and cross-package running signals. See [Writing a dev CLI](/writing-a-dev-cli) for how these fit around a stock `Command.make(...)`, and [Running your dev server](/recipes/dev-server) for subprocess lifetime.
 
-Peers: `effect` (`^4.0.0-beta.101`), `@effect/platform-node` (`^4.0.0-beta.101`).
+Peer: `effect` (`^4.0.0-beta.101`). No platform package is a peer — `devsess` depends on neither; provide something satisfying `FileSystem | Path` yourself (both `@effect/platform-node`'s `NodeServices.layer` and `@effect/platform-bun`'s `BunServices.layer` do, since each is a superset).
 
 ```bash
 bun add devsess effect @effect/platform-node
 ```
 
-## `defineDevCli`
-
-```ts
-function defineDevCli(config: {
-	name: string
-	dir: string
-	options?: CommandConfig
-	run: (ctx: RunContext, opts: Record<string, unknown>) => Effect.Effect<
-		void,
-		unknown,
-		DevSessions | NodeServices.NodeServices | Scope.Scope
-	>
-}): (argv: string[]) => void
+```bash
+bun add devsess effect @effect/platform-bun
 ```
 
-Returns a function — call it with `process.argv`.
+## `DevSessions`
 
-| Field | Type | Description |
+`Context.Service` tag for the session store.
+
+```ts
+class DevSessions extends Context.Service<
+	DevSessions,
+	{
+		readonly dir: string
+		readonly path: (relativePath: string) => string
+		readonly getSessions: Effect.Effect<Array<DevSession>, PlatformError>
+		readonly createSession: Effect.Effect<DevSession, PlatformError>
+		readonly getLatestOrCreate: Effect.Effect<DevSession, PlatformError>
+	}
+>()('devsess/DevSessions') {
+	static readonly layerAt: (rootDir: string) => Layer.Layer<DevSessions, never, FileSystem | Path>
+	static readonly layer: Layer.Layer<DevSessions, PlatformError | ProjectRootNotFoundError, FileSystem | Path>
+}
+```
+
+| Member | Type | Description |
 |---|---|---|
-| `name` | `string` | CLI program name, passed to `cli.Command.make` |
-| `dir` | `string` | Project root. Sessions live under `<dir>/.data/sessions/`; the running-signal file lives at `<dir>/.data/running.json` |
-| `options` | `CommandConfig` (optional) | Flag/argument config — the second parameter type of `effect/unstable/cli`'s `Command.make` |
-| `run` | see above | Script body. `opts` is the parsed CLI options |
+| `dir` | `string` | The root this instance was built with — `rootDir` verbatim, not the sessions subdirectory |
+| `path(relativePath)` | `(relativePath: string) => string` | Joins `relativePath` onto `dir` — a project file, not a session file |
+| `getSessions` | `Effect.Effect<Array<DevSession>, PlatformError>` | Lists session subdirectories with their mtimes. `[]` if the root doesn't exist yet — not an error |
+| `createSession` | `Effect.Effect<DevSession, PlatformError>` | Creates a new session directory with a fresh slug |
+| `getLatestOrCreate` | `Effect.Effect<DevSession, PlatformError>` | Ensures the root exists, then returns the session with the newest directory mtime — or creates one if none exist |
 
-`CommandConfig` is `typeof cli.Command.make extends (name: string, config: infer C, ...rest) => unknown ? C : never` — in practice, the flag/argument record you'd pass as `Command.make`'s second argument.
+`getSessions`, `createSession`, and `getLatestOrCreate` are Effects already bound to the resolved service instance, not functions — read them off the service, e.g. `(yield* DevSessions).getLatestOrCreate`.
 
-On invocation:
-1. Builds a layer from `makeDevSessionsLayer(join(dir, '.data/sessions'))` merged with `NodeServices.layer`.
-2. Runs `run` via `NodeRuntime.runMain(Effect.scoped(...))` — the entire run is one Effect scope, which is why managed subprocesses and running-signal files clean up on exit or interruption.
-3. Always resolves the session with `getLatestOrCreate` — there's no flag or option to target a specific session.
+**`DevSessions.layerAt(rootDir)`** — rooted at `rootDir` explicitly: `dir`/`path` resolve against `rootDir` itself (e.g. `sessions.path('drizzle')` reaches a project's real `drizzle/` folder), while session directories are namespaced under `<rootDir>/.data/sessions`. No directory I/O happens when the layer is built, only when its methods run.
 
-`--version` always prints `0.0.0`, regardless of the installed package version — it's hardcoded in the shared CLI scaffolding, not derived from `package.json`.
+**`DevSessions.layer`** — `layerAt` rooted at the auto-detected project root: the nearest ancestor of `process.cwd()` containing a `package.json`, found by walking up one directory at a time. Fails with `ProjectRootNotFoundError` if no ancestor has one, instead of silently falling back to `process.cwd()`.
 
-## `RunContext`
+Deliberately does **not** also provide `CurrentSession` — see [`CurrentSession`](#currentsession) below for why.
 
-The `ctx` object passed to `run`.
+## `ProjectRootNotFoundError`
 
-| Member | Type |
-|---|---|
-| `session` | `Effect.Effect<DevSession, PlatformError>` |
-| `getStickyPort()` | `() => Effect.Effect<number, PlatformError \| SessionStateError, FileSystem \| Path>` |
-| `runManagedSubprocess(cmd, args, opts?)` | `(cmd: string, args: string[], opts?: { env?: Record<string, string> }) => Effect.Effect<ExitCode, PlatformError, Scope.Scope \| ChildProcessSpawner>` |
-| `publishRunning(data)` | `(data: unknown) => Effect.Effect<void, PlatformError, Scope.Scope \| FileSystem \| Path>` |
-| `awaitRunning<T>(pkg)` | `(pkg: string) => Effect.Effect<T, PlatformError, FileSystem \| Path>` |
+```ts
+class ProjectRootNotFoundError extends Data.TaggedError('ProjectRootNotFoundError')<{
+	readonly searchedFrom: string
+}> {}
+```
 
-`ExitCode` (`effect/unstable/process`) is a branded `number`. `FileSystem`, `Path`, and `ChildProcessSpawner` come from `NodeServices.layer`, already provided by `defineDevCli` — you never supply them yourself.
+Raised by `DevSessions.layer` when no ancestor of `searchedFrom` (`process.cwd()` at the start of the search) contains a `package.json`.
 
-**`session`** — a value, not a function. Built once per run as `Effect.cached(sessions.getLatestOrCreate)`, so every `yield* ctx.session` after the first is free and resolves to the identical `DevSession`.
+## `CurrentSession`
 
-**`getStickyPort()`** — unlike `session`, this is **not cached**: every call re-reads the port from `sess.json` and re-asks `get-port`. Reuses the session's remembered port when it's still free — not a guarantee; a different free port is chosen (and persisted) if the remembered one is taken. Call it once per run and reuse the returned number. It's built on `SessionState.slot` internally, so a `sess.json` corrupted by something outside `devsess` surfaces here as `SessionStateError` too.
+`Context.Service` tag holding the session resolved for a single command run.
 
-**`runManagedSubprocess(cmd, args, opts?)`** — resolves to the child's exit code. stdio is `inherit` for stdin/stdout/stderr, so child output goes straight to your terminal. `opts.env` is merged over `process.env`, not a replacement. The child is killed when the enclosing scope closes — script exit or Ctrl-C; a failed kill is logged, not thrown.
+```ts
+class CurrentSession extends Context.Service<CurrentSession, DevSession>()('devsess/CurrentSession') {
+	static readonly layer: Layer.Layer<CurrentSession, PlatformError, DevSessions>
+	static readonly layerOf: (session: DevSession) => Layer.Layer<CurrentSession, never, never>
+}
+```
 
-**`publishRunning(data)`** — writes `data` as JSON to `<dir>/.data/running.json`, atomically (temp file, then rename, so readers never see a partial write). Deletes that file when its scope closes, so a crashed or exited publisher leaves no stale signal behind.
+`yield* CurrentSession` always gives a plain `DevSession` — never a wrapper effect to unwrap.
 
-**`awaitRunning<T>(pkg)`** — reads *another* package's running-signal file, not this project's own. `pkg` starting with `.` or `/` resolves as a path relative to `dir`; anything else is resolved as a package name via `require.resolve('<pkg>/package.json')`. Creates the sibling's `.data` directory if it doesn't exist yet (`fs.watch` would otherwise throw synchronously on a missing directory), then waits using `fs.watch` on it (no polling), plus one immediate read to catch the already-published case. **No timeout** — waits indefinitely.
+**`CurrentSession.layer`** — resolves the session via `DevSessions#getLatestOrCreate`, cached for the run via layer memoization (two `yield* CurrentSession` in the same provided scope resolve the identical session, one lookup). Provide this around a command's own handler effect, not the whole CLI program: a `Layer`'s build effect runs the moment it's provided, so wrapping `Command.run` itself would create a session for `--help`, `--version`, or a bad flag too, none of which ever reach a handler.
 
-Running signals are **not session-scoped** — they coordinate across sibling packages in a monorepo, keyed by project directory. See [Wiring services together](/recipes/wiring-services).
+**`CurrentSession.layerOf(session)`** — pins an explicit session instead of resolving one via `DevSessions`. For tests.
 
 ## `DevSession`
 
@@ -85,42 +93,55 @@ type DevSession = {
 | `path(relativePath)` | Joins `relativePath` onto the session directory. Pure path math — does **not** create the directory or touch the filesystem |
 | `toString()` | Returns `name` |
 
-## `DevSessions`
-
-`Context.Service` tag for the session store.
+## `getStickyPort`
 
 ```ts
-class DevSessions extends Context.Service<
-	DevSessions,
-	{
-		readonly dir: string
-		readonly path: (relativePath: string) => string
-		readonly getSessions: Effect.Effect<Array<DevSession>, PlatformError>
-		readonly createSession: Effect.Effect<DevSession, PlatformError>
-		readonly getLatestOrCreate: Effect.Effect<DevSession, PlatformError>
-	}
->()('devsess/DevSessions') {}
+function getStickyPort(
+	session: DevSession,
+): Effect.Effect<number, PlatformError | SessionStateError, FileSystem | Path>
 ```
 
-| Member | Type | Description |
-|---|---|---|
-| `dir` | `string` | Root sessions directory this instance was built with |
-| `path(relativePath)` | `(relativePath: string) => string` | Joins `relativePath` onto `dir` |
-| `getSessions` | `Effect.Effect<Array<DevSession>, PlatformError>` | Lists session subdirectories with their mtimes. `[]` if the root doesn't exist yet — not an error |
-| `createSession` | `Effect.Effect<DevSession, PlatformError>` | Creates a new session directory with a fresh slug |
-| `getLatestOrCreate` | `Effect.Effect<DevSession, PlatformError>` | Ensures the root exists, then returns the session with the newest directory mtime — or creates one if none exist |
+Reads the port already stored in `session`'s `sess.json`, passes it to [`get-port`](https://github.com/sindresorhus/get-port) as a preference, and writes back whichever port that call actually returns. **Not cached** — every call re-reads and re-asks; call it once per run and reuse the returned number. Built on `SessionState.slot` internally, so a `sess.json` corrupted by something outside `devsess` surfaces here as `SessionStateError` too.
 
-`getSessions`, `createSession`, and `getLatestOrCreate` are Effects already bound to the resolved service instance, not functions — read them off the service, e.g. `(yield* DevSessions).getLatestOrCreate`.
-
-`defineDevCli` always calls `getLatestOrCreate` internally. There's no built-in way to target a specific session from the CLI — use `DevSessions` (or `createDevSessions` from `devsess/async`) directly if you need to manage more than one session yourself.
-
-## `makeDevSessionsLayer`
+## `runManagedSubprocess`
 
 ```ts
-function makeDevSessionsLayer(rootDir: string): Layer.Layer<DevSessions, never, FileSystem | Path>
+function runManagedSubprocess(
+	cmd: string,
+	args: string[],
+	opts?: { env?: Record<string, string> },
+): Effect.Effect<ExitCode, PlatformError, ChildProcessSpawner | Scope.Scope>
 ```
 
-Builds the `DevSessions` layer scoped to `rootDir` — the sessions root itself (e.g. `<dir>/.data/sessions`), not the project `dir` passed to `defineDevCli`. No directory I/O happens when the layer is built, only when its methods run.
+Takes no `DevSession` — it only needs a scope to register cleanup against and something to spawn a process with. `ExitCode` (`effect/unstable/process`) is a branded `number`.
+
+| Parameter | Type | |
+| --- | --- | --- |
+| `cmd` | `string` | The executable to run |
+| `args` | `string[]` | Arguments passed to it |
+| `opts.env` | `Record<string, string>` | Extra environment variables, merged over `process.env` — they add and override, they don't replace it |
+
+Resolves to the child's exit code, once the child exits. stdio is `inherit` for stdin/stdout/stderr, so child output goes straight to your terminal. The child is registered against the ambient `Scope` — killed when it closes (script exit, throw, or Ctrl-C); a failed kill is logged, not thrown.
+
+## `publishRunning`, `awaitRunning`
+
+```ts
+function publishRunning(
+	data: unknown,
+): Effect.Effect<void, PlatformError, DevSessions | FileSystem | Path | Scope.Scope>
+
+function awaitRunning<T>(
+	pkg: string,
+): Effect.Effect<T, PlatformError, DevSessions | FileSystem | Path>
+```
+
+Neither takes a session — both pull the project root from `DevSessions` in context.
+
+**`publishRunning(data)`** — writes `data` as JSON to `<DevSessions#dir>/.data/running.json`, atomically (temp file, then rename, so readers never see a partial write). Deletes that file when its scope closes, so a crashed or exited publisher leaves no stale signal behind.
+
+**`awaitRunning<T>(pkg)`** — reads *another* package's running-signal file, not this project's own. `pkg` starting with `.` or `/` resolves as a path relative to `DevSessions#dir`; anything else is resolved as a package name via `require.resolve('<pkg>/package.json')`. Creates the sibling's `.data` directory if it doesn't exist yet (`fs.watch` would otherwise throw synchronously on a missing directory), then waits using `fs.watch` on it (no polling), plus one immediate read to catch the already-published case. **No timeout** — waits indefinitely.
+
+Running signals are **not session-scoped** — they coordinate across sibling packages in a monorepo, keyed by project directory. See [Wiring services together](/recipes/wiring-services).
 
 ## `SessionState.slot`
 
@@ -143,7 +164,3 @@ class SessionStateError extends Data.TaggedError('SessionStateError')<{
 - All slots for a session share one file, `<session>/sess.json`. `write` shallow-merges `data` into the existing JSON, so distinct slots (distinct schemas) coexist by key — but a key collision between two slots silently overwrites.
 - `read` resolves `null`, not `Option` — both when the file is missing and when decoding fails.
 - `write` creates the parent directory before writing, but the write itself is **not atomic** (no temp-file-then-rename, unlike the running-signal file). If the on-disk JSON is corrupt, `write` fails with `SessionStateError` (`_tag: 'SessionStateError'`) instead of merging into it — `read` is the one that degrades corrupt content to `null`, not `write`.
-
-## `cli`
-
-Re-export of `effect/unstable/cli`. Use it to declare `options` for `defineDevCli` without adding `effect` as a direct import, e.g. `cli.Flag.boolean('lite')`. See [defineDevCli](/define-dev-cli).

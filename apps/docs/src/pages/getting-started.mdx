@@ -2,39 +2,61 @@
 
 ## Install
 
-Install devsess and its peer dependencies:
+devsess needs `effect`, plus whichever platform you run scripts on — it doesn't declare a peer on either, so install the one you use directly:
 
 ```bash
 bun add devsess effect @effect/platform-node
 ```
 
+```bash
+bun add devsess effect @effect/platform-bun
+```
+
 ## Write the script
 
-Create `scripts/dev.ts`:
+Create `scripts/dev.ts`. Build a stock `Command` and provide devsess's layers around it, using whichever platform package you installed:
 
 ```ts
 // scripts/dev.ts
-import { join } from 'node:path'
-import { defineDevCli } from 'devsess'
+import { CurrentSession, DevSessions, getStickyPort, runManagedSubprocess } from 'devsess'
+import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
+import { Command } from 'effect/unstable/cli'
 
-const main = defineDevCli({
-	name: 'web',
-	dir: join(import.meta.dirname, '..'),
-	run: (ctx) =>
-		Effect.gen(function* () {
-			const session = yield* ctx.session
-			console.log(`session: ${session.name}`)
+const web = Command.make('web', {}, () =>
+	Effect.gen(function* () {
+		const session = yield* CurrentSession
+		console.log(`session: ${session.name}`)
 
-			const port = yield* ctx.getStickyPort()
-			yield* ctx.runManagedSubprocess('bunx', ['vite'], {
-				env: { PORT: String(port) },
-			})
-		}),
-})
+		const port = yield* getStickyPort(session)
+		yield* runManagedSubprocess('bunx', ['vite'], {
+			env: { PORT: String(port) },
+		})
+	}).pipe(Effect.provide(CurrentSession.layer)),
+)
 
-main(process.argv)
+Command.run(web, { version: '0.1.0' }).pipe(
+	Effect.provide(DevSessions.layer),
+	Effect.provide(NodeServices.layer),
+	Effect.scoped,
+	NodeRuntime.runMain,
+)
 ```
+
+On Bun, the shape is identical — swap the import and the layer:
+
+```ts
+import { BunRuntime, BunServices } from '@effect/platform-bun'
+
+Command.run(web, { version: '0.1.0' }).pipe(
+	Effect.provide(DevSessions.layer),
+	Effect.provide(BunServices.layer),
+	Effect.scoped,
+	BunRuntime.runMain,
+)
+```
+
+There's no `dir` to pass — `DevSessions.layer` auto-detects your project root by walking up from `process.cwd()` to the nearest `package.json`. `CurrentSession.layer` sits on the handler rather than around `Command.run` on purpose: a `Layer`'s build effect runs the moment it's provided, so putting it around the whole CLI would resolve (and create) a session even for `--help`. [Writing a dev CLI →](/writing-a-dev-cli) says more.
 
 This resolves the current session, reads a sticky port for it, and runs `vite` as a managed subprocess bound to that port.
 
@@ -59,10 +81,10 @@ Running the script created `.data/sessions/walrus/` in this checkout. It holds t
 
 ## What just happened
 
-- **Session.** devsess resolved this checkout's session — a directory under `.data/sessions/`, isolated from any other checkout of this project. It picked whichever session was modified most recently, or created one since none existed yet. Slugs are a single word, like `walrus`, not something you name. [defineDevCli →](/define-dev-cli)
-- **Sticky port.** It read the port already stored in that session and asked for it again — `getStickyPort()` hands back the same port next run, as long as it's still free. [Ports that survive restarts →](/recipes/ports)
+- **Session.** devsess resolved this checkout's session — a directory under `.data/sessions/`, isolated from any other checkout of this project. It picked whichever session was modified most recently, or created one since none existed yet. Slugs are a single word, like `walrus`, not something you name. [Writing a dev CLI →](/writing-a-dev-cli)
+- **Sticky port.** It read the port already stored in that session and asked for it again — `getStickyPort(session)` hands back the same port next run, as long as it's still free. [Ports that survive restarts →](/recipes/ports)
 - **Managed subprocess.** `vite` ran under devsess's control. Ctrl-C the script and devsess kills it too — no orphaned process left behind. [Running your dev server →](/recipes/dev-server)
-- **defineDevCli.** All of it runs inside one Effect scope that `defineDevCli` sets up before your `run` function is ever called. That scope closing is what makes the cleanup above possible. [defineDevCli →](/define-dev-cli)
+- **One scope.** All of it runs inside the `Effect.scoped(...)` wrapped around `Command.run(...)` above. That scope closing is what makes the cleanup above possible. [Writing a dev CLI →](/writing-a-dev-cli)
 
 ## Where to go next
 
