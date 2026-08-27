@@ -20,14 +20,25 @@ const port = yield* getStickyPort(session)
 ```
 
 ```ts
-getStickyPort(session: DevSession): Effect<number>
+getStickyPort(session: DevSession, options?: { name?: string }): Effect<number>
 ```
 
-It takes the session and nothing else — it always reads and writes that session, not any other. Internally it pulls whatever port is stored in `sess.json`, passes it to `get-port` as a preference, and writes back whichever port that call actually returns.
+It takes the session, plus an optional name — nothing else. It always reads and writes that session, not any other; omit the name (or the whole options object) and it resolves the entry named `default`, which is what every example above does. Internally it pulls whatever port is stored under that name in `sess.json`, passes it to `get-port` as a preference, and writes back whichever port that call actually returns.
 
 :::warning[Best-effort, not guaranteed]
 The remembered port is a preference, not a reservation. If something else has taken it since your last run, you get a different free port instead — and that new one is what gets remembered from now on. Don't build anything that assumes the port can never change.
 :::
+
+## Named ports
+
+A session that runs one server only ever needs the `default` name — everything above this section already uses it, implicitly. A session running two servers, say a web app and a mock API it talks to, needs two remembered ports instead:
+
+```ts
+const port = yield* getStickyPort(session)
+const apiPort = yield* getStickyPort(session, { name: 'api' })
+```
+
+`sess.json` grows a slot per name — `{ ports: { default: 4321, api: 4322 } }` — instead of one top-level port. Resolving one name excludes the ports already remembered under the others, so allocating `api`'s port can't land on the one `default` is holding. Reach for a second name when you actually have a second server; most scripts never need more than `default`.
 
 ## Discoverable
 
