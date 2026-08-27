@@ -1,5 +1,11 @@
 # devsess
 
+## 0.3.0
+
+### Minor Changes
+
+- 24b3950: `getStickyPort` now accepts an optional `{ name }` to remember multiple ports per session, keyed by name (defaulting to `default`).
+
 ## 0.2.0
 
 ### Minor Changes
