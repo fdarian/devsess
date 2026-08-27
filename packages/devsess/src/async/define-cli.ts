@@ -18,7 +18,7 @@ import { type DevSession, toAsyncSession } from './session';
 /** Promise-returning mirror of the Effect core's free functions (`getStickyPort`, `runManagedSubprocess`, `publishRunning`, `awaitRunning`), bundled into a single per-run context. */
 type AsyncRunContext = {
 	session: () => Promise<DevSession>;
-	getStickyPort: () => Promise<number>;
+	getStickyPort: (options?: { name?: string }) => Promise<number>;
 	runManagedSubprocess: (
 		...args: Parameters<typeof runManagedSubprocess>
 	) => Promise<Effect.Success<ReturnType<typeof runManagedSubprocess>>>;
@@ -59,9 +59,11 @@ export const defineDevCli = (config: {
 				const ctx: AsyncRunContext = {
 					session: () =>
 						Effect.runPromiseWith(services)(session).then(toAsyncSession),
-					getStickyPort: () =>
+					getStickyPort: (options) =>
 						Effect.runPromiseWith(services)(
-							Effect.flatMap(session, getStickyPort),
+							Effect.flatMap(session, (resolved) =>
+								getStickyPort(resolved, options),
+							),
 						),
 					runManagedSubprocess: (...args) =>
 						Effect.runPromiseWith(services)(runManagedSubprocess(...args)),
