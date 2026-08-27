@@ -42,14 +42,14 @@ The `ctx` object passed to `run`. Promise-returning mirror of the Effect core's 
 | Member | Type |
 |---|---|
 | `session()` | `() => Promise<DevSession>` |
-| `getStickyPort()` | `() => Promise<number>` |
+| `getStickyPort(options?)` | `(options?: { name?: string }) => Promise<number>` |
 | `runManagedSubprocess(cmd, args, opts?)` | `(cmd: string, args: string[], opts?: { env?: Record<string, string> }) => Promise<ExitCode>` |
 | `publishRunning(data)` | `(data: unknown) => Promise<void>` |
 | `awaitRunning<T>(pkg)` | `(pkg: string) => Promise<T>` |
 
 Differences from the Effect functions that bite:
 - **`session` is a function**, not a service tag — call `await ctx.session()` every time you need it. It's still resolved at most once per run internally (`Effect.cached`), so repeated calls don't repeat the session lookup.
-- **`getStickyPort()` is not cached**, same as the Effect version — every call re-reads the stored port and re-asks `get-port`. Call it once per run and reuse the number.
+- **`getStickyPort(options?)` is not cached**, same as the Effect version — every call re-reads the stored port and re-asks `get-port`. Call it once per name per run and reuse the number. Omit `options` (or `options.name`) to resolve the port named `default` — see [`getStickyPort`](/reference/devsess) for how names are stored and excluded from each other.
 - **`runManagedSubprocess`, `publishRunning`, and `awaitRunning` don't take a session either** — same as their Effect counterparts, they only need the scope `defineDevCli` opens internally (see above), or the project root for the latter two.
 
 Otherwise identical: `runManagedSubprocess` merges `env` over `process.env` and inherits stdio; `publishRunning` writes atomically and deletes its file on process exit; `awaitRunning` has no timeout.

@@ -98,10 +98,11 @@ type DevSession = {
 ```ts
 function getStickyPort(
 	session: DevSession,
+	options?: { name?: string },
 ): Effect.Effect<number, PlatformError | SessionStateError, FileSystem | Path>
 ```
 
-Reads the port already stored in `session`'s `sess.json`, passes it to [`get-port`](https://github.com/sindresorhus/get-port) as a preference, and writes back whichever port that call actually returns. **Not cached** — every call re-reads and re-asks; call it once per run and reuse the returned number. Built on `SessionState.slot` internally, so a `sess.json` corrupted by something outside `devsess` surfaces here as `SessionStateError` too.
+Reads the port already stored under `options?.name ?? 'default'` in `session`'s `sess.json` (`{ ports: Record<string, number> }`), passes it to [`get-port`](https://github.com/sindresorhus/get-port) as a preference, and writes back whichever port that call actually returns, keyed by that same name. The ports remembered under every other name are passed to `get-port` as `exclude`, so resolving one name can never return a port another name is holding. A `sess.json` written before named ports existed has a top-level `port` instead of `ports` — still read once, as the seed for `default`, but never written again once the new shape lands. **Not cached** — every call re-reads and re-asks; call it once per name per run and reuse the returned number. Built on `SessionState.slot` internally, so a `sess.json` corrupted by something outside `devsess` surfaces here as `SessionStateError` too.
 
 ## `runManagedSubprocess`
 
