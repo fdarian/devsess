@@ -3,6 +3,7 @@ import { defineConfig } from 'tsup';
 export default defineConfig({
 	entry: {
 		index: 'src/index.ts',
+		cli: 'src/cli.ts',
 		'pglite/index': 'src/pglite/index.ts',
 		'async/index': 'src/async/index.ts',
 	},
