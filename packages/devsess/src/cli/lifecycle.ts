@@ -1,26 +1,26 @@
 import { Context, Effect, Layer } from 'effect';
-import { Daemon, type DaemonError } from './daemon';
+import type { FileSystem } from 'effect/FileSystem';
+import type { Path } from 'effect/Path';
+import { Daemon, type DaemonError, type DaemonService } from './daemon';
 import type { DaemonRequest } from './protocol';
+
+export type DaemonLifecycleService = {
+	readonly daemon: DaemonService;
+};
 
 export class DaemonLifecycle extends Context.Service<
 	DaemonLifecycle,
-	{
-		readonly daemon: {
-			readonly request: (
-				incoming: DaemonRequest,
-			) => Effect.Effect<unknown, DaemonError>;
-		};
-	}
+	DaemonLifecycleService
 >()('devsess/cli/DaemonLifecycle') {
-	static readonly layer = (options: {
+	static readonly layer: (options: {
 		socketPath: string;
 		dataDirectory: string;
-	}) =>
+	}) => Layer.Layer<DaemonLifecycle, unknown, FileSystem | Path> = (options) =>
 		Layer.effect(
 			DaemonLifecycle,
 			Daemon.pipe(Effect.map((daemon) => DaemonLifecycle.of({ daemon }))),
 		).pipe(
-			Layer.provide(
+			Layer.provideMerge(
 				Daemon.layer({
 					socketPath: options.socketPath,
 					dataDirectory: options.dataDirectory,
