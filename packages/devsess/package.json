@@ -63,6 +63,8 @@
 	},
 	"dependencies": {
 		"@effect/platform-node": "4.0.0-beta.101",
+		"@effect/platform-node-shared": "4.0.0-beta.101",
+		"effect": "4.0.0-beta.101",
 		"get-port": "^7.2.0",
 		"node-pty": "1.0.0",
 		"random-word-slugs": "^0.1.7"
@@ -86,7 +88,6 @@
 		"@electric-sql/pglite": "^0.5.3",
 		"@types/node": "^22.0.0",
 		"drizzle-orm": "^0.45.2",
-		"effect": "^4.0.0-beta.101",
 		"tsup": "^8.5.1",
 		"vitest": "^4.1.10"
 	}
