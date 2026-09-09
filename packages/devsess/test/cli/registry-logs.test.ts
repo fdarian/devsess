@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest';
-import { Effect, Ref } from 'effect';
+import { Deferred, Duration, Effect, Exit, Ref } from 'effect';
 import { Logs } from '../../src/cli/logs';
 import { Registry, type RunRecord } from '../../src/cli/registry';
 import { runTest } from '../support/run-test';
@@ -58,13 +58,18 @@ describe('Logs', () => {
 					const address = { runId: 'run', serviceName: 'web' };
 					yield* logs.append(address, 'ab');
 					const delivered = yield* Ref.make([] as Array<string>);
+					const deliveredSignal = yield* Deferred.make<void>();
 					const subscription = yield* logs.replayAndSubscribe(
 						address,
 						0,
 						(event) =>
-							Ref.update(delivered, (events) => [...events, event.data]),
+							Effect.andThen(
+								Ref.update(delivered, (events) => [...events, event.data]),
+								Deferred.succeed(deliveredSignal, undefined),
+							),
 					);
 					yield* logs.append(address, 'cd');
+					yield* Deferred.await(deliveredSignal);
 					expect(subscription.replay.map((event) => event.data)).toEqual([
 						'ab',
 					]);
@@ -79,5 +84,49 @@ describe('Logs', () => {
 					yield* retained.unsubscribe;
 				}),
 			),
+	);
+
+	it.effect('does not let a slow listener block append', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const logs = yield* Logs.pipe(
+					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 1024 })),
+				);
+				const subscription = yield* logs.replayAndSubscribe(
+					{ runId: 'run', serviceName: 'web' },
+					0,
+					() => Effect.never,
+				);
+				const result = yield* Effect.exit(
+					Effect.timeout(
+						logs.append({ runId: 'run', serviceName: 'web' }, 'output'),
+						Duration.seconds(1),
+					),
+				);
+				expect(Exit.isSuccess(result)).toBe(true);
+				yield* subscription.unsubscribe;
+			}),
+		),
+	);
+
+	it.effect('keeps oversized events within the retention bound', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const logs = yield* Logs.pipe(
+					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 3 })),
+				);
+				const address = { runId: 'run', serviceName: 'web' };
+				yield* logs.append(address, 'abcd');
+				const subscription = yield* logs.replayAndSubscribe(
+					address,
+					0,
+					() => Effect.void,
+				);
+				expect(subscription.replay.map((event) => event.data)).toEqual(['d']);
+				yield* subscription.unsubscribe;
+			}),
+		),
 	);
 });

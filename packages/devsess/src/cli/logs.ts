@@ -1,4 +1,12 @@
-import { Context, Effect, Layer, Schema, Semaphore } from 'effect';
+import {
+	Context,
+	Effect,
+	Fiber,
+	Layer,
+	Queue,
+	Schema,
+	Semaphore,
+} from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { Path } from 'effect/Path';
 import type { PlatformError } from 'effect/PlatformError';
@@ -42,6 +50,25 @@ const retain = (events: Array<LogEvent>, maxBytes: number) => {
 		kept.shift();
 	}
 	return kept;
+};
+
+const splitData = (data: string, maxBytes: number) => {
+	const encoder = new TextEncoder();
+	const chunks: Array<string> = [];
+	let chunk = '';
+	let chunkBytes = 0;
+	for (const character of data) {
+		const characterBytes = encoder.encode(character).byteLength;
+		if (chunk !== '' && chunkBytes + characterBytes > maxBytes) {
+			chunks.push(chunk);
+			chunk = '';
+			chunkBytes = 0;
+		}
+		chunk += character;
+		chunkBytes += characterBytes;
+	}
+	if (chunk !== '' || data === '') chunks.push(chunk);
+	return chunks;
 };
 
 const writeAtomically = (target: string, content: string) =>
@@ -92,7 +119,11 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 		const semaphore = yield* Semaphore.make(1);
 		const listeners = new Map<
 			string,
-			Set<(event: LogEvent) => Effect.Effect<void>>
+			Set<{
+				readonly listener: (event: LogEvent) => Effect.Effect<void>;
+				readonly queue: Queue.Queue<LogEvent>;
+				readonly fiber: Fiber.Fiber<void, unknown>;
+			}>
 		>();
 		const logPath = (address: LogAddress) =>
 			path.join(
@@ -122,23 +153,42 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 			semaphore.withPermit(
 				read(address).pipe(
 					Effect.flatMap((stored) => {
-						const event = {
-							data,
+						const chunks = splitData(data, options.maxBytes);
+						const events = chunks.map((chunk, index) => ({
+							data: chunk,
 							offset:
-								stored.nextOffset + new TextEncoder().encode(data).byteLength,
-						};
+								stored.nextOffset +
+								chunks
+									.slice(0, index + 1)
+									.reduce(
+										(total, value) =>
+											total + new TextEncoder().encode(value).byteLength,
+										0,
+									),
+						}));
+						const finalEvent = events[events.length - 1];
+						if (finalEvent === undefined) return Effect.die('empty log event');
 						const next = {
-							nextOffset: event.offset,
-							events: retain([...stored.events, event], options.maxBytes),
+							nextOffset: finalEvent.offset,
+							events: retain([...stored.events, ...events], options.maxBytes),
 						};
 						const active = listeners.get(logKey(address));
 						return writeAtomically(logPath(address), JSON.stringify(next)).pipe(
 							Effect.andThen(
 								active === undefined
 									? Effect.void
-									: Effect.forEach(active, (listener) => listener(event)),
+									: Effect.forEach(
+											active,
+											(subscription) =>
+												Effect.forEach(
+													events,
+													(event) => Queue.offer(subscription.queue, event),
+													{ discard: true },
+												),
+											{ discard: true },
+										),
 							),
-							Effect.as(event),
+							Effect.as(finalEvent),
 						);
 					}),
 				),
@@ -150,26 +200,46 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 		) =>
 			semaphore.withPermit(
 				read(address).pipe(
-					Effect.map((stored) => {
-						const key = logKey(address);
-						const current = listeners.get(key);
-						const subscribed =
-							current === undefined
-								? new Set<(event: LogEvent) => Effect.Effect<void>>()
-								: current;
-						subscribed.add(listener);
-						listeners.set(key, subscribed);
-						const unsubscribe = semaphore.withPermit(
-							Effect.sync(() => {
-								subscribed.delete(listener);
-								if (subscribed.size === 0) listeners.delete(key);
-							}),
-						);
-						return {
-							replay: stored.events.filter((event) => event.offset > after),
-							unsubscribe,
-						};
-					}),
+					Effect.flatMap((stored) =>
+						Effect.gen(function* () {
+							const key = logKey(address);
+							const current = listeners.get(key);
+							const subscribed =
+								current === undefined
+									? new Set<{
+											readonly listener: (
+												event: LogEvent,
+											) => Effect.Effect<void>;
+											readonly queue: Queue.Queue<LogEvent>;
+											readonly fiber: Fiber.Fiber<void, unknown>;
+										}>()
+									: current;
+							const queue = yield* Queue.dropping<LogEvent>(256);
+							const fiber = yield* Effect.gen(function* () {
+								yield* Effect.forever(
+									Effect.gen(function* () {
+										const event = yield* Queue.take(queue);
+										yield* listener(event);
+									}),
+								);
+							}).pipe(Effect.forkDetach);
+							const subscription = { listener, queue, fiber };
+							subscribed.add(subscription);
+							listeners.set(key, subscribed);
+							const unsubscribe = semaphore.withPermit(
+								Effect.sync(() => {
+									subscribed.delete(subscription);
+									if (subscribed.size === 0) listeners.delete(key);
+								}).pipe(
+									Effect.andThen(Effect.forkDetach(Fiber.interrupt(fiber))),
+								),
+							);
+							return {
+								replay: stored.events.filter((event) => event.offset > after),
+								unsubscribe,
+							};
+						}),
+					),
 				),
 			);
 		return Logs.of({ append, replayAndSubscribe });
