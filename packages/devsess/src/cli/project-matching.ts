@@ -1,7 +1,7 @@
 import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve } from 'node:path';
-import { Effect, Schema } from 'effect';
+import { Effect, Option, Schema } from 'effect';
 import type { ConfigProject, DevsessConfig } from './config';
 
 export class ProjectPathResolutionError extends Schema.TaggedErrorClass<ProjectPathResolutionError>()(
@@ -13,6 +13,7 @@ export class ProjectPathResolutionError extends Schema.TaggedErrorClass<ProjectP
 ) {}
 
 export type Invocation = {
+	invocationCwd: string;
 	canonicalCwd: string;
 	gitOrigin?: string;
 };
@@ -26,6 +27,9 @@ export type ProjectMatches = {
 	matchType: 'path' | 'git' | 'none';
 	projects: ReadonlyArray<MatchedProject>;
 };
+
+const isNodeError = (cause: unknown): cause is NodeJS.ErrnoException =>
+	typeof cause === 'object' && cause !== null && 'code' in cause;
 
 const expandHome = (path: string) => {
 	if (path === '~') {
@@ -46,7 +50,48 @@ const canonicalPath = (path: string, basePath: string) =>
 /** Captures the real path used by a start invocation before daemon work begins. */
 export const captureInvocation = (cwd: string, gitOrigin?: string) =>
 	canonicalPath(cwd, process.cwd()).pipe(
-		Effect.map((canonicalCwd): Invocation => ({ canonicalCwd, gitOrigin })),
+		Effect.map((canonicalCwd): Invocation => ({
+			invocationCwd: cwd,
+			canonicalCwd,
+			gitOrigin:
+				gitOrigin === undefined ? undefined : normalizeGitOrigin(gitOrigin),
+		})),
+	);
+
+/** Makes equivalent SSH and HTTPS remote spellings comparable. */
+export const normalizeGitOrigin = (origin: string) => {
+	const trimmedOrigin = origin.trim().replace(/\/+$/, '').replace(/\.git$/, '');
+	const urlOrigin = trimmedOrigin.match(
+		/^(?:https?|ssh):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+)$/i,
+	);
+	if (urlOrigin !== null) {
+		const host = urlOrigin[1];
+		const path = urlOrigin[2];
+		if (host === undefined || path === undefined) {
+			return trimmedOrigin;
+		}
+		return `${host.toLowerCase()}/${path}`;
+	}
+	const scpOrigin = trimmedOrigin.match(/^(?:[^@/:]+@)?([^/:]+):(.+)$/);
+	if (scpOrigin !== null) {
+		const host = scpOrigin[1];
+		const path = scpOrigin[2];
+		if (host === undefined || path === undefined) {
+			return trimmedOrigin;
+		}
+		return `${host.toLowerCase()}/${path}`;
+	}
+	return trimmedOrigin;
+};
+
+const canonicalMatcherPath = (path: string, invocation: Invocation) =>
+	canonicalPath(path, invocation.canonicalCwd).pipe(
+		Effect.map(Option.some),
+		Effect.catchTag('ProjectPathResolutionError', (error) =>
+			isNodeError(error.cause) && error.cause.code === 'ENOENT'
+				? Effect.succeed(Option.none())
+				: error,
+		),
 	);
 
 const isPathMatch = (projectPath: string, invocationPath: string) => {
@@ -79,12 +124,15 @@ export const matchProjects = (config: DevsessConfig, invocation: Invocation) =>
 			if (project.project.matcher.type !== 'path') {
 				continue;
 			}
-			const projectPath = yield* canonicalPath(
+			const projectPath = yield* canonicalMatcherPath(
 				project.project.matcher.path,
-				invocation.canonicalCwd,
+				invocation,
 			);
-			if (isPathMatch(projectPath, invocation.canonicalCwd)) {
-				pathMatches.push({ project, pathLength: projectPath.length });
+			if (
+				Option.isSome(projectPath) &&
+				isPathMatch(projectPath.value, invocation.canonicalCwd)
+			) {
+				pathMatches.push({ project, pathLength: projectPath.value.length });
 			}
 		}
 
@@ -103,7 +151,8 @@ export const matchProjects = (config: DevsessConfig, invocation: Invocation) =>
 		const gitMatches = namedProjects(config).filter((project) =>
 			project.project.matcher.type === 'git' &&
 			invocation.gitOrigin !== undefined
-				? project.project.matcher.origin === invocation.gitOrigin
+				? normalizeGitOrigin(project.project.matcher.origin) ===
+					invocation.gitOrigin
 				: false,
 		);
 		return {
