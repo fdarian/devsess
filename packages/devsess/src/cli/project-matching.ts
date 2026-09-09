@@ -1,15 +1,16 @@
 import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve } from 'node:path';
-import { Data, Effect } from 'effect';
+import { Effect, Schema } from 'effect';
 import type { ConfigProject, DevsessConfig } from './config';
 
-export class ProjectPathResolutionError extends Data.TaggedError(
+export class ProjectPathResolutionError extends Schema.TaggedErrorClass<ProjectPathResolutionError>()(
 	'ProjectPathResolutionError',
-)<{
-	path: string;
-	cause: unknown;
-}> {}
+	{
+		path: Schema.String,
+		cause: Schema.Defect(),
+	},
+) {}
 
 export type Invocation = {
 	canonicalCwd: string;
