@@ -27,7 +27,7 @@ import {
 	PROTOCOL_VERSION,
 	splitFrames,
 } from './protocol';
-import { createPty, resizePty, terminatePty, writePty } from './pty';
+import { createPty, resizePty, writePty } from './pty';
 import {
 	Registry,
 	type RunRecord,
@@ -150,9 +150,9 @@ const closeServer = (server: Server) =>
 			new DaemonError({ message: 'Could not close daemon socket', cause }),
 	});
 
-export const makeDaemon = (
-	options: { socketPath: string },
-): Effect.Effect<
+export const makeDaemon = (options: {
+	socketPath: string;
+}): Effect.Effect<
 	DaemonService,
 	unknown,
 	Registry | Logs | Processes | FileSystem | Path | Scope
@@ -349,31 +349,55 @@ export const makeDaemon = (
 							cols: 80,
 							rows: 24,
 						});
-						const ownership = yield* processes
-							.captureLive(terminal.pid)
-							.pipe(
-								Effect.catch((cause) =>
-									terminatePty(terminal, service.command).pipe(
-										Effect.andThen(Effect.fail(cause)),
-									),
-								),
-							);
 						const address = { runId: run.runId, serviceName: service.name };
-						terminals.set(serviceKey(address), {
-							address,
-							terminal,
-							ownership,
-							lease: undefined,
-						});
+						const observed: { exitCode: number | undefined } = {
+							exitCode: undefined,
+						};
 						terminal.onData((data) => {
 							Queue.offerUnsafe(queue, { _tag: 'ptyOutput', address, data });
 						});
 						terminal.onExit((event) => {
+							observed.exitCode = event.exitCode;
 							Queue.offerUnsafe(queue, {
 								_tag: 'exited',
 								address,
 								exitCode: event.exitCode,
 							});
+						});
+						const captured = yield* Effect.exit(
+							processes.captureLive(terminal.pid),
+						);
+						if (Exit.isFailure(captured)) {
+							if (observed.exitCode !== undefined) {
+								yield* replaceService(
+									address,
+									observed.exitCode === 0 ? 'exited' : 'failed',
+								);
+								continue;
+							}
+							yield* Effect.try({
+								try: () => terminal.kill('SIGKILL'),
+								catch: (cause) =>
+									new DaemonError({
+										message: `Could not roll back unrecorded PTY ${service.name}`,
+										cause,
+									}),
+							}).pipe(
+								Effect.catch((error) =>
+									error.cause instanceof Error &&
+									(error.cause as NodeJS.ErrnoException).code === 'ESRCH'
+										? Effect.void
+										: error,
+								),
+							);
+							return yield* Effect.failCause(captured.cause);
+						}
+						const ownership = captured.value;
+						terminals.set(serviceKey(address), {
+							address,
+							terminal,
+							ownership,
+							lease: undefined,
 						});
 						yield* Effect.gen(function* () {
 							const stored = yield* registry.get(run.runId);
