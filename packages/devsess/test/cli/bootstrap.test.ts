@@ -209,4 +209,34 @@ describe('daemon bootstrap', () => {
 				}),
 			),
 	);
+
+	it.live(
+		'preserves a connected but silent endpoint without a launch lock',
+		() =>
+			runTest(
+				Effect.scoped(
+					Effect.gen(function* () {
+						const rootDir = yield* makeTempDir;
+						const socketPath = join(rootDir, 'daemon.sock');
+						const dataDirectory = join(rootDir, 'state');
+						let launches = 0;
+						const server = createServer(() => undefined);
+						yield* listen(server, socketPath);
+						yield* Effect.addFinalizer(() => Effect.sync(() => server.close()));
+						const exit = yield* Effect.exit(
+							ensureDaemon({
+								location: { dataDirectory, socketPath },
+								launch: () =>
+									Effect.sync(() => {
+										launches += 1;
+									}),
+							}),
+						);
+						expect(exit._tag).toBe('Failure');
+						expect(launches).toBe(0);
+						expect(server.listening).toBe(true);
+					}),
+				),
+			),
+	);
 });
