@@ -15,7 +15,7 @@ export class ProjectPathResolutionError extends Schema.TaggedErrorClass<ProjectP
 export type Invocation = {
 	invocationCwd: string;
 	canonicalCwd: string;
-	gitOrigin?: string;
+	repo?: string;
 };
 
 export type MatchedProject = {
@@ -48,45 +48,58 @@ const canonicalPath = (path: string, basePath: string) =>
 	});
 
 /** Captures the real path used by a start invocation before daemon work begins. */
-export const captureInvocation = (cwd: string, gitOrigin?: string) =>
+export const captureInvocation = (cwd: string, repo?: string) =>
 	canonicalPath(cwd, process.cwd()).pipe(
 		Effect.map(
 			(canonicalCwd): Invocation => ({
 				invocationCwd: cwd,
 				canonicalCwd,
-				gitOrigin:
-					gitOrigin === undefined ? undefined : normalizeGitOrigin(gitOrigin),
+				repo: repo === undefined ? undefined : normalizeGitRepo(repo),
 			}),
 		),
 	);
 
 /** Makes equivalent SSH and HTTPS remote spellings comparable. */
-export const normalizeGitOrigin = (origin: string) => {
-	const trimmedOrigin = origin
+export const normalizeGitRepo = (repo: string) => {
+	const trimmedRepo = repo
 		.trim()
 		.replace(/\/+$/, '')
 		.replace(/\.git$/, '');
-	const urlOrigin = trimmedOrigin.match(
+	const urlRepo = trimmedRepo.match(
 		/^(?:https?|ssh):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+)$/i,
 	);
-	if (urlOrigin !== null) {
-		const host = urlOrigin[1];
-		const path = urlOrigin[2];
-		if (host === undefined || path === undefined) {
-			return trimmedOrigin;
+	if (urlRepo !== null) {
+		const host = urlRepo[1];
+		const path = urlRepo[2];
+		if (host !== undefined && path !== undefined) {
+			return `${host}/${path}`.toLowerCase();
 		}
-		return `${host.toLowerCase()}/${path}`;
 	}
-	const scpOrigin = trimmedOrigin.match(/^(?:[^@/:]+@)?([^/:]+):(.+)$/);
-	if (scpOrigin !== null) {
-		const host = scpOrigin[1];
-		const path = scpOrigin[2];
-		if (host === undefined || path === undefined) {
-			return trimmedOrigin;
+	const scpRepo = trimmedRepo.match(/^(?:[^@/:]+@)?([^/:]+):(.+)$/);
+	if (scpRepo !== null) {
+		const host = scpRepo[1];
+		const path = scpRepo[2];
+		if (host !== undefined && path !== undefined) {
+			return `${host}/${path}`.toLowerCase();
 		}
-		return `${host.toLowerCase()}/${path}`;
 	}
-	return trimmedOrigin;
+	return trimmedRepo.toLowerCase();
+};
+
+/**
+ * A configured `repo` matches an invocation identity when they're equal, or
+ * when the configured value is a shorthand landing on a `/` boundary — e.g.
+ * `acme/project` matches `github.com/acme/project`, but `me/project` does not.
+ */
+export const matchesGitRepo = (
+	invocationRepo: string,
+	configuredRepo: string,
+) => {
+	const normalizedConfiguredRepo = normalizeGitRepo(configuredRepo);
+	return (
+		invocationRepo === normalizedConfiguredRepo ||
+		invocationRepo.endsWith(`/${normalizedConfiguredRepo}`)
+	);
 };
 
 const canonicalMatcherPath = (path: string, invocation: Invocation) =>
@@ -154,10 +167,8 @@ export const matchProjects = (config: DevsessConfig, invocation: Invocation) =>
 		}
 
 		const gitMatches = namedProjects(config).filter((project) =>
-			project.project.matcher.type === 'git' &&
-			invocation.gitOrigin !== undefined
-				? normalizeGitOrigin(project.project.matcher.origin) ===
-					invocation.gitOrigin
+			project.project.matcher.type === 'git' && invocation.repo !== undefined
+				? matchesGitRepo(invocation.repo, project.project.matcher.repo)
 				: false,
 		);
 		return {
