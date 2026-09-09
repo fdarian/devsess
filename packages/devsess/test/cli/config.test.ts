@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 import { Effect } from 'effect';
-import { decodeConfig } from '../../src/cli/config';
+import { decodeConfig, defaultConfigPath } from '../../src/cli/config';
 import {
 	captureInvocation,
 	matchProjects,
@@ -29,29 +29,38 @@ const configJson = JSON.stringify({
 	},
 });
 
+const requireDefined = <T>(value: T | undefined, label: string) =>
+	value === undefined
+		? Effect.die(`Expected ${label} to be defined`)
+		: Effect.succeed(value);
+
 describe('CLI configuration', () => {
 	it.effect(
 		'decodes the minimal global config and preserves optional service cwd',
 		() =>
 			Effect.gen(function* () {
 				const config = yield* decodeConfig(configJson);
-				const alpha = config.projects.alpha;
-				expect(alpha).toBeDefined();
-				if (alpha === undefined) {
-					return;
-				}
-				const web = alpha.presets.web;
-				expect(web).toBeDefined();
-				if (web === undefined) {
-					return;
-				}
-				const app = web.services.app;
-				expect(app).toBeDefined();
-				if (app === undefined) {
-					return;
-				}
+				const alpha = yield* requireDefined(
+					config.projects.alpha,
+					'alpha project',
+				);
+				const web = yield* requireDefined(alpha.presets.web, 'web preset');
+				const app = yield* requireDefined(web.services.app, 'app service');
 				expect(app.command).toBe('bun run dev');
 				expect(app.cwd).toBe('apps/web');
+			}),
+	);
+
+	it.effect(
+		'uses XDG_CONFIG_HOME when supplied and otherwise follows XDG defaults',
+		() =>
+			Effect.sync(() => {
+				expect(defaultConfigPath('/home/dev')).toBe(
+					'/home/dev/.config/devsess/config.json',
+				);
+				expect(defaultConfigPath('/home/dev', '/var/config')).toBe(
+					'/var/config/devsess/config.json',
+				);
 			}),
 	);
 
@@ -190,13 +199,14 @@ describe('preset selection', () => {
 						},
 					}),
 				);
-				const alpha = config.projects.alpha;
-				const beta = config.projects.beta;
-				expect(alpha).toBeDefined();
-				expect(beta).toBeDefined();
-				if (alpha === undefined || beta === undefined) {
-					return;
-				}
+				const alpha = yield* requireDefined(
+					config.projects.alpha,
+					'alpha project',
+				);
+				const beta = yield* requireDefined(
+					config.projects.beta,
+					'beta project',
+				);
 				const presets = qualifiedPresets([
 					{ projectName: 'alpha', project: alpha },
 					{ projectName: 'beta', project: beta },
@@ -209,20 +219,22 @@ describe('preset selection', () => {
 					).toEqual(['alpha', 'beta']);
 				}
 				const invocation = { canonicalCwd: '/work/invoked' };
-				const alphaPreset = alpha.presets.dev;
-				const betaPreset = beta.presets.dev;
-				expect(alphaPreset).toBeDefined();
-				expect(betaPreset).toBeDefined();
-				if (alphaPreset === undefined || betaPreset === undefined) {
-					return;
-				}
-				const alphaApp = alphaPreset.services.app;
-				const betaApp = betaPreset.services.app;
-				expect(alphaApp).toBeDefined();
-				expect(betaApp).toBeDefined();
-				if (alphaApp === undefined || betaApp === undefined) {
-					return;
-				}
+				const alphaPreset = yield* requireDefined(
+					alpha.presets.dev,
+					'alpha preset',
+				);
+				const betaPreset = yield* requireDefined(
+					beta.presets.dev,
+					'beta preset',
+				);
+				const alphaApp = yield* requireDefined(
+					alphaPreset.services.app,
+					'alpha app',
+				);
+				const betaApp = yield* requireDefined(
+					betaPreset.services.app,
+					'beta app',
+				);
 				expect(resolveServiceCwd(alphaApp, invocation)).toBe('/work/invoked');
 				expect(resolveServiceCwd(betaApp, invocation)).toBe(
 					'/work/invoked/apps/web',
