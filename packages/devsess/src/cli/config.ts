@@ -1,4 +1,6 @@
-import { Effect, Schema } from 'effect';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { Config, Effect, Option, Schema } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 
 const ServiceSchema = Schema.Struct({
@@ -31,6 +33,29 @@ export type ConfigService = typeof ServiceSchema.Type;
 export type ProjectMatcher = typeof ProjectMatcherSchema.Type;
 
 const ConfigJsonSchema = Schema.fromJsonString(DevsessConfigSchema);
+
+export const defaultConfigPath = (
+	homeDirectory: string,
+	xdgConfigHome?: string,
+) =>
+	join(
+		xdgConfigHome === undefined
+			? join(homeDirectory, '.config')
+			: xdgConfigHome,
+		'devsess',
+		'config.json',
+	);
+
+/** Resolves the XDG default without opening or inspecting the resulting file. */
+export const resolveDefaultConfigPath = Effect.gen(function* () {
+	const xdgConfigHome = yield* Config.string('XDG_CONFIG_HOME').pipe(
+		Config.option,
+	);
+	return Option.match(xdgConfigHome, {
+		onNone: () => defaultConfigPath(homedir()),
+		onSome: (path) => defaultConfigPath(homedir(), path),
+	});
+});
 
 /** Decodes the complete JSON document before any configured command is used. */
 export const decodeConfig = (content: string) =>
