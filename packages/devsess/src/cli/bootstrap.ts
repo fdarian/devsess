@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
-import { createConnection } from 'node:net';
-import { Effect, Schema } from 'effect';
+import { Effect, Schedule, Schema } from 'effect';
+import { callDaemon } from './client';
 
 export class DaemonBootstrapError extends Schema.TaggedErrorClass<DaemonBootstrapError>()(
 	'DaemonBootstrapError',
@@ -14,66 +14,24 @@ export const awaitDaemonHandshake = (options: {
 	socketPath: string;
 	timeoutMs: number;
 }) =>
-	Effect.tryPromise({
-		try: () =>
-			new Promise<void>((resolve, reject) => {
-				const deadline = Date.now() + options.timeoutMs;
-				const probe = () => {
-					const requestId = crypto.randomUUID();
-					const socket = createConnection(options.socketPath);
-					let response = '';
-					let settled = false;
-					const retry = () => {
-						if (settled) return;
-						settled = true;
-						socket.destroy();
-						if (Date.now() >= deadline) {
-							reject(
-								new Error(
-									`Timed out waiting for daemon at ${options.socketPath}`,
-								),
-							);
-							return;
-						}
-						setTimeout(probe, 25);
-					};
-					socket.once('connect', () => {
-						socket.write(
-							`${JSON.stringify({ version: 1, requestId, method: 'listRuns', params: {} })}\n`,
-						);
-					});
-					socket.on('data', (data) => {
-						response = `${response}${data.toString()}`;
-						const newline = response.indexOf('\n');
-						if (newline === -1) return;
-						try {
-							const frame: unknown = JSON.parse(response.slice(0, newline));
-							if (
-								typeof frame === 'object' &&
-								frame !== null &&
-								'version' in frame &&
-								frame.version === 1 &&
-								'requestId' in frame &&
-								frame.requestId === requestId
-							) {
-								settled = true;
-								socket.destroy();
-								resolve();
-								return;
-							}
-						} catch {}
-						retry();
-					});
-					socket.once('error', retry);
-				};
-				probe();
-			}),
-		catch: (cause) =>
-			new DaemonBootstrapError({
-				message: `Could not complete daemon handshake at ${options.socketPath}`,
-				cause,
-			}),
-	});
+	callDaemon(
+		options.socketPath,
+		{ version: 1, requestId: crypto.randomUUID(), method: 'listRuns', params: {} },
+		Math.min(options.timeoutMs, 250),
+	).pipe(
+		Effect.retry({
+			schedule: Schedule.spaced('25 millis'),
+			times: Math.ceil(options.timeoutMs / 25),
+		}),
+		Effect.asVoid,
+		Effect.mapError(
+			(cause) =>
+				new DaemonBootstrapError({
+					message: `Could not complete daemon handshake at ${options.socketPath}`,
+					cause,
+				}),
+		),
+	);
 
 export const launchDetachedDaemon = (options: {
 	command: string;

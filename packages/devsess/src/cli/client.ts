@@ -15,12 +15,28 @@ const decodeResponse = Schema.decodeUnknownEffect(
 	Schema.fromJsonString(DaemonResponse),
 );
 
-export const callDaemon = (socketPath: string, request: DaemonRequest) =>
+export const callDaemon = (
+	socketPath: string,
+	request: DaemonRequest,
+	timeoutMs = 5_000,
+) =>
 	Effect.tryPromise({
 		try: () =>
 			new Promise<string>((resolve, reject) => {
 				const socket = createConnection(socketPath);
 				let input = '';
+				let settled = false;
+				const finish = (result: () => void) => {
+					if (settled) return;
+					settled = true;
+					clearTimeout(timer);
+					socket.destroy();
+					result();
+				};
+				const timer = setTimeout(() =>
+					finish(() => reject(new Error(`Timed out contacting daemon at ${socketPath}`))),
+					timeoutMs,
+				);
 				socket.once('connect', () =>
 					socket.write(`${JSON.stringify(request)}\n`),
 				);
@@ -28,10 +44,12 @@ export const callDaemon = (socketPath: string, request: DaemonRequest) =>
 					input += chunk.toString();
 					const boundary = input.indexOf('\n');
 					if (boundary === -1) return;
-					socket.destroy();
-					resolve(input.slice(0, boundary));
+					finish(() => resolve(input.slice(0, boundary)));
 				});
-				socket.once('error', reject);
+				socket.once('close', () =>
+					finish(() => reject(new Error('Daemon closed the connection before replying'))),
+				);
+				socket.once('error', (cause) => finish(() => reject(cause)));
 			}),
 		catch: (cause) =>
 			new DaemonClientError({
