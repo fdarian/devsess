@@ -1,10 +1,21 @@
 # devsess CLI
 
-The `devsess` binary runs named groups of development services in a detached, per-worktree daemon. Install the package, then make the binary available with `bunx devsess ...` or the equivalent package-manager command.
+The `devsess` binary runs named groups of development services through one detached daemon shared by the current user across projects and worktrees. The CLI requires Node.js on macOS or Linux; running the CLI itself under Bun is not supported. Service commands may use any installed runtime, including Bun.
+
+Install with `npm install -g devsess`, then run `devsess --help`.
 
 ## Configuration
 
 By default the CLI reads `$XDG_CONFIG_HOME/devsess/config.json`. When `XDG_CONFIG_HOME` is unset, that is `~/.config/devsess/config.json`. Pass `--config <path>` to use a specific file. The complete file is decoded before a command runs, so unknown or malformed shapes fail early.
+
+The daemon stores its registry and retained logs globally for the user:
+
+| Resource | With XDG variable set | Default |
+| --- | --- | --- |
+| State directory | `$XDG_STATE_HOME/devsess` | `~/.local/state/devsess` |
+| Control socket | `$XDG_RUNTIME_DIR/devsess/devsess.sock` | `/tmp/devsess-<uid>/devsess.sock` |
+
+The state directory contains `running.json` and `logs/<run-id>/<service-name>.json`. These locations are shared across worktrees; changing the current directory does not create a separate daemon.
 
 The configuration has named projects, each with a path or Git-origin matcher and named presets. A preset is a map of service names to shell commands:
 
@@ -40,18 +51,20 @@ devsess tail [options] [preset]
 devsess attach [options] [preset]
 ```
 
-`start` captures the current environment and starts the selected preset through a detached daemon. It waits for a daemon handshake and for the start request to be acknowledged, prints the run ID, and returns control to the shell while services continue running. The daemon is scoped to the canonical current directory, so separate worktrees have separate daemons and state.
+`start` captures the current environment and starts the selected preset through a detached daemon. It waits for a daemon handshake and for the start request to be acknowledged, prints the run ID, and returns control to the shell while services continue running. The run records its invocation directory while the daemon and state remain shared across projects and worktrees.
 
 An active `project/preset` identity cannot be started twice. A completed or failed record may be reused only after every service process has stopped; a record whose aggregate state is failed can still block a duplicate start while one of its services remains live. Use `list` to see active runs in the current project first, followed by runs elsewhere for the same daemon.
 
-`stop` selects a run in the current project. If more than one running preset matches, give its preset name; `--service <name>` is required for `tail` and `attach` when the preset has multiple services. These commands report ambiguity instead of silently choosing a service.
+`stop` selects a run in the current project. If more than one running preset matches, give its preset name. `attach` requires `--service <name>` when the preset has multiple services. These commands report ambiguity instead of silently choosing a run or attachment target.
 
-`tail` replays retained output and then follows live output. Each service retains at most 1 MiB of UTF-8 log data; a single event is retained even if it exceeds that size. Live subscribers use a dropping queue of 256 events, and an oversized (over 1 MiB) protocol frame closes the connection. Reconnecting can only replay output still inside the retained window.
+`tail` replays retained output and then follows live output from every service in the selected preset. Use `--service <name>` to select one service. When several services are selected, each output chunk is prefixed with `[service-name] `; a chunk can contain several lines, so the prefix is not repeated on every line. A single selected service has no prefix.
 
-`attach` gives one client the service's input lease. Press `Ctrl-]` to detach and return to the shell; `Ctrl-C` is sent to the service. Only one attached input writer is allowed at a time. A disconnected client releases its lease.
+Each service retains at most 1 MiB of UTF-8 log data. Oversized output is split into smaller events before retention, and older events are discarded to keep the retained window within the limit. Live subscribers use a dropping queue of 256 events. Oversized protocol frames and slow socket readers can cause a connection to close. Reconnecting can only replay output still inside the retained window.
+
+`attach` gives one client the service's input lease. Press `Ctrl-]` by itself to detach and return to the shell; `Ctrl-C` is sent to the service. The detach escape is the single byte `0x1d`: if it arrives together with other input, that whole input chunk is forwarded to the service instead. Only one attached input writer is allowed at a time. A disconnected client releases its lease.
 
 ## Process ownership and recovery
 
-Services run in their own Unix process groups. The daemon records the process ID, process-group ID, and a birth fingerprint, and verifies all three before signaling a saved process. A newly started PTY is accepted only when its PID is also the process-group leader. If the leader exits while descendants remain, the live ownership handle can signal that group immediately; after the group is observed gone, that handle is permanently invalidated to avoid PID/PGID reuse.
+Services run in their own Unix process groups. The daemon records the process ID, process-group ID, and a birth fingerprint, and verifies all three before signaling a saved process. Live ownership is established only when a newly started PTY's PID is also the process-group leader. A service that exits during identity capture retains its output and exit state without receiving a live ownership handle. If the leader exits while descendants remain, the live ownership handle can signal that group immediately; after the group is observed gone, that handle is permanently invalidated. Numeric process-group IDs still have a disappearance-and-reuse race between observations, so the live handle is used immediately on leader exit and is never reconstructed from a saved record.
 
 Termination polls up to 200 times at 25 ms intervals (5 seconds) after `SIGTERM`, then allows the same 5-second bound after `SIGKILL`. A recovered run loaded from disk has only a saved identity: it cannot be terminated unless the daemon can verify that the same process group still exists. If verification fails, the service is marked `orphaned` and the run remains blocked from duplicate starts until the stale record is dealt with.
