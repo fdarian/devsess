@@ -1,8 +1,7 @@
 import { Context, Effect, Layer } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
-import { Daemon, type DaemonError, type DaemonService } from './daemon';
-import type { DaemonRequest } from './protocol';
+import { Daemon, type DaemonService } from './daemon';
 
 export type DaemonLifecycleService = {
 	readonly daemon: DaemonService;

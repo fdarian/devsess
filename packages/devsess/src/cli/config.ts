@@ -13,12 +13,9 @@ const PresetSchema = Schema.Struct({
 });
 
 const ProjectPathSchema = Schema.String.check(
-	Schema.makeFilter(
-		(path) => isAbsolute(path) || path.startsWith('~/'),
-		{
-			message: 'Project path matchers must be absolute or begin with `~/`',
-		},
-	),
+	Schema.makeFilter((path) => isAbsolute(path) || path.startsWith('~/'), {
+		message: 'Project path matchers must be absolute or begin with `~/`',
+	}),
 );
 
 const ProjectMatcherSchema = Schema.Union([

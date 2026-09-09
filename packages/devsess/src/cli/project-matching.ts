@@ -50,17 +50,22 @@ const canonicalPath = (path: string, basePath: string) =>
 /** Captures the real path used by a start invocation before daemon work begins. */
 export const captureInvocation = (cwd: string, gitOrigin?: string) =>
 	canonicalPath(cwd, process.cwd()).pipe(
-		Effect.map((canonicalCwd): Invocation => ({
-			invocationCwd: cwd,
-			canonicalCwd,
-			gitOrigin:
-				gitOrigin === undefined ? undefined : normalizeGitOrigin(gitOrigin),
-		})),
+		Effect.map(
+			(canonicalCwd): Invocation => ({
+				invocationCwd: cwd,
+				canonicalCwd,
+				gitOrigin:
+					gitOrigin === undefined ? undefined : normalizeGitOrigin(gitOrigin),
+			}),
+		),
 	);
 
 /** Makes equivalent SSH and HTTPS remote spellings comparable. */
 export const normalizeGitOrigin = (origin: string) => {
-	const trimmedOrigin = origin.trim().replace(/\/+$/, '').replace(/\.git$/, '');
+	const trimmedOrigin = origin
+		.trim()
+		.replace(/\/+$/, '')
+		.replace(/\.git$/, '');
 	const urlOrigin = trimmedOrigin.match(
 		/^(?:https?|ssh):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+)$/i,
 	);

@@ -33,8 +33,11 @@ export const callDaemon = (
 					socket.destroy();
 					result();
 				};
-				const timer = setTimeout(() =>
-					finish(() => reject(new Error(`Timed out contacting daemon at ${socketPath}`))),
+				const timer = setTimeout(
+					() =>
+						finish(() =>
+							reject(new Error(`Timed out contacting daemon at ${socketPath}`)),
+						),
 					timeoutMs,
 				);
 				socket.once('connect', () =>
@@ -47,7 +50,9 @@ export const callDaemon = (
 					finish(() => resolve(input.slice(0, boundary)));
 				});
 				socket.once('close', () =>
-					finish(() => reject(new Error('Daemon closed the connection before replying'))),
+					finish(() =>
+						reject(new Error('Daemon closed the connection before replying')),
+					),
 				);
 				socket.once('error', (cause) => finish(() => reject(cause)));
 			}),
@@ -81,7 +86,9 @@ export const callDaemon = (
 			}
 			if (!response.ok) {
 				if (response.error === undefined) {
-					return new DaemonClientError({ message: 'Daemon rejected the request without an error' });
+					return new DaemonClientError({
+						message: 'Daemon rejected the request without an error',
+					});
 				}
 				return new DaemonClientError({
 					message: response.error,
