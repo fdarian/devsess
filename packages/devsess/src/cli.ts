@@ -86,7 +86,7 @@ const services = Layer.mergeAll(
 	NodeServices.layer,
 	Layer.effect(
 		Terminal,
-		NodeTerminal.make((input) => input.key.ctrl && input.key.name !== 'c'),
+		NodeTerminal.make(() => false),
 	),
 );
 
