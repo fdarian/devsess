@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { Config, Effect, Option, Schema } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 
@@ -12,8 +12,17 @@ const PresetSchema = Schema.Struct({
 	services: Schema.Record(Schema.String, ServiceSchema),
 });
 
+const ProjectPathSchema = Schema.String.check(
+	Schema.makeFilter(
+		(path) => isAbsolute(path) || path.startsWith('~/'),
+		{
+			message: 'Project path matchers must be absolute or begin with `~/`',
+		},
+	),
+);
+
 const ProjectMatcherSchema = Schema.Union([
-	Schema.Struct({ type: Schema.Literal('path'), path: Schema.String }),
+	Schema.Struct({ type: Schema.Literal('path'), path: ProjectPathSchema }),
 	Schema.Struct({ type: Schema.Literal('git'), origin: Schema.String }),
 ]);
 

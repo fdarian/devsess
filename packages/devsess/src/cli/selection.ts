@@ -8,10 +8,47 @@ export type QualifiedPreset = {
 	preset: ConfigPreset;
 };
 
+export type ProjectSelection =
+	| { _tag: 'SelectedProject'; project: MatchedProject }
+	| { _tag: 'NoMatchingProject' }
+	| { _tag: 'AmbiguousProject'; candidates: ReadonlyArray<MatchedProject> };
+
 export type PresetSelection =
 	| { _tag: 'Selected'; preset: QualifiedPreset }
 	| { _tag: 'NoMatchingPreset' }
 	| { _tag: 'AmbiguousPreset'; candidates: ReadonlyArray<QualifiedPreset> };
+
+/** Produces stable, qualified project choices for reporting and selection. */
+export const qualifiedProjects = (
+	projects: ReadonlyArray<MatchedProject>,
+): ReadonlyArray<MatchedProject> =>
+	projects
+		.slice()
+		.sort((left, right) => left.projectName.localeCompare(right.projectName));
+
+/** Leaves project ambiguity visible unless a matching --project was supplied. */
+export const selectProject = (
+	candidates: ReadonlyArray<MatchedProject>,
+	requestedProjectName?: string,
+): ProjectSelection => {
+	const qualifiedCandidates = qualifiedProjects(candidates);
+	const applicableCandidates =
+		requestedProjectName === undefined
+			? qualifiedCandidates
+			: qualifiedCandidates.filter(
+					(candidate) => candidate.projectName === requestedProjectName,
+				);
+	if (applicableCandidates.length === 0) {
+		return { _tag: 'NoMatchingProject' };
+	}
+	if (applicableCandidates.length > 1) {
+		return { _tag: 'AmbiguousProject', candidates: applicableCandidates };
+	}
+	const project = applicableCandidates[0];
+	return project === undefined
+		? { _tag: 'NoMatchingProject' }
+		: { _tag: 'SelectedProject', project };
+};
 
 /** Produces a stable, fully qualified picker/reporting list. */
 export const qualifiedPresets = (
@@ -57,10 +94,10 @@ export const resolveServiceCwd = (
 	invocation: Invocation,
 ) => {
 	if (service.cwd === undefined) {
-		return invocation.canonicalCwd;
+		return invocation.invocationCwd;
 	}
 	if (isAbsolute(service.cwd)) {
 		return service.cwd;
 	}
-	return resolve(invocation.canonicalCwd, service.cwd);
+	return resolve(invocation.invocationCwd, service.cwd);
 };
