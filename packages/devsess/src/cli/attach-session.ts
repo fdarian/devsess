@@ -96,7 +96,8 @@ export const awaitAttachLease = <E>(
 					);
 				if (frame._tag === 'closed')
 					return Effect.fail(error('Daemon output stream closed'));
-				if (frame._tag === 'error') return Effect.fail(error(frame.error.message));
+				if (frame._tag === 'error')
+					return Effect.fail(error(frame.error.message));
 				if (!frame.value.ok) {
 					if (frame.value.error === undefined)
 						return Effect.fail(
