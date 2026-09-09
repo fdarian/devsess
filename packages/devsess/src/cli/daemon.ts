@@ -11,6 +11,7 @@ import {
 } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
+import type { Scope } from 'effect/Scope';
 import type { IPty } from 'node-pty';
 import { type LogAddress, Logs } from './logs';
 import {
@@ -42,19 +43,20 @@ export class DaemonError extends Schema.TaggedErrorClass<DaemonError>()(
 	},
 ) {}
 
-export class Daemon extends Context.Service<
-	Daemon,
-	{
-		readonly request: (
-			incoming: DaemonRequest,
-		) => Effect.Effect<unknown, DaemonError>;
-	}
->()('devsess/cli/Daemon') {
-	static readonly layer = (options: {
+export type DaemonService = {
+	readonly request: (
+		incoming: DaemonRequest,
+	) => Effect.Effect<unknown, DaemonError>;
+};
+
+export class Daemon extends Context.Service<Daemon, DaemonService>()(
+	'devsess/cli/Daemon',
+) {
+	static readonly layer: (options: {
 		socketPath: string;
 		dataDirectory: string;
 		maxLogBytes: number;
-	}) =>
+	}) => Layer.Layer<Daemon, unknown, FileSystem | Path> = (options) =>
 		Layer.effect(Daemon, makeDaemon(options)).pipe(
 			Layer.provide(Registry.layer({ dataDirectory: options.dataDirectory })),
 			Layer.provide(
@@ -148,7 +150,13 @@ const closeServer = (server: Server) =>
 			new DaemonError({ message: 'Could not close daemon socket', cause }),
 	});
 
-export const makeDaemon = (options: { socketPath: string }) =>
+export const makeDaemon = (
+	options: { socketPath: string },
+): Effect.Effect<
+	DaemonService,
+	unknown,
+	Registry | Logs | Processes | FileSystem | Path | Scope
+> =>
 	Effect.gen(function* () {
 		const registry = yield* Registry;
 		const logs = yield* Logs;
