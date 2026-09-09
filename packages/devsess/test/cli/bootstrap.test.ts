@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
@@ -6,6 +6,7 @@ import { Cause, Effect, Option } from 'effect';
 import {
 	awaitDaemonHandshake,
 	DaemonBootstrapError,
+	ensureDaemon,
 	launchDetachedDaemon,
 } from '../../src/cli/bootstrap';
 import { runTest } from '../support/run-test';
@@ -104,6 +105,107 @@ describe('daemon bootstrap', () => {
 					expect(launcher).toBeGreaterThan(0);
 					yield* waitUntil(() => existsSync(donePath));
 					expect(readFileSync(pidPath, 'utf8')).toBe(String(launcher));
+				}),
+			),
+	);
+
+	it.live(
+		'launches one daemon when concurrent callers bootstrap the same socket',
+		() =>
+			runTest(
+				Effect.scoped(
+					Effect.gen(function* () {
+						const rootDir = yield* makeTempDir;
+						const socketPath = join(rootDir, 'daemon.sock');
+						const dataDirectory = join(rootDir, 'state');
+						let launches = 0;
+						const server = createServer((socket) => {
+							socket.once('data', (data) => {
+								const request = JSON.parse(data.toString()) as {
+									requestId: string;
+								};
+								socket.end(
+									`${JSON.stringify({ version: 1, requestId: request.requestId, ok: true, result: [] })}\n`,
+								);
+							});
+						});
+						yield* Effect.addFinalizer(() => Effect.sync(() => server.close()));
+						const options = {
+							location: { dataDirectory, socketPath },
+							launch: () =>
+								Effect.sync(() => {
+									launches += 1;
+									server.listen(socketPath);
+								}),
+						};
+						yield* Effect.all([ensureDaemon(options), ensureDaemon(options)], {
+							concurrency: 'unbounded',
+						});
+						expect(launches).toBe(1);
+					}),
+				),
+			),
+	);
+
+	it.live(
+		'recovers a stale launch lock without signalling its recorded PID',
+		() =>
+			runTest(
+				Effect.scoped(
+					Effect.gen(function* () {
+						const rootDir = yield* makeTempDir;
+						const socketPath = join(rootDir, 'daemon.sock');
+						const dataDirectory = join(rootDir, 'state');
+						const lockDirectory = join(dataDirectory, 'daemon-launch.lock');
+						mkdirSync(lockDirectory, { recursive: true, mode: 0o700 });
+						writeFileSync(
+							join(lockDirectory, 'owner'),
+							'999999\nlinux:reused-or-dead\nstale\n',
+						);
+						const server = createServer((socket) => {
+							socket.once('data', (data) => {
+								const request = JSON.parse(data.toString()) as {
+									requestId: string;
+								};
+								socket.end(
+									`${JSON.stringify({ version: 1, requestId: request.requestId, ok: true, result: [] })}\n`,
+								);
+							});
+						});
+						yield* Effect.addFinalizer(() => Effect.sync(() => server.close()));
+						yield* ensureDaemon({
+							location: { dataDirectory, socketPath },
+							launch: () => Effect.sync(() => server.listen(socketPath)),
+						});
+						expect(existsSync(lockDirectory)).toBe(false);
+					}),
+				),
+			),
+	);
+
+	it.live(
+		'refuses a malformed launch lock without starting another daemon',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const rootDir = yield* makeTempDir;
+					const socketPath = join(rootDir, 'daemon.sock');
+					const dataDirectory = join(rootDir, 'state');
+					const lockDirectory = join(dataDirectory, 'daemon-launch.lock');
+					mkdirSync(lockDirectory, { recursive: true, mode: 0o700 });
+					writeFileSync(join(lockDirectory, 'owner'), 'not-an-owner\n');
+					let launches = 0;
+					const exit = yield* Effect.exit(
+						ensureDaemon({
+							location: { dataDirectory, socketPath },
+							launch: () =>
+								Effect.sync(() => {
+									launches += 1;
+								}),
+						}),
+					);
+					expect(exit._tag).toBe('Failure');
+					expect(launches).toBe(0);
 				}),
 			),
 	);
