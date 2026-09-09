@@ -8,11 +8,11 @@ import {
 	normalizeGitOrigin,
 } from '../../src/cli/project-matching';
 import {
-	qualifiedProjects,
 	qualifiedPresets,
+	qualifiedProjects,
 	resolveServiceCwd,
-	selectProject,
 	selectPreset,
+	selectProject,
 } from '../../src/cli/selection';
 
 const configJson = JSON.stringify({
@@ -164,31 +164,33 @@ describe('project matching', () => {
 		}),
 	);
 
-	it.effect('uses normalized git origin only when no path matcher matches', () =>
-		Effect.gen(function* () {
-			const config = yield* decodeConfig(
-				JSON.stringify({
-					projects: {
-						gitProject: {
-							matcher: {
-								type: 'git',
-								origin: 'git@example.test:project.git',
+	it.effect(
+		'uses normalized git origin only when no path matcher matches',
+		() =>
+			Effect.gen(function* () {
+				const config = yield* decodeConfig(
+					JSON.stringify({
+						projects: {
+							gitProject: {
+								matcher: {
+									type: 'git',
+									origin: 'git@example.test:project.git',
+								},
+								presets: {},
 							},
-							presets: {},
 						},
-					},
-				}),
-			);
-			const invocation = yield* captureInvocation(
-				process.cwd(),
-				'https://example.test/project/',
-			);
-			const matches = yield* matchProjects(config, invocation);
-			expect(matches.matchType).toBe('git');
-			expect(matches.projects.map((project) => project.projectName)).toEqual([
-				'gitProject',
-			]);
-		}),
+					}),
+				);
+				const invocation = yield* captureInvocation(
+					process.cwd(),
+					'https://example.test/project/',
+				);
+				const matches = yield* matchProjects(config, invocation);
+				expect(matches.matchType).toBe('git');
+				expect(matches.projects.map((project) => project.projectName)).toEqual([
+					'gitProject',
+				]);
+			}),
 	);
 
 	it.effect('treats a missing configured matcher path as a nonmatch', () =>
