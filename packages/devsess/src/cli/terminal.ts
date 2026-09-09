@@ -17,13 +17,14 @@ type StreamingRequest = Extract<DaemonRequest, { method: 'tail' | 'attach' }>;
 export type DaemonStreamFrame =
 	| { readonly _tag: 'response'; readonly value: typeof DaemonResponse.Type }
 	| { readonly _tag: 'output'; readonly value: DaemonEvent }
+	| { readonly _tag: 'error'; readonly error: TerminalTransportError }
 	| { readonly _tag: 'closed' };
 
 export type DaemonStream = {
 	readonly frames: Queue.Queue<DaemonStreamFrame>;
 };
 
-const decodeFrame = Schema.decodeUnknownEffect(
+export const decodeDaemonStreamFrame = Schema.decodeUnknownEffect(
 	Schema.fromJsonString(
 		Schema.Union([
 			DaemonResponse,
@@ -52,11 +53,14 @@ export const openDaemonStream = (options: {
 				Queue.take(chunks).pipe(
 					Effect.flatMap((chunk) => {
 						const lines = `${buffer}${chunk}`.split('\n');
-						buffer = lines.pop() ?? '';
+						const remainder = lines.pop();
+						if (remainder === undefined)
+							return Effect.die('Terminal frame splitting lost its remainder');
+						buffer = remainder;
 						return Effect.forEach(
 							lines.filter((line) => line.length > 0),
 							(line) =>
-								decodeFrame(line).pipe(
+								decodeDaemonStreamFrame(line).pipe(
 									Effect.flatMap((frame) =>
 										Queue.offer(
 											frames,
@@ -70,7 +74,20 @@ export const openDaemonStream = (options: {
 						);
 					}),
 				),
-			).pipe(Effect.forkScoped);
+			)
+				.pipe(
+					Effect.catchTag('SchemaError', (cause) =>
+						Queue.offer(frames, {
+							_tag: 'error',
+							error: new TerminalTransportError({
+								message: 'Daemon returned an invalid stream frame',
+								cause,
+							}),
+						}),
+					),
+					Effect.andThen(Queue.shutdown(chunks)),
+				)
+				.pipe(Effect.forkScoped);
 			const socket = yield* Effect.tryPromise({
 				try: () =>
 					new Promise<ReturnType<typeof createConnection>>(

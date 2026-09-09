@@ -4,7 +4,10 @@ import {
 	awaitAttachLease,
 	parseAttachInput,
 } from '../../src/cli/attach-session';
-import type { DaemonStreamFrame } from '../../src/cli/terminal';
+import {
+	type DaemonStreamFrame,
+	decodeDaemonStreamFrame,
+} from '../../src/cli/terminal';
 
 describe('attach session', () => {
 	it.effect('renders replay frames before accepting the lease response', () =>
@@ -59,4 +62,13 @@ describe('attach session', () => {
 			actions: [{ _tag: 'detach' }],
 		});
 	});
+
+	it.effect('rejects a malformed daemon stream frame', () =>
+		Effect.gen(function* () {
+			const result = yield* Effect.exit(
+				decodeDaemonStreamFrame('{"version":1,"event":"output"}'),
+			);
+			expect(result._tag).toBe('Failure');
+		}),
+	);
 });
