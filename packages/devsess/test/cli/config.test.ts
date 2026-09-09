@@ -6,7 +6,7 @@ import { decodeConfig, defaultConfigPath } from '../../src/cli/config';
 import {
 	captureInvocation,
 	matchProjects,
-	normalizeGitOrigin,
+	normalizeGitRepo,
 } from '../../src/cli/project-matching';
 import {
 	qualifiedPresets,
@@ -106,7 +106,7 @@ describe('CLI configuration', () => {
 });
 
 describe('project matching', () => {
-	it.effect('prefers the longest matching canonical path over git origin', () =>
+	it.effect('prefers the longest matching canonical path over git repo', () =>
 		Effect.gen(function* () {
 			const appDir = join(projectDir, 'src');
 			const config = yield* decodeConfig(
@@ -121,7 +121,7 @@ describe('project matching', () => {
 							presets: {},
 						},
 						gitFallback: {
-							matcher: { type: 'git', origin: 'git@example.test:project.git' },
+							matcher: { type: 'git', repo: 'git@example.test:project.git' },
 							presets: {},
 						},
 					},
@@ -164,18 +164,42 @@ describe('project matching', () => {
 		}),
 	);
 
+	it.effect('uses normalized git repo only when no path matcher matches', () =>
+		Effect.gen(function* () {
+			const config = yield* decodeConfig(
+				JSON.stringify({
+					projects: {
+						gitProject: {
+							matcher: {
+								type: 'git',
+								repo: 'git@example.test:project.git',
+							},
+							presets: {},
+						},
+					},
+				}),
+			);
+			const invocation = yield* captureInvocation(
+				projectDir,
+				'https://example.test/project/',
+			);
+			const matches = yield* matchProjects(config, invocation);
+			expect(matches.matchType).toBe('git');
+			expect(matches.projects.map((project) => project.projectName)).toEqual([
+				'gitProject',
+			]);
+		}),
+	);
+
 	it.effect(
-		'uses normalized git origin only when no path matcher matches',
+		'matches a shorthand configured repo against a fuller identity',
 		() =>
 			Effect.gen(function* () {
 				const config = yield* decodeConfig(
 					JSON.stringify({
 						projects: {
 							gitProject: {
-								matcher: {
-									type: 'git',
-									origin: 'git@example.test:project.git',
-								},
+								matcher: { type: 'git', repo: 'acme/project' },
 								presets: {},
 							},
 						},
@@ -183,7 +207,7 @@ describe('project matching', () => {
 				);
 				const invocation = yield* captureInvocation(
 					projectDir,
-					'https://example.test/project/',
+					'https://github.com/acme/project.git',
 				);
 				const matches = yield* matchProjects(config, invocation);
 				expect(matches.matchType).toBe('git');
@@ -191,6 +215,74 @@ describe('project matching', () => {
 					'gitProject',
 				]);
 			}),
+	);
+
+	it.effect('matches a host-qualified configured repo exactly', () =>
+		Effect.gen(function* () {
+			const config = yield* decodeConfig(
+				JSON.stringify({
+					projects: {
+						gitProject: {
+							matcher: { type: 'git', repo: 'github.com/acme/project' },
+							presets: {},
+						},
+					},
+				}),
+			);
+			const invocation = yield* captureInvocation(
+				projectDir,
+				'git@github.com:acme/project.git',
+			);
+			const matches = yield* matchProjects(config, invocation);
+			expect(matches.matchType).toBe('git');
+			expect(matches.projects.map((project) => project.projectName)).toEqual([
+				'gitProject',
+			]);
+		}),
+	);
+
+	it.effect(
+		'does not let a shorthand match land mid-segment across a `/` boundary',
+		() =>
+			Effect.gen(function* () {
+				const config = yield* decodeConfig(
+					JSON.stringify({
+						projects: {
+							gitProject: {
+								matcher: { type: 'git', repo: 'me/project' },
+								presets: {},
+							},
+						},
+					}),
+				);
+				const invocation = yield* captureInvocation(
+					projectDir,
+					'https://github.com/acme/project.git',
+				);
+				const matches = yield* matchProjects(config, invocation);
+				expect(matches).toEqual({ matchType: 'none', projects: [] });
+			}),
+	);
+
+	it.effect('does not match two genuinely different repos', () =>
+		Effect.gen(function* () {
+			const config = yield* decodeConfig(
+				JSON.stringify({
+					projects: {
+						gitProject: {
+							matcher: { type: 'git', repo: 'acme/other-project' },
+							presets: {},
+						},
+					},
+				}),
+			);
+			const invocation = yield* captureInvocation(
+				projectDir,
+				'https://github.com/acme/project.git',
+			);
+			const matches = yield* matchProjects(config, invocation);
+			expect(matches).toEqual({ matchType: 'none', projects: [] });
+		}),
 	);
 
 	it.effect('treats a missing configured matcher path as a nonmatch', () =>
@@ -212,16 +304,37 @@ describe('project matching', () => {
 		}),
 	);
 
-	it.effect('normalizes equivalent SSH and HTTPS git origins', () =>
+	it.effect(
+		'normalizes every remote spelling to the same host/owner/repo identity',
+		() =>
+			Effect.sync(() => {
+				expect(normalizeGitRepo('git@github.com:acme/project.git')).toBe(
+					'github.com/acme/project',
+				);
+				expect(normalizeGitRepo('ssh://git@github.com/acme/project.git')).toBe(
+					'github.com/acme/project',
+				);
+				expect(normalizeGitRepo('https://github.com/acme/project/')).toBe(
+					'github.com/acme/project',
+				);
+				expect(normalizeGitRepo('github.com/acme/project')).toBe(
+					'github.com/acme/project',
+				);
+			}),
+	);
+
+	it.effect('lowercases the normalized identity', () =>
 		Effect.sync(() => {
-			expect(normalizeGitOrigin('git@github.com:acme/project.git')).toBe(
+			expect(normalizeGitRepo('git@GitHub.com:Acme/Project.git')).toBe(
 				'github.com/acme/project',
 			);
-			expect(normalizeGitOrigin('https://github.com/acme/project/')).toBe(
-				'github.com/acme/project',
-			);
-			expect(normalizeGitOrigin('ssh://git@github.com/acme/project.git')).toBe(
-				'github.com/acme/project',
+		}),
+	);
+
+	it.effect('does not normalize two different repos to the same identity', () =>
+		Effect.sync(() => {
+			expect(normalizeGitRepo('github.com/acme/project')).not.toBe(
+				normalizeGitRepo('github.com/acme/other-project'),
 			);
 		}),
 	);
@@ -236,13 +349,13 @@ describe('preset selection', () => {
 					JSON.stringify({
 						projects: {
 							alpha: {
-								matcher: { type: 'git', origin: 'git@example.test:alpha.git' },
+								matcher: { type: 'git', repo: 'git@example.test:alpha.git' },
 								presets: {
 									dev: { services: { app: { command: 'bun dev' } } },
 								},
 							},
 							beta: {
-								matcher: { type: 'git', origin: 'git@example.test:beta.git' },
+								matcher: { type: 'git', repo: 'git@example.test:beta.git' },
 								presets: {
 									dev: {
 										services: { app: { command: 'bun dev', cwd: 'apps/web' } },
@@ -304,11 +417,11 @@ describe('preset selection', () => {
 				JSON.stringify({
 					projects: {
 						zebra: {
-							matcher: { type: 'git', origin: 'github.com/acme/project' },
+							matcher: { type: 'git', repo: 'github.com/acme/project' },
 							presets: {},
 						},
 						alpha: {
-							matcher: { type: 'git', origin: 'github.com/acme/project' },
+							matcher: { type: 'git', repo: 'github.com/acme/project' },
 							presets: {},
 						},
 					},

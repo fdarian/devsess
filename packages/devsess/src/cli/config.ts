@@ -20,7 +20,7 @@ const ProjectPathSchema = Schema.String.check(
 
 const ProjectMatcherSchema = Schema.Union([
 	Schema.Struct({ type: Schema.Literal('path'), path: ProjectPathSchema }),
-	Schema.Struct({ type: Schema.Literal('git'), origin: Schema.String }),
+	Schema.Struct({ type: Schema.Literal('git'), repo: Schema.String }),
 ]);
 
 const ProjectSchema = Schema.Struct({
