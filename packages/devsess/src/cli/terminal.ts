@@ -14,10 +14,14 @@ export class TerminalTransportError extends Schema.TaggedErrorClass<TerminalTran
 
 type StreamingRequest = Extract<DaemonRequest, { method: 'tail' | 'attach' }>;
 
-type StreamFrame =
+export type DaemonStreamFrame =
 	| { readonly _tag: 'response'; readonly value: typeof DaemonResponse.Type }
 	| { readonly _tag: 'output'; readonly value: DaemonEvent }
 	| { readonly _tag: 'closed' };
+
+export type DaemonStream = {
+	readonly frames: Queue.Queue<DaemonStreamFrame>;
+};
 
 const decodeFrame = Schema.decodeUnknownEffect(
 	Schema.fromJsonString(
@@ -41,8 +45,9 @@ export const openDaemonStream = (options: {
 }) =>
 	Effect.acquireRelease(
 		Effect.gen(function* () {
-			const frames = yield* Queue.unbounded<StreamFrame>();
+			const frames = yield* Queue.unbounded<DaemonStreamFrame>();
 			const chunks = yield* Queue.unbounded<string>();
+			let buffer = '';
 			const parser = yield* Effect.forever(
 				Queue.take(chunks).pipe(
 					Effect.flatMap((chunk) => {
@@ -84,7 +89,6 @@ export const openDaemonStream = (options: {
 						cause,
 					}),
 			});
-			let buffer = '';
 			socket.on('data', (chunk) => {
 				Queue.offerUnsafe(chunks, chunk.toString());
 			});

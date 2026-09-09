@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
 import { Config, Effect, Option, Queue, Schema } from 'effect';
 import { Prompt } from 'effect/unstable/cli';
+import { attachSession } from './attach-session';
 import {
 	ensureDaemon as ensureDaemonBootstrap,
 	launchDetachedDaemon,
@@ -349,14 +350,16 @@ const tailService = (
 							return Effect.fail(
 								new CommandError({ message: 'Daemon output stream closed' }),
 							);
-						return frame.value.ok
-							? Effect.void
-							: Effect.fail(
-									new CommandError({
-										message:
-											frame.value.error ?? 'Daemon rejected tail request',
-									}),
-								);
+						if (frame.value.ok) return Effect.void;
+						if (frame.value.error === undefined)
+							return Effect.fail(
+								new CommandError({
+									message: 'Daemon rejected tail request without an error',
+								}),
+							);
+						return Effect.fail(
+							new CommandError({ message: frame.value.error }),
+						);
 					}),
 				),
 			),
@@ -398,103 +401,33 @@ export const tail = (options: CommandOptions) =>
 	);
 
 /** Attaches one input lease; Ctrl-] returns to the caller and Ctrl-C reaches the service. */
-export const attach = (options: CommandOptions) =>
-	Effect.scoped(
-		resolveCurrentRuns(options).pipe(
-			Effect.flatMap(({ location, current }) =>
-				chooseRun(current, options).pipe(
-					Effect.flatMap((run) =>
-						chooseService(run, options.service).pipe(
-							Effect.flatMap((service) =>
-								openDaemonStream({
-									socketPath: location.socketPath,
-									request: {
-										version: 1,
-										requestId: requestId(),
-										method: 'attach',
-										params: { runId: run.runId, serviceName: service.name },
-									},
-								}).pipe(
-									Effect.flatMap((stream) =>
-										Queue.take(stream.frames).pipe(
-											Effect.flatMap((frame) => {
-												if (frame._tag !== 'response' || !frame.value.ok)
-													return Effect.fail(
-														new CommandError({
-															message: 'Daemon rejected attach request',
-														}),
-													);
-												const result = frame.value.result;
-												if (
-													typeof result !== 'object' ||
-													result === null ||
-													!('leaseId' in result) ||
-													typeof result.leaseId !== 'string'
-												)
-													return Effect.fail(
-														new CommandError({
-															message:
-																'Daemon returned an invalid attach lease',
-														}),
-													);
-												const send = (
-													method: 'input' | 'resize' | 'detach',
-													params: Record<string, unknown>,
-												) =>
-													callDaemon(location.socketPath, {
-														version: 1,
-														requestId: requestId(),
-														method,
-														params: {
-															runId: run.runId,
-															serviceName: service.name,
-															leaseId: result.leaseId,
-															...params,
-														} as never,
-													});
-												const onResize = () =>
-													Effect.runFork(
-														send('resize', {
-															cols: process.stdout.columns,
-															rows: process.stdout.rows,
-														}),
-													);
-												const detached = Effect.promise(
-													() =>
-														new Promise<void>((resolve) => {
-															const onInput = (data: Buffer) => {
-																if (data.equals(Buffer.from('\u001d'))) {
-																	Effect.runFork(send('detach', {}));
-																	resolve();
-																	return;
-																}
-																Effect.runFork(
-																	send('input', { data: data.toString() }),
-																);
-															};
-															process.stdin.on('data', onInput);
-														}),
-												);
-												return Effect.acquireRelease(
-													Effect.sync(() => {
-														process.stdin.setRawMode(true);
-														process.stdin.resume();
-														process.stdout.on('resize', onResize);
-													}),
-													() =>
-														Effect.sync(() => {
-															process.stdout.off('resize', onResize);
-															process.stdin.setRawMode(false);
-														}),
-												).pipe(Effect.andThen(detached));
-											}),
-										),
-									),
-								),
-							),
-						),
-					),
-				),
-			),
-		),
+export const attach = (options: CommandOptions) => {
+	if (!process.stdin.isTTY || !process.stdout.isTTY)
+		return Effect.fail(
+			new CommandError({ message: 'Attach requires an interactive terminal' }),
+		);
+	return Effect.scoped(
+		Effect.gen(function* () {
+			const resolved = yield* resolveCurrentRuns(options);
+			const run = yield* chooseRun(resolved.current, options);
+			const service = yield* chooseService(run, options.service);
+			const stream = yield* openDaemonStream({
+				socketPath: resolved.location.socketPath,
+				request: {
+					version: 1,
+					requestId: requestId(),
+					method: 'attach',
+					params: { runId: run.runId, serviceName: service.name },
+				},
+			});
+			return yield* attachSession({
+				location: resolved.location,
+				run,
+				service,
+				stream,
+				requestId,
+				error: (message) => new CommandError({ message }),
+			});
+		}),
 	);
+};
