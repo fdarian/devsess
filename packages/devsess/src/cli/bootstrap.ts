@@ -16,7 +16,12 @@ export const awaitDaemonHandshake = (options: {
 }) =>
 	callDaemon(
 		options.socketPath,
-		{ version: 1, requestId: crypto.randomUUID(), method: 'listRuns', params: {} },
+		{
+			version: 1,
+			requestId: crypto.randomUUID(),
+			method: 'listRuns',
+			params: {},
+		},
 		Math.min(options.timeoutMs, 250),
 	).pipe(
 		Effect.retry({
