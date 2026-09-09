@@ -1,12 +1,17 @@
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { Context, Effect, Layer, Schema } from 'effect';
+import { Context, Effect, Layer, Schema, Semaphore } from 'effect';
 
 export type ProcessIdentity = {
 	readonly pid: number;
 	readonly processGroupId: number;
 	/** Process birth fingerprint. Linux uses `/proc` clock ticks; macOS falls back to `ps lstart` seconds. */
 	readonly startedAt: string;
+};
+
+export type LiveProcessOwnership = {
+	readonly identity: ProcessIdentity;
+	readonly terminate: Effect.Effect<void, ProcessError>;
 };
 
 export class ProcessError extends Schema.TaggedErrorClass<ProcessError>()(
@@ -187,7 +192,60 @@ export class Processes extends Context.Service<Processes>()(
 						);
 					}),
 				);
-			return { capture, owns, terminate };
+			const captureLive = (
+				pid: number,
+			): Effect.Effect<LiveProcessOwnership, ProcessError> =>
+				Effect.gen(function* () {
+					const identity = yield* capture(pid);
+					if (identity.processGroupId !== pid)
+						return yield* new ProcessError({
+							message: `Process ${pid} is not its own group leader`,
+						});
+					const permit = yield* Semaphore.make(1);
+					let valid = true;
+					const signal = (value: NodeJS.Signals | 0) =>
+						Effect.suspend(() => {
+							if (!valid) return Effect.succeed(false);
+							return signalGroup(identity.processGroupId, value).pipe(
+								Effect.as(true),
+								Effect.catch((error) => {
+									if (
+										error.cause instanceof Error &&
+										(error.cause as NodeJS.ErrnoException).code === 'ESRCH'
+									) {
+										valid = false;
+										return Effect.succeed(false);
+									}
+									return error;
+								}),
+							);
+						});
+					const wait = (
+						attempts: number,
+					): Effect.Effect<boolean, ProcessError> =>
+						Effect.gen(function* () {
+							if (!(yield* signal(0))) return true;
+							if (attempts === 0) return false;
+							yield* Effect.sleep('25 millis');
+							return yield* wait(attempts - 1);
+						});
+					/** Only newly owned PTYs get this capability; never reconstruct it from saved PIDs.
+					 * Unix group IDs have a disappearance/reuse race between observations, so use it
+					 * immediately on leader exit and invalidate it permanently on observed disappearance. */
+					const terminate = permit.withPermit(
+						Effect.gen(function* () {
+							if (!(yield* signal('SIGTERM'))) return;
+							if (yield* wait(200)) return;
+							if (!(yield* signal('SIGKILL'))) return;
+							if (!(yield* wait(200)))
+								return yield* new ProcessError({
+									message: `Process group ${identity.processGroupId} survived SIGKILL`,
+								});
+						}),
+					);
+					return { identity, terminate } satisfies LiveProcessOwnership;
+				});
+			return { capture, captureLive, owns, terminate };
 		}),
 	},
 ) {
