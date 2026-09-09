@@ -1,45 +1,231 @@
-import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { Context, Effect, Layer, Schema, Semaphore } from 'effect';
+import { FileSystem } from 'effect/FileSystem';
+import { Path } from 'effect/Path';
+import type { PlatformError } from 'effect/PlatformError';
 
-export type ServiceState = 'starting' | 'running' | 'stopping' | 'exited' | 'failed' | 'orphaned';
-export type ServiceRecord = { name: string; command: string; cwd: string; pid: number; logPath: string; state: ServiceState };
-export type RunRecord = { runId: string; projectName: string; presetName: string; invocationCwd: string; configSnapshot: unknown; startedAt: string; state: ServiceState; services: Array<ServiceRecord> };
-export type Registry = {
-	reserve: (run: RunRecord) => Promise<void>;
-	update: (runId: string, update: (run: RunRecord) => RunRecord) => Promise<RunRecord>;
-	list: () => Promise<Array<RunRecord>>;
-	appendLog: (service: ServiceRecord, data: string) => Promise<number>;
-	readLog: (service: ServiceRecord, after: number) => Promise<{ data: string; offset: number }>;
-	markOrphans: () => Promise<Array<RunRecord>>;
-};
+const ServiceStateSchema = Schema.Union([
+	Schema.Literal('starting'),
+	Schema.Literal('running'),
+	Schema.Literal('stopping'),
+	Schema.Literal('exited'),
+	Schema.Literal('failed'),
+	Schema.Literal('orphaned'),
+]);
 
-const registryPath = (dataDirectory: string) => join(dataDirectory, 'running.json');
-const readRecords = async (dataDirectory: string): Promise<Array<RunRecord>> => {
-	try { return JSON.parse(await readFile(registryPath(dataDirectory), 'utf8')) as Array<RunRecord>; }
-	catch (cause) { if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return []; throw cause; }
-};
-const writeRecords = async (dataDirectory: string, runs: Array<RunRecord>) => {
-	const target = registryPath(dataDirectory);
-	const temporary = `${target}.${process.pid}.${crypto.randomUUID()}.tmp`;
-	await mkdir(dirname(target), { recursive: true });
-	await writeFile(temporary, JSON.stringify(runs), { mode: 0o600 });
-	await rename(temporary, target);
-};
+export type ServiceState = typeof ServiceStateSchema.Type;
 
-/** Every read-modify-write is serialized, and replacement is atomic. */
-export const makeRegistry = (dataDirectory: string): Registry => {
-	let tail: Promise<void> = Promise.resolve();
-	const serialize = <A>(operation: () => Promise<A>) => {
-		const result = tail.then(operation);
-		tail = result.then(() => undefined, () => undefined);
-		return result;
-	};
-	return {
-		reserve: (run) => serialize(async () => { const runs = await readRecords(dataDirectory); if (runs.some((candidate) => candidate.runId === run.runId)) throw new Error(`Run ${run.runId} is already reserved`); runs.push(run); await writeRecords(dataDirectory, runs); }),
-		update: (runId, update) => serialize(async () => { const runs = await readRecords(dataDirectory); const index = runs.findIndex((run) => run.runId === runId); if (index < 0) throw new Error(`Run ${runId} was not found`); const current = runs[index]; if (current === undefined) throw new Error(`Run ${runId} was not found`); const next = update(current); runs[index] = next; await writeRecords(dataDirectory, runs); return next; }),
-		list: () => serialize(() => readRecords(dataDirectory)),
-		appendLog: (service, data) => serialize(async () => { await mkdir(dirname(service.logPath), { recursive: true }); await appendFile(service.logPath, data); return (await readFile(service.logPath)).byteLength; }),
-		readLog: (service, after) => serialize(async () => { try { const data = await readFile(service.logPath, 'utf8'); const bytes = Buffer.from(data); return { data: bytes.subarray(after).toString(), offset: bytes.byteLength }; } catch (cause) { if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return { data: '', offset: after }; throw cause; } }),
-		markOrphans: () => serialize(async () => { const runs = await readRecords(dataDirectory); const orphaned = runs.map((run) => ({ ...run, state: 'orphaned' as const, services: run.services.map((service) => ({ ...service, state: service.state === 'running' || service.state === 'starting' || service.state === 'stopping' ? 'orphaned' as const : service.state })) })); await writeRecords(dataDirectory, orphaned); return orphaned; }),
-	};
-};
+export const ServiceRecordSchema = Schema.Struct({
+	name: Schema.NonEmptyString,
+	command: Schema.NonEmptyString,
+	cwd: Schema.NonEmptyString,
+	state: ServiceStateSchema,
+	process: Schema.optionalKey(
+		Schema.Struct({
+			pid: Schema.Int,
+			processGroupId: Schema.Int,
+			startedAt: Schema.NonEmptyString,
+		}),
+	),
+});
+
+export type ServiceRecord = typeof ServiceRecordSchema.Type;
+
+export const RunRecordSchema = Schema.Struct({
+	runId: Schema.NonEmptyString,
+	projectName: Schema.NonEmptyString,
+	presetName: Schema.NonEmptyString,
+	canonicalCwd: Schema.NonEmptyString,
+	invocationCwd: Schema.NonEmptyString,
+	configSnapshot: Schema.Json,
+	startedAt: Schema.NonEmptyString,
+	state: ServiceStateSchema,
+	daemon: Schema.Struct({
+		pid: Schema.Int,
+		processGroupId: Schema.Int,
+		startedAt: Schema.NonEmptyString,
+	}),
+	services: Schema.Array(ServiceRecordSchema),
+});
+
+export type RunRecord = typeof RunRecordSchema.Type;
+
+class RunAlreadyReserved extends Schema.TaggedErrorClass<RunAlreadyReserved>()(
+	'devsess/cli/RunAlreadyReserved',
+	{
+		runId: Schema.String,
+		projectName: Schema.String,
+		presetName: Schema.String,
+	},
+) {}
+
+class RunNotFound extends Schema.TaggedErrorClass<RunNotFound>()(
+	'devsess/cli/RunNotFound',
+	{ runId: Schema.String },
+) {}
+
+const StoredRunsSchema = Schema.fromJsonString(Schema.Array(RunRecordSchema));
+
+const isActive = (state: ServiceState) =>
+	state === 'starting' || state === 'running' || state === 'stopping';
+
+const writeAtomically = (target: string, content: string) =>
+	Effect.gen(function* () {
+		const fileSystem = yield* FileSystem;
+		const path = yield* Path;
+		const temporary = `${target}.${crypto.randomUUID()}.tmp`;
+		yield* fileSystem.makeDirectory(path.dirname(target), { recursive: true });
+		yield* fileSystem.writeFileString(temporary, content, { mode: 0o600 });
+		yield* fileSystem.rename(temporary, target);
+	});
+
+export class Registry extends Context.Service<
+	Registry,
+	{
+		readonly reserve: (
+			run: RunRecord,
+		) => Effect.Effect<
+			void,
+			PlatformError | Schema.SchemaError | RunAlreadyReserved,
+			FileSystem | Path
+		>;
+		readonly replace: (
+			run: RunRecord,
+		) => Effect.Effect<
+			RunRecord,
+			PlatformError | Schema.SchemaError | RunNotFound,
+			FileSystem | Path
+		>;
+		readonly get: (
+			runId: string,
+		) => Effect.Effect<
+			RunRecord,
+			PlatformError | Schema.SchemaError | RunNotFound,
+			FileSystem | Path
+		>;
+		readonly list: Effect.Effect<
+			ReadonlyArray<RunRecord>,
+			PlatformError | Schema.SchemaError,
+			FileSystem | Path
+		>;
+		readonly markOrphans: Effect.Effect<
+			ReadonlyArray<RunRecord>,
+			PlatformError | Schema.SchemaError,
+			FileSystem | Path
+		>;
+	}
+>()('devsess/cli/Registry') {
+	static readonly layer = (options: { dataDirectory: string }) =>
+		Layer.effect(Registry, makeRegistry(options));
+}
+
+const makeRegistry = (options: { dataDirectory: string }) =>
+	Effect.gen(function* () {
+		const fileSystem = yield* FileSystem;
+		const path = yield* Path;
+		const semaphore = yield* Semaphore.make(1);
+		const target = path.join(options.dataDirectory, 'running.json');
+		const read = fileSystem
+			.exists(target)
+			.pipe(
+				Effect.flatMap((exists) =>
+					exists
+						? fileSystem
+								.readFileString(target)
+								.pipe(
+									Effect.flatMap(Schema.decodeUnknownEffect(StoredRunsSchema)),
+								)
+						: Effect.succeed([] as Array<RunRecord>),
+				),
+			);
+		const persist = (runs: Array<RunRecord>) =>
+			writeAtomically(target, JSON.stringify(runs));
+		const serialize = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+			semaphore.withPermit(effect);
+		const reserve = (run: RunRecord) =>
+			serialize(
+				read.pipe(
+					Effect.flatMap(
+						(
+							runs,
+						): Effect.Effect<
+							void,
+							PlatformError | RunAlreadyReserved,
+							FileSystem | Path
+						> => {
+							const conflicting = runs.find(
+								(candidate) =>
+									candidate.runId === run.runId ||
+									(candidate.projectName === run.projectName &&
+										candidate.presetName === run.presetName &&
+										isActive(candidate.state)),
+							);
+							return conflicting === undefined
+								? persist([...runs, run])
+								: Effect.fail(
+										new RunAlreadyReserved({
+											runId: conflicting.runId,
+											projectName: conflicting.projectName,
+											presetName: conflicting.presetName,
+										}),
+									);
+						},
+					),
+				),
+			);
+		const replace = (run: RunRecord) =>
+			serialize(
+				read.pipe(
+					Effect.flatMap(
+						(
+							runs,
+						): Effect.Effect<
+							RunRecord,
+							PlatformError | RunNotFound,
+							FileSystem | Path
+						> =>
+							runs.some((candidate) => candidate.runId === run.runId)
+								? persist(
+										runs.map((candidate) =>
+											candidate.runId === run.runId ? run : candidate,
+										),
+									).pipe(Effect.as(run))
+								: Effect.fail(new RunNotFound({ runId: run.runId })),
+					),
+				),
+			);
+		const get = (runId: string) =>
+			serialize(
+				read.pipe(
+					Effect.flatMap((runs) => {
+						const run = runs.find((candidate) => candidate.runId === runId);
+						return run === undefined
+							? Effect.fail(new RunNotFound({ runId }))
+							: Effect.succeed(run);
+					}),
+				),
+			);
+		const markOrphans = serialize(
+			read.pipe(
+				Effect.map((runs) =>
+					runs.map((run) => ({
+						...run,
+						state: isActive(run.state) ? ('orphaned' as const) : run.state,
+						services: run.services.map((service) => ({
+							...service,
+							state: isActive(service.state)
+								? ('orphaned' as const)
+								: service.state,
+						})),
+					})),
+				),
+				Effect.tap(persist),
+			),
+		);
+		return Registry.of({
+			reserve,
+			replace,
+			get,
+			list: serialize(read),
+			markOrphans,
+		});
+	});
