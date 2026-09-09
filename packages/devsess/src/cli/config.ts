@@ -1,0 +1,45 @@
+import { Effect, Schema } from 'effect';
+import { FileSystem } from 'effect/FileSystem';
+
+const ServiceSchema = Schema.Struct({
+	command: Schema.String,
+	cwd: Schema.optionalKey(Schema.String),
+});
+
+const PresetSchema = Schema.Struct({
+	services: Schema.Record(Schema.String, ServiceSchema),
+});
+
+const ProjectMatcherSchema = Schema.Union([
+	Schema.Struct({ type: Schema.Literal('path'), path: Schema.String }),
+	Schema.Struct({ type: Schema.Literal('git'), origin: Schema.String }),
+]);
+
+const ProjectSchema = Schema.Struct({
+	matcher: ProjectMatcherSchema,
+	presets: Schema.Record(Schema.String, PresetSchema),
+});
+
+export const DevsessConfigSchema = Schema.Struct({
+	projects: Schema.Record(Schema.String, ProjectSchema),
+});
+
+export type DevsessConfig = typeof DevsessConfigSchema.Type;
+export type ConfigProject = typeof ProjectSchema.Type;
+export type ConfigPreset = typeof PresetSchema.Type;
+export type ConfigService = typeof ServiceSchema.Type;
+export type ProjectMatcher = typeof ProjectMatcherSchema.Type;
+
+const ConfigJsonSchema = Schema.fromJsonString(DevsessConfigSchema);
+
+/** Decodes the complete JSON document before any configured command is used. */
+export const decodeConfig = (content: string) =>
+	Schema.decodeUnknownEffect(ConfigJsonSchema)(content);
+
+/** Reads a caller-selected global configuration file; it never probes user paths. */
+export const readConfig = (configPath: string) =>
+	Effect.gen(function* () {
+		const fileSystem = yield* FileSystem;
+		const content = yield* fileSystem.readFileString(configPath);
+		return yield* decodeConfig(content);
+	});
