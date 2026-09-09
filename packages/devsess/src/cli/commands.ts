@@ -1,9 +1,11 @@
-import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
 import { Config, Effect, Option, Queue, Schema } from 'effect';
 import { Prompt } from 'effect/unstable/cli';
-import { awaitDaemonHandshake, launchDetachedDaemon } from './bootstrap';
+import {
+	ensureDaemon as ensureDaemonBootstrap,
+	launchDetachedDaemon,
+} from './bootstrap';
 import { callDaemon } from './client';
 import type { ConfigPreset } from './config';
 import { readConfig, resolveDefaultConfigPath } from './config';
@@ -195,49 +197,21 @@ export const start = (options: CommandOptions, interactive: boolean) =>
 
 /** Starts the detached daemon only when its socket cannot complete a handshake. */
 export const ensureDaemon = (location: DaemonLocation) =>
-	awaitDaemonHandshake({
-		socketPath: location.socketPath,
-		timeoutMs: 150,
-	}).pipe(
-		Effect.catch(() =>
-			Effect.gen(function* () {
-				if (!existsSync(location.dataDirectory)) {
-					yield* Effect.try({
-						try: () => {
-							mkdirSync(location.dataDirectory, {
-								recursive: true,
-								mode: 0o700,
-							});
-							mkdirSync(join(location.socketPath, '..'), {
-								recursive: true,
-								mode: 0o700,
-							});
-						},
-						catch: (cause) =>
-							new CommandError({
-								message: `Could not create ${location.dataDirectory}`,
-								cause,
-							}),
-					});
-				}
-				yield* launchDetachedDaemon({
-					command: process.execPath,
-					args: [
-						process.argv[1] ?? 'devsess',
-						'__daemon',
-						'--data-directory',
-						location.dataDirectory,
-						'--socket-path',
-						location.socketPath,
-					],
-				});
-				return yield* awaitDaemonHandshake({
-					socketPath: location.socketPath,
-					timeoutMs: 5_000,
-				});
+	ensureDaemonBootstrap({
+		location,
+		launch: () =>
+			launchDetachedDaemon({
+				command: process.execPath,
+				args: [
+					process.argv[1] ?? 'devsess',
+					'__daemon',
+					'--data-directory',
+					location.dataDirectory,
+					'--socket-path',
+					location.socketPath,
+				],
 			}),
-		),
-	);
+	});
 
 const resolveCurrentRuns = (options: CommandOptions) =>
 	Effect.gen(function* () {
