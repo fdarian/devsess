@@ -275,10 +275,8 @@ describe('daemon lifetime and failure handling', () => {
 						expect(
 							Exit.isFailure(yield* Effect.exit(daemon.request(start()))),
 						).toBe(true);
-						expect(terminatePty).toHaveBeenCalledWith(
-							state.terminal,
-							'sleep 30',
-						);
+						expect(state.terminal.kill).toHaveBeenCalledWith('SIGKILL');
+						expect(terminatePty).not.toHaveBeenCalled();
 					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
 				}),
 			),
