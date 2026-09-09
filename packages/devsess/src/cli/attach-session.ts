@@ -74,6 +74,7 @@ const render = <E>(frame: DaemonStreamFrame, error: (message: string) => E) => {
 		return Effect.sync(() => process.stdout.write(frame.value.data));
 	if (frame._tag === 'closed')
 		return Effect.fail(error('Daemon output stream closed'));
+	if (frame._tag === 'error') return Effect.fail(error(frame.error.message));
 	if (frame.value.ok) return Effect.void;
 	if (frame.value.error === undefined)
 		return Effect.fail(
@@ -95,6 +96,7 @@ export const awaitAttachLease = <E>(
 					);
 				if (frame._tag === 'closed')
 					return Effect.fail(error('Daemon output stream closed'));
+				if (frame._tag === 'error') return Effect.fail(error(frame.error.message));
 				if (!frame.value.ok) {
 					if (frame.value.error === undefined)
 						return Effect.fail(
