@@ -13,12 +13,12 @@ const project = (projectName: string) => ({
 });
 
 describe('CLI command selection', () => {
-	it('uses a stable per-project daemon endpoint', () => {
-		expect(daemonLocation('/tmp/project')).toEqual(
-			daemonLocation('/tmp/project'),
+	it('uses one stable user-scoped daemon endpoint', () => {
+		expect(daemonLocation('/tmp/state', '/tmp/runtime')).toEqual(
+			daemonLocation('/tmp/state', '/tmp/runtime'),
 		);
-		expect(daemonLocation('/tmp/project').socketPath).not.toBe(
-			daemonLocation('/tmp/other').socketPath,
+		expect(daemonLocation('/tmp/state', '/tmp/runtime').socketPath).toBe(
+			'/tmp/runtime/devsess.sock',
 		);
 	});
 

@@ -1,8 +1,7 @@
-import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { Effect, Queue, Schema } from 'effect';
+import { homedir } from 'node:os';
+import { isAbsolute, join, relative } from 'node:path';
+import { Config, Effect, Option, Queue, Schema } from 'effect';
 import { Prompt } from 'effect/unstable/cli';
 import { awaitDaemonHandshake, launchDetachedDaemon } from './bootstrap';
 import { callDaemon } from './client';
@@ -38,22 +37,49 @@ const active = (run: RunRecord) =>
 		(service) =>
 			service.state === 'starting' ||
 			service.state === 'running' ||
-			service.state === 'stopping',
+			service.state === 'stopping' ||
+			service.state === 'orphaned',
 	);
+
+const containsPath = (parent: string, child: string) => {
+	const path = relative(parent, child);
+	return (
+		path === '' ||
+		(!path.startsWith('../') && path !== '..' && !isAbsolute(path))
+	);
+};
 
 const write = (line: string) =>
 	Effect.sync(() => process.stdout.write(`${line}\n`));
 const configPathFor = (path: string | undefined) =>
 	path === undefined ? resolveDefaultConfigPath : Effect.succeed(path);
 
-export const daemonLocation = (canonicalCwd: string): DaemonLocation => {
-	const id = createHash('sha256')
-		.update(canonicalCwd)
-		.digest('hex')
-		.slice(0, 16);
-	const dataDirectory = join(tmpdir(), 'devsess', id);
-	return { dataDirectory, socketPath: join(dataDirectory, 'daemon.sock') };
+export const daemonLocation = (
+	stateHome: string,
+	runtimeDirectory: string,
+): DaemonLocation => {
+	const dataDirectory = join(stateHome, 'devsess');
+	return { dataDirectory, socketPath: join(runtimeDirectory, 'devsess.sock') };
 };
+
+/** Resolves the one daemon location shared by every project for this user. */
+export const resolveDaemonLocation = Effect.gen(function* () {
+	const xdgStateHome = yield* Config.string('XDG_STATE_HOME').pipe(
+		Config.option,
+	);
+	const xdgRuntimeDirectory = yield* Config.string('XDG_RUNTIME_DIR').pipe(
+		Config.option,
+	);
+	const stateHome = Option.match(xdgStateHome, {
+		onNone: () => join(homedir(), '.local', 'state'),
+		onSome: (path) => path,
+	});
+	const runtimeDirectory = Option.match(xdgRuntimeDirectory, {
+		onNone: () => join('/tmp', `devsess-${process.getuid?.() ?? process.pid}`),
+		onSome: (path) => join(path, 'devsess'),
+	});
+	return daemonLocation(stateHome, runtimeDirectory);
+});
 
 const requestId = () => crypto.randomUUID();
 const toServices = (preset: ConfigPreset, invocation: Invocation) =>
@@ -140,7 +166,7 @@ const resolvePreset = (options: CommandOptions, interactive: boolean) =>
 export const start = (options: CommandOptions, interactive: boolean) =>
 	Effect.gen(function* () {
 		const resolved = yield* resolvePreset(options, interactive);
-		const location = daemonLocation(resolved.invocation.canonicalCwd);
+		const location = yield* resolveDaemonLocation;
 		yield* ensureDaemon(location);
 		const request: DaemonRequest = {
 			version: 1,
@@ -177,7 +203,16 @@ export const ensureDaemon = (location: DaemonLocation) =>
 			Effect.gen(function* () {
 				if (!existsSync(location.dataDirectory)) {
 					yield* Effect.try({
-						try: () => mkdirSync(location.dataDirectory, { recursive: true }),
+						try: () => {
+							mkdirSync(location.dataDirectory, {
+								recursive: true,
+								mode: 0o700,
+							});
+							mkdirSync(join(location.socketPath, '..'), {
+								recursive: true,
+								mode: 0o700,
+							});
+						},
 						catch: (cause) =>
 							new CommandError({
 								message: `Could not create ${location.dataDirectory}`,
@@ -207,7 +242,21 @@ export const ensureDaemon = (location: DaemonLocation) =>
 const resolveCurrentRuns = (options: CommandOptions) =>
 	Effect.gen(function* () {
 		const invocation = yield* captureInvocation(process.cwd());
-		const location = daemonLocation(invocation.canonicalCwd);
+		const configPath = yield* configPathFor(options.configPath);
+		const config = yield* readConfig(configPath);
+		const matches = yield* matchProjects(config, invocation);
+		const projectNames = matches.projects.map((project) => project.projectName);
+		const selectedProjectNames =
+			options.project === undefined
+				? projectNames
+				: projectNames.filter((projectName) => projectName === options.project);
+		if (selectedProjectNames.length === 0)
+			return yield* Effect.fail(
+				new CommandError({
+					message: 'No configured project matches this directory',
+				}),
+			);
+		const location = yield* resolveDaemonLocation;
 		yield* ensureDaemon(location);
 		const runs = (yield* callDaemon(location.socketPath, {
 			version: 1,
@@ -217,9 +266,9 @@ const resolveCurrentRuns = (options: CommandOptions) =>
 		})) as ReadonlyArray<RunRecord>;
 		const current = runs.filter(
 			(run) =>
-				run.canonicalCwd === invocation.canonicalCwd &&
+				containsPath(run.canonicalCwd, invocation.canonicalCwd) &&
 				active(run) &&
-				(options.project === undefined || run.projectName === options.project),
+				selectedProjectNames.includes(run.projectName),
 		);
 		return { location, runs, current };
 	});
@@ -245,8 +294,8 @@ const chooseRun = (
 	);
 };
 
-export const list = () =>
-	resolveCurrentRuns({}).pipe(
+export const list = (options: CommandOptions) =>
+	resolveCurrentRuns(options).pipe(
 		Effect.flatMap(({ current, runs }) =>
 			Effect.forEach(
 				[
@@ -309,55 +358,80 @@ const chooseService = (
 	);
 };
 
-/** Streams persisted and live output until the terminal closes the connection. */
+const tailService = (
+	location: DaemonLocation,
+	run: RunRecord,
+	service: RunRecord['services'][number],
+	prefix: boolean,
+) =>
+	openDaemonStream({
+		socketPath: location.socketPath,
+		request: {
+			version: 1,
+			requestId: requestId(),
+			method: 'tail',
+			params: { runId: run.runId, serviceName: service.name },
+		},
+	}).pipe(
+		Effect.flatMap((stream) =>
+			Effect.forever(
+				Queue.take(stream.frames).pipe(
+					Effect.flatMap((frame) => {
+						if (frame._tag === 'output')
+							return Effect.sync(() =>
+								process.stdout.write(
+									prefix
+										? `[${service.name}] ${frame.value.data}`
+										: frame.value.data,
+								),
+							);
+						if (frame._tag === 'closed')
+							return Effect.fail(
+								new CommandError({ message: 'Daemon output stream closed' }),
+							);
+						return frame.value.ok
+							? Effect.void
+							: Effect.fail(
+									new CommandError({
+										message:
+											frame.value.error ?? 'Daemon rejected tail request',
+									}),
+								);
+					}),
+				),
+			),
+		),
+	);
+
+/** Streams all matching services, qualifying output when more than one is selected. */
 export const tail = (options: CommandOptions) =>
 	Effect.scoped(
 		resolveCurrentRuns(options).pipe(
-			Effect.flatMap(({ location, current }) =>
-				chooseRun(current, options).pipe(
-					Effect.flatMap((run) =>
-						chooseService(run, options.service).pipe(
-							Effect.flatMap((service) =>
-								openDaemonStream({
-									socketPath: location.socketPath,
-									request: {
-										version: 1,
-										requestId: requestId(),
-										method: 'tail',
-										params: { runId: run.runId, serviceName: service.name },
-									},
-								}).pipe(
-									Effect.flatMap((stream) =>
-										Effect.forever(
-											Queue.take(stream.frames).pipe(
-												Effect.flatMap((frame) => {
-													if (frame._tag === 'output')
-														return Effect.sync(() =>
-															process.stdout.write(frame.value.data),
-														);
-													if (frame._tag === 'closed')
-														return Effect.fail(
-															new CommandError({
-																message: 'Daemon output stream closed',
-															}),
-														);
-													if (!frame.value.ok)
-														return Effect.fail(
-															new CommandError({
-																message:
-																	frame.value.error ??
-																	'Daemon rejected tail request',
-															}),
-														);
-													return Effect.void;
-												}),
-											),
-										),
-									),
+			Effect.flatMap((resolved) =>
+				chooseRun(resolved.current, options).pipe(
+					Effect.flatMap((run) => {
+						const services =
+							options.service === undefined
+								? run.services
+								: run.services.filter(
+										(service) => service.name === options.service,
+									);
+						if (services.length === 0)
+							return Effect.fail(
+								new CommandError({ message: 'No matching service is running' }),
+							);
+						return Effect.all(
+							services.map((service) =>
+								tailService(
+									resolved.location,
+									run,
+									service,
+									services.length > 1,
 								),
 							),
-						),
-					),
+							{ concurrency: 'unbounded', discard: true },
+						);
+					}),
 				),
 			),
 		),
@@ -418,14 +492,6 @@ export const attach = (options: CommandOptions) =>
 															...params,
 														} as never,
 													});
-												const onData = (data: Buffer) => {
-													if (data.equals(Buffer.from('\u001d')))
-														Effect.runFork(send('detach', {}));
-													else
-														Effect.runFork(
-															send('input', { data: data.toString() }),
-														);
-												};
 												const onResize = () =>
 													Effect.runFork(
 														send('resize', {
@@ -433,20 +499,34 @@ export const attach = (options: CommandOptions) =>
 															rows: process.stdout.rows,
 														}),
 													);
+												const detached = Effect.promise(
+													() =>
+														new Promise<void>((resolve) => {
+															const onInput = (data: Buffer) => {
+																if (data.equals(Buffer.from('\u001d'))) {
+																	Effect.runFork(send('detach', {}));
+																	resolve();
+																	return;
+																}
+																Effect.runFork(
+																	send('input', { data: data.toString() }),
+																);
+															};
+															process.stdin.on('data', onInput);
+														}),
+												);
 												return Effect.acquireRelease(
 													Effect.sync(() => {
 														process.stdin.setRawMode(true);
 														process.stdin.resume();
-														process.stdin.on('data', onData);
 														process.stdout.on('resize', onResize);
 													}),
 													() =>
 														Effect.sync(() => {
-															process.stdin.off('data', onData);
 															process.stdout.off('resize', onResize);
 															process.stdin.setRawMode(false);
 														}),
-												).pipe(Effect.andThen(Effect.never));
+												).pipe(Effect.andThen(detached));
 											}),
 										),
 									),

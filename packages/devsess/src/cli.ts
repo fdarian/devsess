@@ -47,7 +47,13 @@ const attachCommand = Command.make(
 	{ ...options, preset: optionalPreset },
 	(input) => attach(commandOptions(input)),
 );
-const listCommand = Command.make('list', {}, () => list());
+const listCommand = Command.make('list', options, (input) =>
+	list({
+		project: value(input.project),
+		service: value(input.service),
+		configPath: value(input.configPath),
+	}),
+);
 const daemonCommand = Command.make(
 	'__daemon',
 	{
