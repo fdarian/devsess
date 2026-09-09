@@ -29,7 +29,14 @@ const readMacProcess = (pid: number) =>
 					(error, stdout) => {
 						if (error !== null) {
 							const nodeError = error as NodeJS.ErrnoException;
-							if (nodeError.code === 'ESRCH' || nodeError.code === 'ENOENT') {
+							const exitCode = (
+								error as NodeJS.ErrnoException & { code?: string | number }
+							).code;
+							if (
+								nodeError.code === 'ESRCH' ||
+								nodeError.code === 'ENOENT' ||
+								Number(exitCode) === 1
+							) {
 								resolve(undefined);
 								return;
 							}
@@ -106,17 +113,6 @@ const signalGroup = (processGroupId: number, signal: NodeJS.Signals | 0) =>
 			}),
 	});
 
-const groupIsAlive = (processGroupId: number) =>
-	signalGroup(processGroupId, 0).pipe(
-		Effect.as(true),
-		Effect.catchTag('ProcessError', (error) =>
-			error.cause instanceof Error &&
-			(error.cause as NodeJS.ErrnoException).code === 'ESRCH'
-				? Effect.succeed(false)
-				: error,
-		),
-	);
-
 export class Processes extends Context.Service<Processes>()(
 	'devsess/cli/Processes',
 	{
@@ -140,8 +136,7 @@ export class Processes extends Context.Service<Processes>()(
 			const owns = (identity: ProcessIdentity) =>
 				inspect(identity.pid).pipe(
 					Effect.flatMap((process) => {
-						if (process === undefined)
-							return groupIsAlive(identity.processGroupId);
+						if (process === undefined) return Effect.succeed(false);
 						return Effect.succeed(
 							process.processGroupId === identity.processGroupId &&
 								process.startedAt === identity.startedAt,
@@ -176,7 +171,15 @@ export class Processes extends Context.Service<Processes>()(
 								owns(identity).pipe(
 									Effect.flatMap((stillOwned) =>
 										stillOwned
-											? signalGroup(identity.processGroupId, 'SIGKILL')
+											? signalGroup(identity.processGroupId, 'SIGKILL').pipe(
+													Effect.catchTag('ProcessError', (error) =>
+														error.cause instanceof Error &&
+														(error.cause as NodeJS.ErrnoException).code ===
+															'ESRCH'
+															? Effect.void
+															: error,
+													),
+												)
 											: Effect.void,
 									),
 								),
