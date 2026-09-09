@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from '@effect/vitest';
 import { Effect } from 'effect';
 import { decodeConfig, defaultConfigPath } from '../../src/cli/config';
@@ -14,6 +15,8 @@ import {
 	selectPreset,
 	selectProject,
 } from '../../src/cli/selection';
+
+const projectDir = fileURLToPath(new URL('../..', import.meta.url));
 
 const configJson = JSON.stringify({
 	projects: {
@@ -105,8 +108,6 @@ describe('CLI configuration', () => {
 describe('project matching', () => {
 	it.effect('prefers the longest matching canonical path over git origin', () =>
 		Effect.gen(function* () {
-			const rootDir = process.cwd();
-			const projectDir = join(rootDir, 'packages', 'devsess');
 			const appDir = join(projectDir, 'src');
 			const config = yield* decodeConfig(
 				JSON.stringify({
@@ -140,7 +141,6 @@ describe('project matching', () => {
 
 	it.effect('returns every equal path match in stable name order', () =>
 		Effect.gen(function* () {
-			const projectDir = join(process.cwd(), 'packages', 'devsess');
 			const config = yield* decodeConfig(
 				JSON.stringify({
 					projects: {
@@ -182,7 +182,7 @@ describe('project matching', () => {
 					}),
 				);
 				const invocation = yield* captureInvocation(
-					process.cwd(),
+					projectDir,
 					'https://example.test/project/',
 				);
 				const matches = yield* matchProjects(config, invocation);
@@ -195,7 +195,7 @@ describe('project matching', () => {
 
 	it.effect('treats a missing configured matcher path as a nonmatch', () =>
 		Effect.gen(function* () {
-			const rootDir = process.cwd();
+			const rootDir = projectDir;
 			const config = yield* decodeConfig(
 				JSON.stringify({
 					projects: {
