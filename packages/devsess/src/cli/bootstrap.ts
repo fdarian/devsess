@@ -10,7 +10,7 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { Effect, Schedule, Schema } from 'effect';
-import { callDaemon } from './client';
+import { callDaemon, DaemonClientError } from './client';
 
 export class DaemonBootstrapError extends Schema.TaggedErrorClass<DaemonBootstrapError>()(
 	'DaemonBootstrapError',
@@ -255,6 +255,13 @@ const removeStaleSocket = (socketPath: string) =>
 			}),
 	});
 
+const endpointIsMissing = (error: DaemonBootstrapError) =>
+	error.cause instanceof DaemonClientError &&
+	error.cause.cause instanceof Error &&
+	'code' in error.cause.cause &&
+	(error.cause.cause.code === 'ENOENT' ||
+		error.cause.cause.code === 'ECONNREFUSED');
+
 const waitForDaemon = (
 	location: DaemonLocation,
 	remaining: number,
@@ -345,16 +352,18 @@ export const ensureDaemon = (options: {
 										socketPath: options.location.socketPath,
 										timeoutMs: 150,
 									}).pipe(
-										Effect.catch(() =>
-											removeStaleSocket(options.location.socketPath).pipe(
-												Effect.andThen(options.launch()),
-												Effect.andThen(
-													awaitDaemonHandshake({
-														socketPath: options.location.socketPath,
-														timeoutMs: 5_000,
-													}),
-												),
-											),
+										Effect.catch((error) =>
+											endpointIsMissing(error)
+												? removeStaleSocket(options.location.socketPath).pipe(
+														Effect.andThen(options.launch()),
+														Effect.andThen(
+															awaitDaemonHandshake({
+																socketPath: options.location.socketPath,
+																timeoutMs: 5_000,
+															}),
+														),
+													)
+												: error,
 										),
 									),
 								),
