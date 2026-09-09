@@ -21,6 +21,8 @@ bun run format     # biome format
 bun run docs       # run the docs site locally
 ```
 
+The published package also provides a `devsess` CLI for detached, per-worktree service groups. Its configuration and command behavior are documented in the [CLI reference](apps/docs/src/pages/reference/cli.mdx).
+
 ## Releasing
 
 Publishing is automated via GitHub Actions (`.github/workflows/release.yml`):
