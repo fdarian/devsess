@@ -1,16 +1,14 @@
 import { spawn } from 'node:child_process';
 import { createConnection } from 'node:net';
-import { Data, Effect } from 'effect';
+import { Effect, Schema } from 'effect';
 
-export class DaemonBootstrapError extends Data.TaggedError(
+export class DaemonBootstrapError extends Schema.TaggedErrorClass<DaemonBootstrapError>()(
 	'DaemonBootstrapError',
-)<{
-	message: string;
-	cause?: unknown;
-}> {}
-
-const HANDSHAKE_REQUEST = 'devsess/handshake\n';
-const HANDSHAKE_RESPONSE = 'devsess/ready\n';
+	{
+		message: Schema.String,
+		cause: Schema.optional(Schema.Defect()),
+	},
+) {}
 
 export const awaitDaemonHandshake = (options: {
 	socketPath: string;
@@ -19,33 +17,56 @@ export const awaitDaemonHandshake = (options: {
 	Effect.tryPromise({
 		try: () =>
 			new Promise<void>((resolve, reject) => {
-				const socket = createConnection(options.socketPath);
-				const timer = setTimeout(() => {
-					socket.destroy();
-					reject(
-						new Error(
-							`Timed out waiting for daemon handshake at ${options.socketPath}`,
-						),
-					);
-				}, options.timeoutMs);
-
-				const finish = (result: () => void) => {
-					clearTimeout(timer);
-					socket.destroy();
-					result();
-				};
-
-				socket.once('connect', () => socket.write(HANDSHAKE_REQUEST));
-				socket.once('data', (data) => {
-					if (data.toString() !== HANDSHAKE_RESPONSE) {
-						finish(() =>
-							reject(new Error('Daemon returned an invalid handshake')),
+				const deadline = Date.now() + options.timeoutMs;
+				const probe = () => {
+					const requestId = crypto.randomUUID();
+					const socket = createConnection(options.socketPath);
+					let response = '';
+					let settled = false;
+					const retry = () => {
+						if (settled) return;
+						settled = true;
+						socket.destroy();
+						if (Date.now() >= deadline) {
+							reject(
+								new Error(
+									`Timed out waiting for daemon at ${options.socketPath}`,
+								),
+							);
+							return;
+						}
+						setTimeout(probe, 25);
+					};
+					socket.once('connect', () => {
+						socket.write(
+							`${JSON.stringify({ version: 1, requestId, method: 'listRuns', params: {} })}\n`,
 						);
-						return;
-					}
-					finish(resolve);
-				});
-				socket.once('error', (cause) => finish(() => reject(cause)));
+					});
+					socket.on('data', (data) => {
+						response = `${response}${data.toString()}`;
+						const newline = response.indexOf('\n');
+						if (newline === -1) return;
+						try {
+							const frame: unknown = JSON.parse(response.slice(0, newline));
+							if (
+								typeof frame === 'object' &&
+								frame !== null &&
+								'version' in frame &&
+								frame.version === 1 &&
+								'requestId' in frame &&
+								frame.requestId === requestId
+							) {
+								settled = true;
+								socket.destroy();
+								resolve();
+								return;
+							}
+						} catch {}
+						retry();
+					});
+					socket.once('error', retry);
+				};
+				probe();
 			}),
 		catch: (cause) =>
 			new DaemonBootstrapError({

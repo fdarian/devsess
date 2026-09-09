@@ -37,8 +37,16 @@ describe('daemon bootstrap', () => {
 					const socketPath = join(rootDir, 'daemon.sock');
 					const server = createServer((socket) => {
 						socket.once('data', (data) => {
-							expect(data.toString()).toBe('devsess/handshake\n');
-							socket.end('devsess/ready\n');
+							const request = JSON.parse(data.toString()) as {
+								version: number;
+								requestId: string;
+								method: string;
+							};
+							expect(request.version).toBe(1);
+							expect(request.method).toBe('listRuns');
+							socket.end(
+								`${JSON.stringify({ version: 1, requestId: request.requestId, ok: true, result: [] })}\n`,
+							);
 						});
 					});
 					yield* listen(server, socketPath);
