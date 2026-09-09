@@ -1,5 +1,10 @@
 import { describe, expect, it } from '@effect/vitest';
-import { daemonLocation } from '../../src/cli/commands';
+import { Effect } from 'effect';
+import {
+	daemonLocation,
+	decodeRunListResponse,
+	decodeRunResponse,
+} from '../../src/cli/commands';
 import { qualifiedPresets, selectPreset } from '../../src/cli/selection';
 
 const project = (projectName: string) => ({
@@ -33,4 +38,13 @@ describe('CLI command selection', () => {
 				),
 			).toEqual(['alpha/dev', 'beta/dev']);
 	});
+
+	it.effect('rejects malformed daemon run responses', () =>
+		Effect.gen(function* () {
+			const run = yield* Effect.exit(decodeRunResponse({ runId: 'run' }));
+			const list = yield* Effect.exit(decodeRunListResponse({}));
+			expect(run._tag).toBe('Failure');
+			expect(list._tag).toBe('Failure');
+		}),
+	);
 });

@@ -17,7 +17,7 @@ import {
 	matchProjects,
 } from './project-matching';
 import type { DaemonRequest } from './protocol';
-import type { RunRecord } from './registry';
+import { type RunRecord, RunRecordSchema } from './registry';
 import { qualifiedPresets, selectPreset } from './selection';
 import { openDaemonStream } from './terminal';
 
@@ -85,6 +85,26 @@ export const resolveDaemonLocation = Effect.gen(function* () {
 });
 
 const requestId = () => crypto.randomUUID();
+export const decodeRunResponse = (value: unknown) =>
+	Schema.decodeUnknownEffect(RunRecordSchema)(value).pipe(
+		Effect.mapError(
+			(cause) =>
+				new CommandError({
+					message: 'Daemon returned an invalid run response',
+					cause,
+				}),
+		),
+	);
+export const decodeRunListResponse = (value: unknown) =>
+	Schema.decodeUnknownEffect(Schema.Array(RunRecordSchema))(value).pipe(
+		Effect.mapError(
+			(cause) =>
+				new CommandError({
+					message: 'Daemon returned an invalid run list response',
+					cause,
+				}),
+		),
+	);
 const toServices = (preset: ConfigPreset, invocation: Invocation) =>
 	Object.keys(preset.services)
 		.sort((left, right) => left.localeCompare(right))
@@ -190,9 +210,11 @@ export const start = (options: CommandOptions, interactive: boolean) =>
 				services: toServices(resolved.preset.preset, resolved.invocation),
 			},
 		};
-		const run = yield* callDaemon(location.socketPath, request);
+		const run = yield* callDaemon(location.socketPath, request).pipe(
+			Effect.flatMap(decodeRunResponse),
+		);
 		return yield* write(
-			`Started ${resolved.preset.projectName}/${resolved.preset.presetName}: ${(run as RunRecord).runId}`,
+			`Started ${resolved.preset.projectName}/${resolved.preset.presetName}: ${run.runId}`,
 		);
 	});
 
@@ -219,12 +241,12 @@ const resolveCurrentRuns = (options: CommandOptions) =>
 		const invocation = yield* captureInvocation(process.cwd());
 		const location = yield* resolveDaemonLocation;
 		yield* ensureDaemon(location);
-		const runs = (yield* callDaemon(location.socketPath, {
+		const runs = yield* callDaemon(location.socketPath, {
 			version: 1,
 			requestId: requestId(),
 			method: 'listRuns',
 			params: {},
-		})) as ReadonlyArray<RunRecord>;
+		}).pipe(Effect.flatMap(decodeRunListResponse));
 		const current = runs.filter(
 			(run) =>
 				containsPath(run.canonicalCwd, invocation.canonicalCwd) &&
@@ -257,16 +279,16 @@ const chooseRun = (
 
 export const list = (options: CommandOptions) =>
 	resolveCurrentRuns(options).pipe(
-		Effect.flatMap(({ current, runs }) =>
+		Effect.flatMap((resolved) =>
 			Effect.forEach(
 				[
 					'Current project:',
-					...current.map(
+					...resolved.current.map(
 						(run) => `  ${run.projectName}/${run.presetName} ${run.state}`,
 					),
 					'Elsewhere:',
-					...runs
-						.filter((run) => !current.includes(run))
+					...resolved.runs
+						.filter((run) => !resolved.current.includes(run))
 						.map(
 							(run) => `  ${run.projectName}/${run.presetName} ${run.state}`,
 						),
@@ -279,10 +301,10 @@ export const list = (options: CommandOptions) =>
 
 export const stop = (options: CommandOptions) =>
 	resolveCurrentRuns(options).pipe(
-		Effect.flatMap(({ location, current }) =>
-			chooseRun(current, options).pipe(
+		Effect.flatMap((resolved) =>
+			chooseRun(resolved.current, options).pipe(
 				Effect.flatMap((run) =>
-					callDaemon(location.socketPath, {
+					callDaemon(resolved.location.socketPath, {
 						version: 1,
 						requestId: requestId(),
 						method: 'stopRun',
@@ -349,6 +371,10 @@ const tailService = (
 						if (frame._tag === 'closed')
 							return Effect.fail(
 								new CommandError({ message: 'Daemon output stream closed' }),
+							);
+						if (frame._tag === 'error')
+							return Effect.fail(
+								new CommandError({ message: frame.error.message }),
 							);
 						if (frame.value.ok) return Effect.void;
 						if (frame.value.error === undefined)

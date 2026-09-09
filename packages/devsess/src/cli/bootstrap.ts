@@ -334,7 +334,15 @@ export const ensureDaemon = (options: {
 											recursive: true,
 											force: true,
 										});
-								} catch {}
+								} catch (cause) {
+									if (
+										cause instanceof Error &&
+										'code' in cause &&
+										cause.code === 'ENOENT'
+									)
+										return;
+									throw cause;
+								}
 							});
 							return Effect.try({
 								try: () =>
