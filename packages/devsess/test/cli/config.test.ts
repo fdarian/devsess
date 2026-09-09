@@ -1,4 +1,3 @@
-import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 import { Effect } from 'effect';
@@ -6,13 +5,15 @@ import { decodeConfig, defaultConfigPath } from '../../src/cli/config';
 import {
 	captureInvocation,
 	matchProjects,
+	normalizeGitOrigin,
 } from '../../src/cli/project-matching';
 import {
+	qualifiedProjects,
 	qualifiedPresets,
 	resolveServiceCwd,
+	selectProject,
 	selectPreset,
 } from '../../src/cli/selection';
-import { makeTempDir } from '../support/temp-dir';
 
 const configJson = JSON.stringify({
 	projects: {
@@ -81,15 +82,32 @@ describe('CLI configuration', () => {
 			expect(exit._tag).toBe('Failure');
 		}),
 	);
+
+	it.effect('rejects relative project path matchers', () =>
+		Effect.gen(function* () {
+			const exit = yield* Effect.exit(
+				decodeConfig(
+					JSON.stringify({
+						projects: {
+							alpha: {
+								matcher: { type: 'path', path: 'relative/project' },
+								presets: {},
+							},
+						},
+					}),
+				),
+			);
+			expect(exit._tag).toBe('Failure');
+		}),
+	);
 });
 
 describe('project matching', () => {
 	it.effect('prefers the longest matching canonical path over git origin', () =>
 		Effect.gen(function* () {
-			const rootDir = yield* makeTempDir;
-			const projectDir = join(rootDir, 'project');
-			const appDir = join(projectDir, 'apps', 'web');
-			mkdirSync(appDir, { recursive: true });
+			const rootDir = process.cwd();
+			const projectDir = join(rootDir, 'packages', 'devsess');
+			const appDir = join(projectDir, 'src');
 			const config = yield* decodeConfig(
 				JSON.stringify({
 					projects: {
@@ -122,9 +140,7 @@ describe('project matching', () => {
 
 	it.effect('returns every equal path match in stable name order', () =>
 		Effect.gen(function* () {
-			const rootDir = yield* makeTempDir;
-			const projectDir = join(rootDir, 'project');
-			mkdirSync(projectDir);
+			const projectDir = join(process.cwd(), 'packages', 'devsess');
 			const config = yield* decodeConfig(
 				JSON.stringify({
 					projects: {
@@ -148,28 +164,63 @@ describe('project matching', () => {
 		}),
 	);
 
-	it.effect('uses git origin only when no path matcher matches', () =>
+	it.effect('uses normalized git origin only when no path matcher matches', () =>
 		Effect.gen(function* () {
-			const rootDir = yield* makeTempDir;
 			const config = yield* decodeConfig(
 				JSON.stringify({
 					projects: {
 						gitProject: {
-							matcher: { type: 'git', origin: 'git@example.test:project.git' },
+							matcher: {
+								type: 'git',
+								origin: 'git@example.test:project.git',
+							},
 							presets: {},
 						},
 					},
 				}),
 			);
 			const invocation = yield* captureInvocation(
-				rootDir,
-				'git@example.test:project.git',
+				process.cwd(),
+				'https://example.test/project/',
 			);
 			const matches = yield* matchProjects(config, invocation);
 			expect(matches.matchType).toBe('git');
 			expect(matches.projects.map((project) => project.projectName)).toEqual([
 				'gitProject',
 			]);
+		}),
+	);
+
+	it.effect('treats a missing configured matcher path as a nonmatch', () =>
+		Effect.gen(function* () {
+			const rootDir = process.cwd();
+			const config = yield* decodeConfig(
+				JSON.stringify({
+					projects: {
+						missing: {
+							matcher: { type: 'path', path: join(rootDir, 'missing') },
+							presets: {},
+						},
+					},
+				}),
+			);
+			const invocation = yield* captureInvocation(rootDir);
+			const matches = yield* matchProjects(config, invocation);
+			expect(matches).toEqual({ matchType: 'none', projects: [] });
+		}),
+	);
+
+	it.effect('normalizes equivalent SSH and HTTPS git origins', () =>
+		Effect.sync(() => {
+			expect(normalizeGitOrigin('git@github.com:acme/project.git')).toBe(
+				'github.com/acme/project',
+			);
+			expect(normalizeGitOrigin('https://github.com/acme/project/')).toBe(
+				'github.com/acme/project',
+			);
+			expect(normalizeGitOrigin('ssh://git@github.com/acme/project.git')).toBe(
+				'github.com/acme/project',
+			);
 		}),
 	);
 });
@@ -218,7 +269,10 @@ describe('preset selection', () => {
 						selection.candidates.map((preset) => preset.projectName),
 					).toEqual(['alpha', 'beta']);
 				}
-				const invocation = { canonicalCwd: '/work/invoked' };
+				const invocation = {
+					invocationCwd: '/work/invoked',
+					canonicalCwd: '/work/invoked-canonical',
+				};
 				const alphaPreset = yield* requireDefined(
 					alpha.presets.dev,
 					'alpha preset',
@@ -240,5 +294,47 @@ describe('preset selection', () => {
 					'/work/invoked/apps/web',
 				);
 			}),
+	);
+
+	it.effect('selects a requested project and exposes qualified ambiguity', () =>
+		Effect.gen(function* () {
+			const config = yield* decodeConfig(
+				JSON.stringify({
+					projects: {
+						zebra: {
+							matcher: { type: 'git', origin: 'github.com/acme/project' },
+							presets: {},
+						},
+						alpha: {
+							matcher: { type: 'git', origin: 'github.com/acme/project' },
+							presets: {},
+						},
+					},
+				}),
+			);
+			const alpha = yield* requireDefined(
+				config.projects.alpha,
+				'alpha project',
+			);
+			const zebra = yield* requireDefined(
+				config.projects.zebra,
+				'zebra project',
+			);
+			const candidates = qualifiedProjects([
+				{ projectName: 'zebra', project: zebra },
+				{ projectName: 'alpha', project: alpha },
+			]);
+			expect(candidates.map((candidate) => candidate.projectName)).toEqual([
+				'alpha',
+				'zebra',
+			]);
+			const ambiguous = selectProject(candidates);
+			expect(ambiguous._tag).toBe('AmbiguousProject');
+			const selection = selectProject(candidates, 'zebra');
+			expect(selection._tag).toBe('SelectedProject');
+			if (selection._tag === 'SelectedProject') {
+				expect(selection.project.projectName).toBe('zebra');
+			}
+		}),
 	);
 });
