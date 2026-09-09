@@ -66,6 +66,7 @@ export default defineConfig({
 			{
 				label: 'Reference',
 				items: [
+					'/reference/cli',
 					'/reference/devsess',
 					'/reference/async',
 					'/reference/pglite',
