@@ -9,16 +9,32 @@ import type { DaemonStream, DaemonStreamFrame } from './terminal';
 const AttachLease = Schema.Struct({ leaseId: Schema.NonEmptyString });
 const decodeAttachLease = Schema.decodeUnknownEffect(AttachLease);
 
-type AttachAction =
+export type AttachAction =
 	| { readonly _tag: 'input'; readonly data: string }
 	| { readonly _tag: 'resize'; readonly cols: number; readonly rows: number }
 	| { readonly _tag: 'detach' };
 
-const inputActions = (data: Buffer): ReadonlyArray<AttachAction> => {
+export type AttachInputState = { readonly awaitingEscape: boolean };
+
+export const parseAttachInput = (
+	state: AttachInputState,
+	data: Buffer,
+): {
+	readonly state: AttachInputState;
+	readonly actions: ReadonlyArray<AttachAction>;
+} => {
 	const input = data.toString();
 	const actions: Array<AttachAction> = [];
 	let pending = '';
-	let index = 0;
+	let index = state.awaitingEscape ? 1 : 0;
+	if (state.awaitingEscape) {
+		if (input[0] !== '\u001d')
+			return {
+				state: { awaitingEscape: false },
+				actions: [{ _tag: 'detach' }],
+			};
+		pending = '\u001d';
+	}
 	while (index < input.length) {
 		if (input[index] !== '\u001d') {
 			pending += input[index];
@@ -31,11 +47,13 @@ const inputActions = (data: Buffer): ReadonlyArray<AttachAction> => {
 			continue;
 		}
 		if (pending.length > 0) actions.push({ _tag: 'input', data: pending });
+		if (index + 1 === input.length)
+			return { state: { awaitingEscape: true }, actions };
 		actions.push({ _tag: 'detach' });
-		return actions;
+		return { state: { awaitingEscape: false }, actions };
 	}
 	if (pending.length > 0) actions.push({ _tag: 'input', data: pending });
-	return actions;
+	return { state: { awaitingEscape: false }, actions };
 };
 
 const terminalSize = <E>(error: (message: string) => E) => {
@@ -64,7 +82,7 @@ const render = <E>(frame: DaemonStreamFrame, error: (message: string) => E) => {
 	return Effect.fail(error(frame.value.error));
 };
 
-const awaitLease = <E>(
+export const awaitAttachLease = <E>(
 	stream: DaemonStream,
 	error: (message: string) => E,
 ): Effect.Effect<string, E> =>
@@ -73,7 +91,7 @@ const awaitLease = <E>(
 			Effect.flatMap((frame) => {
 				if (frame._tag === 'output')
 					return render(frame, error).pipe(
-						Effect.andThen(awaitLease(stream, error)),
+						Effect.andThen(awaitAttachLease(stream, error)),
 					);
 				if (frame._tag === 'closed')
 					return Effect.fail(error('Daemon output stream closed'));
@@ -144,7 +162,7 @@ export const attachSession = <E>(options: {
 			return yield* Effect.fail(
 				options.error('Attach requires an interactive terminal'),
 			);
-		const leaseId = yield* awaitLease(options.stream, options.error);
+		const leaseId = yield* awaitAttachLease(options.stream, options.error);
 		const actions = yield* Queue.unbounded<AttachAction>();
 		const detached = yield* Deferred.make<void, E>();
 		const send = (action: AttachAction) =>
@@ -186,30 +204,21 @@ export const attachSession = <E>(options: {
 		});
 		const rawMode = process.stdin.isRaw === true;
 		const wasFlowing = process.stdin.readableFlowing;
+		let inputState: AttachInputState = { awaitingEscape: false };
 		let detachTimer: ReturnType<typeof setTimeout> | undefined;
 		const scheduleDetach = () => {
 			detachTimer = setTimeout(() => {
 				detachTimer = undefined;
 				Queue.offerUnsafe(actions, { _tag: 'detach' });
-			}, 25);
+			}, 250);
 		};
 		const onInput = (data: Buffer) => {
-			const input = data.toString();
-			if (detachTimer !== undefined) {
-				clearTimeout(detachTimer);
-				detachTimer = undefined;
-				if (input.startsWith('\u001d')) {
-					Queue.offerUnsafe(actions, { _tag: 'input', data: '\u001d' });
-					const trailing = input.slice(1);
-					if (trailing.length > 0) onInput(Buffer.from(trailing));
-					return;
-				}
-				Queue.offerUnsafe(actions, { _tag: 'detach' });
-				return;
-			}
-			if (input === '\u001d') return scheduleDetach();
-			for (const action of inputActions(data))
-				Queue.offerUnsafe(actions, action);
+			if (detachTimer !== undefined) clearTimeout(detachTimer);
+			detachTimer = undefined;
+			const parsed = parseAttachInput(inputState, data);
+			inputState = parsed.state;
+			for (const action of parsed.actions) Queue.offerUnsafe(actions, action);
+			if (inputState.awaitingEscape) scheduleDetach();
 		};
 		const onResize = () => {
 			const cols = process.stdout.columns;
