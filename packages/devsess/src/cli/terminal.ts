@@ -1,5 +1,5 @@
 import { createConnection } from 'node:net';
-import { Effect, Queue, Schema } from 'effect';
+import { Effect, Fiber, Queue, Schema } from 'effect';
 import {
 	type DaemonEvent,
 	type DaemonRequest,
@@ -42,6 +42,30 @@ export const openDaemonStream = (options: {
 	Effect.acquireRelease(
 		Effect.gen(function* () {
 			const frames = yield* Queue.unbounded<StreamFrame>();
+			const chunks = yield* Queue.unbounded<string>();
+			const parser = yield* Effect.forever(
+				Queue.take(chunks).pipe(
+					Effect.flatMap((chunk) => {
+						const lines = `${buffer}${chunk}`.split('\n');
+						buffer = lines.pop() ?? '';
+						return Effect.forEach(
+							lines.filter((line) => line.length > 0),
+							(line) =>
+								decodeFrame(line).pipe(
+									Effect.flatMap((frame) =>
+										Queue.offer(
+											frames,
+											'requestId' in frame && 'event' in frame
+												? { _tag: 'output', value: frame }
+												: { _tag: 'response', value: frame },
+										),
+									),
+								),
+							{ discard: true },
+						);
+					}),
+				),
+			).pipe(Effect.forkScoped);
 			const socket = yield* Effect.tryPromise({
 				try: () =>
 					new Promise<ReturnType<typeof createConnection>>(
@@ -62,28 +86,16 @@ export const openDaemonStream = (options: {
 			});
 			let buffer = '';
 			socket.on('data', (chunk) => {
-				buffer = `${buffer}${chunk.toString()}`;
-				const lines = buffer.split('\n');
-				buffer = lines.pop() ?? '';
-				for (const line of lines) {
-					if (line.length === 0) continue;
-					Effect.runFork(
-						decodeFrame(line).pipe(
-							Effect.flatMap((frame) =>
-								'requestId' in frame && 'event' in frame
-									? Queue.offer(frames, { _tag: 'output', value: frame })
-									: Queue.offer(frames, { _tag: 'response', value: frame }),
-							),
-						),
-					);
-				}
+				Queue.offerUnsafe(chunks, chunk.toString());
 			});
 			socket.once('close', () => Queue.offerUnsafe(frames, { _tag: 'closed' }));
 			socket.once('error', () => Queue.offerUnsafe(frames, { _tag: 'closed' }));
-			return { frames, socket };
+			return { frames, chunks, parser, socket };
 		}),
 		(stream) =>
-			Effect.sync(() => {
+			Effect.gen(function* () {
 				stream.socket.destroy();
+				yield* Queue.shutdown(stream.chunks);
+				yield* Fiber.interrupt(stream.parser);
 			}),
 	);

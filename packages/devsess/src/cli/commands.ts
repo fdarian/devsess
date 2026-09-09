@@ -242,20 +242,6 @@ export const ensureDaemon = (location: DaemonLocation) =>
 const resolveCurrentRuns = (options: CommandOptions) =>
 	Effect.gen(function* () {
 		const invocation = yield* captureInvocation(process.cwd());
-		const configPath = yield* configPathFor(options.configPath);
-		const config = yield* readConfig(configPath);
-		const matches = yield* matchProjects(config, invocation);
-		const projectNames = matches.projects.map((project) => project.projectName);
-		const selectedProjectNames =
-			options.project === undefined
-				? projectNames
-				: projectNames.filter((projectName) => projectName === options.project);
-		if (selectedProjectNames.length === 0)
-			return yield* Effect.fail(
-				new CommandError({
-					message: 'No configured project matches this directory',
-				}),
-			);
 		const location = yield* resolveDaemonLocation;
 		yield* ensureDaemon(location);
 		const runs = (yield* callDaemon(location.socketPath, {
@@ -268,7 +254,7 @@ const resolveCurrentRuns = (options: CommandOptions) =>
 			(run) =>
 				containsPath(run.canonicalCwd, invocation.canonicalCwd) &&
 				active(run) &&
-				selectedProjectNames.includes(run.projectName),
+				(options.project === undefined || run.projectName === options.project),
 		);
 		return { location, runs, current };
 	});
