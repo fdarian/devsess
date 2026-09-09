@@ -57,6 +57,10 @@ export default defineConfig({
 			text: 'Reference',
 			items: [
 				{
+					text: 'CLI',
+					link: '/reference/cli',
+				},
+				{
 					text: 'devsess',
 					link: '/reference/devsess',
 				},
