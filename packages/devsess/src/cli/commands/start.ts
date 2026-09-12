@@ -5,7 +5,7 @@ import { callDaemon } from '../client';
 import type { ConfigPreset } from '../config';
 import { readConfig, resolveDefaultConfigPath } from '../config';
 import {
-	captureInvocation,
+	captureInvocationWithGit,
 	type Invocation,
 	type MatchedProject,
 	matchProjects,
@@ -86,7 +86,7 @@ const resolvePreset = (options: CommandOptions, interactive: boolean) =>
 	Effect.gen(function* () {
 		const configPath = yield* configPathFor(options.configPath);
 		const config = yield* readConfig(configPath);
-		const invocation = yield* captureInvocation(process.cwd());
+		const invocation = yield* captureInvocationWithGit(process.cwd());
 		const matches = yield* matchProjects(config, invocation);
 		const projects =
 			options.project === undefined

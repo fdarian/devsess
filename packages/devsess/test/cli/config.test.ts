@@ -1,10 +1,12 @@
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { NodeServices } from '@effect/platform-node';
 import { describe, expect, it } from '@effect/vitest';
 import { Effect } from 'effect';
 import { decodeConfig, defaultConfigPath } from '../../src/cli/config';
 import {
 	captureInvocation,
+	captureInvocationWithGit,
 	matchProjects,
 	normalizeGitRepo,
 } from '../../src/cli/project-matching';
@@ -189,6 +191,27 @@ describe('project matching', () => {
 				'gitProject',
 			]);
 		}),
+	);
+
+	it.live('discovers the local Git origin before matching a project', () =>
+		Effect.gen(function* () {
+			const config = yield* decodeConfig(
+				JSON.stringify({
+					projects: {
+						devsess: {
+							matcher: { type: 'git', repo: 'fdarian/devsess' },
+							presets: {},
+						},
+					},
+				}),
+			);
+			const invocation = yield* captureInvocationWithGit(projectDir);
+			const matches = yield* matchProjects(config, invocation);
+			expect(matches.matchType).toBe('git');
+			expect(matches.projects.map((project) => project.projectName)).toEqual([
+				'devsess',
+			]);
+		}).pipe(Effect.provide(NodeServices.layer)),
 	);
 
 	it.effect(
