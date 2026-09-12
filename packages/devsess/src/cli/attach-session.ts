@@ -1,7 +1,7 @@
 import { Deferred, Effect, Fiber, Queue, Schema } from 'effect';
 import type { Scope } from 'effect/Scope';
 import { callDaemon } from './client';
-import type { DaemonLocation } from './commands';
+import type { DaemonLocation } from './commands/daemon';
 import type { DaemonRequest } from './protocol';
 import type { RunRecord } from './registry';
 import type { DaemonStream, DaemonStreamFrame } from './terminal';
