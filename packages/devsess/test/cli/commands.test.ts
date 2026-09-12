@@ -4,7 +4,8 @@ import {
 	daemonLocation,
 	decodeRunListResponse,
 	decodeRunResponse,
-} from '../../src/cli/commands';
+} from '../../src/cli/commands/daemon';
+
 import { qualifiedPresets, selectPreset } from '../../src/cli/selection';
 
 const project = (projectName: string) => ({
