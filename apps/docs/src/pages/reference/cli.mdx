@@ -37,7 +37,26 @@ The configuration has named projects, each with a path or Git-origin matcher and
 }
 ```
 
-Project path matchers must be absolute or begin with `~/`. Path matchers use canonical paths and win over Git matchers; among path matches, the longest matching path wins. Equivalent SSH and HTTPS Git origins are normalized before comparison. If equal matches remain, qualify the choice with `--project` (and, when needed, the preset name) instead of relying on config key order.
+A Git matcher can identify a project by its owner/repository identity, independent of where the checkout lives:
+
+```json
+{
+	"projects": {
+		"devsess": {
+			"matcher": { "type": "git", "repo": "fdarian/devsess" },
+			"presets": {
+				"default": {
+					"services": {
+						"docs": { "command": "bun run docs" }
+					}
+				}
+			}
+		}
+	}
+}
+```
+
+The shorthand `fdarian/devsess` matches normalized remotes such as `git@github.com:fdarian/devsess.git` and `https://github.com/fdarian/devsess`. Project path matchers must be absolute or begin with `~/`. Path matchers use canonical paths and win over Git matchers; among path matches, the longest matching path wins. If equal matches remain, qualify the choice with `--project` (and, when needed, the preset name) instead of relying on config key order.
 
 Service `cwd` is resolved when `start` is invoked. An omitted `cwd` uses the directory from which you invoked the command; a relative `cwd` is relative to that directory; an absolute `cwd` is used as written. The daemon's own working directory does not affect this rule.
 
