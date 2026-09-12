@@ -1,7 +1,9 @@
 import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve } from 'node:path';
-import { Effect, Option, Schema } from 'effect';
+import { Effect, Option, Schema, Stream } from 'effect';
+import { ChildProcess } from 'effect/unstable/process';
+import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner';
 import type { ConfigProject, DevsessConfig } from './config';
 
 export class ProjectPathResolutionError extends Schema.TaggedErrorClass<ProjectPathResolutionError>()(
@@ -58,6 +60,40 @@ export const captureInvocation = (cwd: string, repo?: string) =>
 			}),
 		),
 	);
+
+/** Reads the checkout's origin without contacting the remote. */
+export const readGitOrigin = (cwd: string) =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const spawner = yield* ChildProcessSpawner;
+			const command = ChildProcess.make(
+				'git',
+				['remote', 'get-url', 'origin'],
+				{ cwd, stdin: 'ignore', stdout: 'pipe', stderr: 'ignore' },
+			);
+			const handle = yield* spawner.spawn(command);
+			const output = yield* Stream.mkString(
+				handle.stdout.pipe(Stream.decodeText),
+			);
+			const exitCode = yield* handle.exitCode;
+			if (exitCode !== 0) return Option.none<string>();
+			const origin = output.trim();
+			return origin.length === 0 ? Option.none<string>() : Option.some(origin);
+		}),
+	).pipe(
+		Effect.catchTag('PlatformError', (error) =>
+			error.reason._tag === 'NotFound'
+				? Effect.succeed(Option.none<string>())
+				: Effect.fail(error),
+		),
+	);
+
+/** Captures the invocation path together with its local Git origin when available. */
+export const captureInvocationWithGit = (cwd: string) =>
+	Effect.gen(function* () {
+		const repo = yield* readGitOrigin(cwd);
+		return yield* captureInvocation(cwd, Option.getOrUndefined(repo));
+	});
 
 /** Makes equivalent SSH and HTTPS remote spellings comparable. */
 export const normalizeGitRepo = (repo: string) => {
