@@ -25,7 +25,7 @@ export type CommandOptions = {
 
 export type DaemonLocation = { dataDirectory: string; socketPath: string };
 
-const active = (run: RunRecord) =>
+export const isRunActive = (run: RunRecord) =>
 	run.services.some(
 		(service) =>
 			service.state === 'starting' ||
@@ -128,7 +128,7 @@ export const resolveCurrentRuns = (options: CommandOptions) =>
 		const current = runs.filter(
 			(run) =>
 				containsPath(run.canonicalCwd, invocation.canonicalCwd) &&
-				active(run) &&
+				isRunActive(run) &&
 				(options.project === undefined || run.projectName === options.project),
 		);
 		return { location, runs, current };
