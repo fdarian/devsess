@@ -80,7 +80,7 @@ An active `project/preset` identity cannot be started twice. A completed or fail
 
 Each service retains at most 1 MiB of UTF-8 log data. Oversized output is split into smaller events before retention, and older events are discarded to keep the retained window within the limit. Live subscribers use a dropping queue of 256 events. Oversized protocol frames and slow socket readers can cause a connection to close. Reconnecting can only replay output still inside the retained window.
 
-`attach` gives one client the service's input lease. Press `Ctrl-]` by itself to detach and return to the shell; `Ctrl-C` is sent to the service. The detach escape is the single byte `0x1d`: if it arrives together with other input, that whole input chunk is forwarded to the service instead. Only one attached input writer is allowed at a time. A disconnected client releases its lease.
+`attach` gives one client the service's input lease and prints the keyboard shortcuts when the lease is granted. Press `Ctrl-]` once to detach and return to the shell; press it twice to send a literal `Ctrl-]` to the service. `Ctrl-C` is sent to the service. The detach escape is the single byte `0x1d`: if it arrives together with other input, that whole input chunk is forwarded to the service instead. Only one attached input writer is allowed at a time. A disconnected client releases its lease.
 
 ## Process ownership and recovery
 

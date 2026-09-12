@@ -8,6 +8,8 @@ import type { DaemonStream, DaemonStreamFrame } from './terminal';
 
 const AttachLease = Schema.Struct({ leaseId: Schema.NonEmptyString });
 const decodeAttachLease = Schema.decodeUnknownEffect(AttachLease);
+const attachHint =
+	'\r\n[devsess] Press Ctrl-] to detach. Press Ctrl-] twice to send a literal Ctrl-]. Ctrl-C is sent to the service.\r\n';
 
 export type AttachAction =
 	| { readonly _tag: 'input'; readonly data: string }
@@ -166,6 +168,7 @@ export const attachSession = <E>(options: {
 				options.error('Attach requires an interactive terminal'),
 			);
 		const leaseId = yield* awaitAttachLease(options.stream, options.error);
+		yield* Effect.sync(() => process.stdout.write(attachHint));
 		const actions = yield* Queue.unbounded<AttachAction>();
 		const detached = yield* Deferred.make<void, E>();
 		const send = (action: AttachAction) =>
