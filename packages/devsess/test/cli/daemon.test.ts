@@ -862,6 +862,7 @@ describe('daemon lifetime and failure handling', () => {
 					const frame = JSON.parse(
 						yield* Deferred.await(written).pipe(Effect.timeout('1 second')),
 					) as { ok: boolean; error?: string };
+					yield* Effect.sleep('1 millis');
 					expect(frame.ok).toBe(false);
 					expect(frame.error).toContain('output buffer exceeded');
 					expect(end).toHaveBeenCalledOnce();
