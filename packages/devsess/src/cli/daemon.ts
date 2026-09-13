@@ -73,6 +73,7 @@ type LiveService = {
 	readonly terminal: IPty;
 	readonly address: LogAddress;
 	readonly ownership: LiveProcessOwnership;
+	exit: ServiceExit | undefined;
 	lease:
 		| { readonly id: string; readonly socket: Socket | undefined }
 		| undefined;
@@ -195,12 +196,23 @@ export const makeDaemon = (options: {
 				ok: false,
 				error: errorMessage(cause),
 			});
-		const replaceService = (address: LogAddress, state: ServiceState) =>
+		const replaceService = (
+			address: LogAddress,
+			state: ServiceState,
+			exit?: ServiceExit,
+		) =>
 			registry.get(address.runId).pipe(
 				Effect.flatMap((run) => {
 					const services = run.services.map((service) =>
 						service.name === address.serviceName
-							? { ...service, state }
+							? exit === undefined
+								? { ...service, state }
+								: {
+										...service,
+										state,
+										exitCode: exit.exitCode,
+										signal: exit.signal,
+									}
 							: service,
 					);
 					return registry.replace({
@@ -252,11 +264,41 @@ export const makeDaemon = (options: {
 				for (const live of terminals.values())
 					if (live.lease?.socket === socket) live.lease = undefined;
 			});
+		const completedExit = (service: ServiceRecord): ServiceExit | undefined =>
+			(service.state === 'exited' || service.state === 'failed') &&
+			service.exitCode !== undefined
+				? { exitCode: service.exitCode, signal: service.signal }
+				: undefined;
+		const finishSubscription = (
+			socket: Socket,
+			state: SocketState,
+			requestId: string,
+			subscription: Subscription,
+			exit: ServiceExit,
+		) =>
+			subscription.flush.pipe(
+				Effect.andThen(
+					send(socket, {
+						version: PROTOCOL_VERSION,
+						requestId,
+						event: 'exit',
+						exitCode: exit.exitCode,
+						signal: exit.signal,
+					}),
+				),
+				Effect.andThen(subscription.unsubscribe),
+				Effect.tap(() =>
+					Effect.sync(() => {
+						state.subscriptions.delete(requestId);
+					}),
+				),
+			);
 		const subscribe = (
 			socket: Socket,
 			requestId: string,
 			address: LogAddress,
 			after: number,
+			exit?: ServiceExit,
 		) =>
 			Effect.gen(function* () {
 				const state = sockets.get(socket);
@@ -286,6 +328,11 @@ export const makeDaemon = (options: {
 					flush: subscription.flush,
 					unsubscribe: subscription.unsubscribe,
 				});
+				if (exit !== undefined) {
+					const current = state.subscriptions.get(requestId);
+					if (current !== undefined)
+						yield* finishSubscription(socket, state, requestId, current, exit);
+				}
 			});
 		const finishSubscriptions = (address: LogAddress, exit: ServiceExit) =>
 			Effect.forEach(
@@ -300,22 +347,12 @@ export const makeDaemon = (options: {
 							const subscription = subscriptionEntry[1];
 							if (serviceKey(subscription.address) !== serviceKey(address))
 								return Effect.void;
-							return subscription.flush.pipe(
-								Effect.andThen(
-									send(socket, {
-										version: PROTOCOL_VERSION,
-										requestId,
-										event: 'exit',
-										exitCode: exit.exitCode,
-										signal: exit.signal,
-									}),
-								),
-								Effect.andThen(subscription.unsubscribe),
-								Effect.tap(() =>
-									Effect.sync(() => {
-										state.subscriptions.delete(requestId);
-									}),
-								),
+							return finishSubscription(
+								socket,
+								state,
+								requestId,
+								subscription,
+								exit,
 							);
 						},
 						{ discard: true },
@@ -323,6 +360,10 @@ export const makeDaemon = (options: {
 				},
 				{ discard: true },
 			);
+		const stoppedExit = (live: LiveService | undefined): ServiceExit =>
+			live === undefined || live.exit === undefined
+				? { exitCode: 0, signal: 15 }
+				: live.exit;
 		const reconcile = registry.list.pipe(
 			Effect.flatMap((runs) =>
 				Effect.forEach(runs, (run) => {
@@ -457,12 +498,18 @@ export const makeDaemon = (options: {
 							Queue.offerUnsafe(queue, { _tag: 'ptyOutput', address, data });
 						});
 						terminal.onExit((event) => {
-							observedExit = event;
+							const exit: ServiceExit = {
+								exitCode: event.exitCode,
+								signal: event.signal,
+							};
+							observedExit = exit;
+							const live = terminals.get(serviceKey(address));
+							if (live !== undefined) live.exit = exit;
 							Queue.offerUnsafe(queue, {
 								_tag: 'exited',
 								address,
-								exitCode: event.exitCode,
-								signal: event.signal,
+								exitCode: exit.exitCode,
+								signal: exit.signal,
 							});
 						});
 						const captured = yield* Effect.exit(
@@ -473,6 +520,7 @@ export const makeDaemon = (options: {
 								yield* replaceService(
 									address,
 									serviceExitCode(observedExit) === 0 ? 'exited' : 'failed',
+									observedExit,
 								);
 								continue;
 							}
@@ -494,12 +542,14 @@ export const makeDaemon = (options: {
 							return yield* Effect.failCause(captured.cause);
 						}
 						const ownership = captured.value;
-						terminals.set(serviceKey(address), {
+						const live: LiveService = {
 							address,
 							terminal,
 							ownership,
+							exit: observedExit,
 							lease: undefined,
-						});
+						};
+						terminals.set(serviceKey(address), live);
 						yield* Effect.gen(function* () {
 							const stored = yield* registry.get(run.runId);
 							const services = stored.services.map((candidate) =>
@@ -569,10 +619,17 @@ export const makeDaemon = (options: {
 							return service;
 						const identity =
 							live === undefined ? service.process : live.ownership.identity;
-						if (identity === undefined)
-							return service.state === 'stopping'
-								? { ...service, state: 'exited' as const }
-								: service;
+						if (identity === undefined) {
+							if (service.state !== 'stopping') return service;
+							const exit = stoppedExit(live);
+							yield* finishSubscriptions(address, exit);
+							return {
+								...service,
+								state: 'exited' as const,
+								exitCode: exit.exitCode,
+								signal: exit.signal,
+							};
+						}
 						const result = yield* Effect.exit(
 							live === undefined
 								? processes
@@ -606,12 +663,16 @@ export const makeDaemon = (options: {
 							};
 						}
 						terminals.delete(serviceKey(address));
+						const exit = stoppedExit(live);
+						yield* finishSubscriptions(address, exit);
 						return {
 							...service,
 							state:
 								service.state === 'failed'
 									? ('failed' as const)
 									: ('exited' as const),
+							exitCode: exit.exitCode,
+							signal: exit.signal,
 						};
 					}),
 				);
@@ -647,12 +708,23 @@ export const makeDaemon = (options: {
 			if (incoming.method === 'tail')
 				return socket === undefined
 					? registry.get(address.runId)
-					: subscribe(
-							socket,
-							incoming.requestId,
-							address,
-							incoming.params.after ?? 0,
-						).pipe(Effect.as({}));
+					: Effect.gen(function* () {
+							const run = yield* registry.get(address.runId);
+							const service = run.services.find(
+								(candidate) => candidate.name === address.serviceName,
+							);
+							if (service === undefined)
+								return yield* new DaemonError({
+									message: `Service ${address.serviceName} was not found in run ${address.runId}`,
+								});
+							return yield* subscribe(
+								socket,
+								incoming.requestId,
+								address,
+								incoming.params.after ?? 0,
+								completedExit(service),
+							).pipe(Effect.as({}));
+						});
 			const live = terminals.get(serviceKey(address));
 			if (incoming.method === 'attach') {
 				if (live === undefined)
@@ -713,13 +785,14 @@ export const makeDaemon = (options: {
 						replaceService(
 							message.address,
 							serviceExitCode(exit) === 0 ? 'exited' : 'failed',
+							exit,
 						),
 					),
 					Effect.tap(() => Effect.sync(() => terminals.delete(key))),
 					Effect.andThen(finishSubscriptions(message.address, exit)),
 					Effect.asVoid,
 					Effect.catch((cause) =>
-						replaceService(message.address, 'orphaned').pipe(
+						replaceService(message.address, 'orphaned', exit).pipe(
 							Effect.andThen(finishSubscriptions(message.address, exit)),
 							Effect.andThen(Effect.logError(cause)),
 						),
