@@ -76,6 +76,7 @@ type LiveService = {
 };
 type Subscription = {
 	readonly address: LogAddress;
+	readonly flush: Effect.Effect<void>;
 	readonly unsubscribe: Effect.Effect<void>;
 };
 type SocketState = { readonly subscriptions: Map<string, Subscription> };
@@ -91,12 +92,6 @@ type Message =
 			readonly _tag: 'ptyOutput';
 			readonly address: LogAddress;
 			readonly data: string;
-	  }
-	| {
-			readonly _tag: 'delivery';
-			readonly socket: Socket;
-			readonly requestId: string;
-			readonly event: { readonly data: string; readonly offset: number };
 	  }
 	| {
 			readonly _tag: 'exited';
@@ -230,13 +225,12 @@ export const makeDaemon = (options: {
 					address,
 					after,
 					(event) =>
-						Effect.sync(() => {
-							Queue.offerUnsafe(queue, {
-								_tag: 'delivery',
-								socket,
-								requestId,
-								event,
-							});
+						send(socket, {
+							version: PROTOCOL_VERSION,
+							requestId,
+							event: 'output',
+							data: event.data,
+							offset: event.offset,
 						}),
 				);
 				for (const event of subscription.replay)
@@ -249,6 +243,7 @@ export const makeDaemon = (options: {
 					});
 				state.subscriptions.set(requestId, {
 					address,
+					flush: subscription.flush,
 					unsubscribe: subscription.unsubscribe,
 				});
 			});
@@ -265,12 +260,15 @@ export const makeDaemon = (options: {
 							const subscription = subscriptionEntry[1];
 							if (serviceKey(subscription.address) !== serviceKey(address))
 								return Effect.void;
-							return send(socket, {
-								version: PROTOCOL_VERSION,
-								requestId,
-								event: 'exit',
-								exitCode,
-							}).pipe(
+							return subscription.flush.pipe(
+								Effect.andThen(
+									send(socket, {
+										version: PROTOCOL_VERSION,
+										requestId,
+										event: 'exit',
+										exitCode,
+									}),
+								),
 								Effect.andThen(subscription.unsubscribe),
 								Effect.tap(() =>
 									Effect.sync(() => {
@@ -659,14 +657,6 @@ export const makeDaemon = (options: {
 						replaceService(message.address, 'failed').pipe(Effect.asVoid),
 					),
 				);
-			if (message._tag === 'delivery')
-				return send(message.socket, {
-					version: PROTOCOL_VERSION,
-					requestId: message.requestId,
-					event: 'output',
-					data: message.event.data,
-					offset: message.event.offset,
-				});
 			if (message._tag === 'exited') {
 				const key = serviceKey(message.address);
 				const live = terminals.get(key);

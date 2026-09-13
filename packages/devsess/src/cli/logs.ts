@@ -1,5 +1,6 @@
 import {
 	Context,
+	Deferred,
 	Effect,
 	Fiber,
 	Layer,
@@ -100,6 +101,7 @@ export class Logs extends Context.Service<
 		) => Effect.Effect<
 			{
 				readonly replay: ReadonlyArray<LogEvent>;
+				readonly flush: Effect.Effect<void>;
 				readonly unsubscribe: Effect.Effect<void>;
 			},
 			PlatformError | Schema.SchemaError,
@@ -122,8 +124,13 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 			string,
 			Set<{
 				readonly listener: (event: LogEvent) => Effect.Effect<void>;
-				readonly queue: Queue.Queue<LogEvent>;
+				readonly queue: Queue.Queue<{
+					readonly event: LogEvent;
+					readonly completion: Deferred.Deferred<void>;
+				}>;
 				readonly fiber: Fiber.Fiber<void, unknown>;
+				readonly pending: Set<Deferred.Deferred<void>>;
+				readonly flush: Effect.Effect<void>;
 			}>
 		>();
 		const logPath = (address: LogAddress) =>
@@ -183,7 +190,20 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 											(subscription) =>
 												Effect.forEach(
 													events,
-													(event) => Queue.offer(subscription.queue, event),
+													(event) =>
+														Effect.gen(function* () {
+															const completion = yield* Deferred.make<void>();
+															subscription.pending.add(completion);
+															if (
+																Queue.offerUnsafe(subscription.queue, {
+																	event,
+																	completion,
+																})
+															)
+																return;
+															subscription.pending.delete(completion);
+															yield* Deferred.succeed(completion, undefined);
+														}),
 													{ discard: true },
 												),
 											{ discard: true },
@@ -211,20 +231,52 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 											readonly listener: (
 												event: LogEvent,
 											) => Effect.Effect<void>;
-											readonly queue: Queue.Queue<LogEvent>;
+											readonly queue: Queue.Queue<{
+												readonly event: LogEvent;
+												readonly completion: Deferred.Deferred<void>;
+											}>;
 											readonly fiber: Fiber.Fiber<void, unknown>;
+											readonly pending: Set<Deferred.Deferred<void>>;
+											readonly flush: Effect.Effect<void>;
 										}>()
 									: current;
-							const queue = yield* Queue.dropping<LogEvent>(256);
+							const queue = yield* Queue.dropping<{
+								readonly event: LogEvent;
+								readonly completion: Deferred.Deferred<void>;
+							}>(256);
+							const pending = new Set<Deferred.Deferred<void>>();
 							const fiber = yield* Effect.gen(function* () {
 								yield* Effect.forever(
 									Effect.gen(function* () {
-										const event = yield* Queue.take(queue);
-										yield* listener(event);
+										const item = yield* Queue.take(queue);
+										yield* listener(item.event).pipe(
+											Effect.ensuring(
+												Effect.sync(() => {
+													pending.delete(item.completion);
+												}).pipe(
+													Effect.andThen(
+														Deferred.succeed(item.completion, undefined),
+													),
+												),
+											),
+										);
 									}),
 								);
 							}).pipe(Effect.forkDetach);
-							const subscription = { listener, queue, fiber };
+							const flush = Effect.suspend(() =>
+								Effect.forEach(
+									Array.from(pending),
+									(completion) => Deferred.await(completion),
+									{ discard: true },
+								),
+							);
+							const subscription = {
+								listener,
+								queue,
+								fiber,
+								pending,
+								flush,
+							};
 							subscribed.add(subscription);
 							listeners.set(key, subscribed);
 							const unsubscribe = semaphore.withPermit(
@@ -237,6 +289,7 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 							);
 							return {
 								replay: stored.events.filter((event) => event.offset > after),
+								flush,
 								unsubscribe,
 							};
 						}),
