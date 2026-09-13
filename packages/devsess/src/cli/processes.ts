@@ -205,11 +205,12 @@ export class Processes extends Context.Service<Processes>()(
 						);
 			const terminate = (
 				identity: ProcessIdentity,
+				force: boolean,
 			): Effect.Effect<void, ProcessError> =>
 				Effect.gen(function* () {
 					if (!isValidIdentity(identity))
 						return yield* invalidIdentity(identity);
-					if (!(yield* owns(identity))) {
+					if (!force && !(yield* owns(identity))) {
 						if (yield* groupAlive(identity.processGroupId))
 							return yield* new ProcessError({
 								message: `Cannot verify recovered process group ${identity.processGroupId} after its leader exited`,
@@ -226,7 +227,7 @@ export class Processes extends Context.Service<Processes>()(
 					);
 					if (yield* waitForGroupExit(groupAlive, identity.processGroupId, 200))
 						return;
-					if (!(yield* owns(identity)))
+					if (!force && !(yield* owns(identity)))
 						return yield* new ProcessError({
 							message: `Cannot safely escalate recovered process group ${identity.processGroupId} after its leader changed`,
 						});

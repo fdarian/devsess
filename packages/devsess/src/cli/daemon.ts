@@ -123,6 +123,13 @@ const aggregateState = (
 const errorMessage = (cause: unknown) =>
 	cause instanceof Error ? cause.message : String(cause);
 
+const orphanRemedy = (
+	run: RunRecord,
+	service: ServiceRecord,
+	processGroupId: number,
+) =>
+	`Service ${service.name} in run ${run.runId} (${run.projectName}/${run.presetName}) has an unverified process group ${processGroupId}. Run \`kill -TERM -${processGroupId}\` manually, or run \`devsess stop --force\` to terminate it and unblock the preset.`;
+
 const listen = (server: Server, socketPath: string) =>
 	Effect.tryPromise({
 		try: () =>
@@ -361,6 +368,20 @@ export const makeDaemon = (options: {
 						services: refreshedServices,
 						state: aggregateState(refreshedServices),
 					};
+					const orphan = refreshed.services.find(
+						(service) =>
+							service.state === 'orphaned' && service.process !== undefined,
+					);
+					if (orphan !== undefined) {
+						const process = orphan.process;
+						if (process === undefined)
+							return yield* Effect.die(
+								'An orphaned service must retain its process identity',
+							);
+						return yield* new DaemonError({
+							message: `Cannot start ${candidate.projectName}/${candidate.presetName}: ${orphanRemedy(candidate, orphan, process.processGroupId)}`,
+						});
+					}
 					if (
 						refreshed.services.some(
 							(service) =>
@@ -408,7 +429,7 @@ export const makeDaemon = (options: {
 				};
 				yield* registry.reserve(run);
 				const rollback = Effect.gen(function* () {
-					const stopped = yield* stopRun(run.runId);
+					const stopped = yield* stopRun(run.runId, false);
 					const services = stopped.services.map((service) => ({
 						...service,
 						state: 'failed' as const,
@@ -513,9 +534,14 @@ export const makeDaemon = (options: {
 					),
 				);
 			}).pipe(Effect.uninterruptible);
-		const stopRun = (runId: string) =>
+		const stopRun = (runId: string, force: boolean) =>
 			Effect.gen(function* () {
 				const run = yield* registry.get(runId);
+				const orphanedServices = new Set(
+					run.services
+						.filter((service) => service.state === 'orphaned')
+						.map((service) => service.name),
+				);
 				const stopping = run.services.map((service) =>
 					isActive(service.state) || service.state === 'orphaned'
 						? { ...service, state: 'stopping' as const }
@@ -530,6 +556,7 @@ export const makeDaemon = (options: {
 					}),
 				);
 				if (Exit.isFailure(persisted)) failures.push(persisted.cause);
+				const failureMessages: Array<string> = [];
 				const services = yield* Effect.forEach(stopping, (service) =>
 					Effect.gen(function* () {
 						const address = { runId, serviceName: service.name };
@@ -552,13 +579,23 @@ export const makeDaemon = (options: {
 										.groupAlive(identity.processGroupId)
 										.pipe(
 											Effect.flatMap((alive) =>
-												alive ? processes.terminate(identity) : Effect.void,
+												alive || force
+													? processes.terminate(identity, force)
+													: Effect.void,
 											),
 										)
 								: live.ownership.terminate,
 						);
 						if (Exit.isFailure(result)) {
 							failures.push(result.cause);
+							if (
+								!force &&
+								live === undefined &&
+								orphanedServices.has(service.name)
+							)
+								failureMessages.push(
+									orphanRemedy(run, service, identity.processGroupId),
+								);
 							return {
 								...service,
 								process: identity,
@@ -583,11 +620,16 @@ export const makeDaemon = (options: {
 					services,
 					state: aggregateState(services),
 				});
-				if (failures.length > 0)
+				if (failures.length > 0) {
+					const message =
+						failureMessages.length > 0
+							? `Could not stop all services in run ${runId}.\n${failureMessages.join('\n')}`
+							: `Could not stop all services in run ${runId}`;
 					return yield* new DaemonError({
-						message: `Could not stop all services in run ${runId}`,
+						message,
 						cause: failures,
 					});
+				}
 				return stored;
 			});
 		const processRequest = (
@@ -596,7 +638,8 @@ export const makeDaemon = (options: {
 		): Effect.Effect<unknown, unknown, FileSystem | Path> => {
 			if (incoming.method === 'listRuns') return registry.list;
 			if (incoming.method === 'startRun') return startRun(incoming);
-			if (incoming.method === 'stopRun') return stopRun(incoming.params.runId);
+			if (incoming.method === 'stopRun')
+				return stopRun(incoming.params.runId, incoming.params.force === true);
 			const address = {
 				runId: incoming.params.runId,
 				serviceName: incoming.params.serviceName,
@@ -780,7 +823,7 @@ export const makeDaemon = (options: {
 					Array.from(terminals.values(), (live) => live.address.runId),
 				);
 				for (const runId of runIds)
-					yield* stopRun(runId).pipe(
+					yield* stopRun(runId, false).pipe(
 						Effect.catch((cause) => Effect.logError(cause)),
 					);
 				for (const live of terminals.values())

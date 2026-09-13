@@ -74,11 +74,23 @@ describe('live process group ownership', () => {
 			const processes = yield* Processes.make;
 			const saved = yield* processes.capture(98765);
 			group.state.leaderAlive = false;
-			const result = yield* Effect.exit(processes.terminate(saved));
+			const result = yield* Effect.exit(processes.terminate(saved, false));
 			expect(result._tag).toBe('Failure');
 			expect(group.kill).toHaveBeenCalledWith(-98765, 0);
 			expect(group.kill).not.toHaveBeenCalledWith(-98765, 'SIGTERM');
 			expect(group.kill).not.toHaveBeenCalledWith(-98765, 'SIGKILL');
+		}),
+	);
+
+	it.live('force signals a recovered group after its leader exits', () =>
+		Effect.gen(function* () {
+			const group = fakeGroup();
+			const processes = yield* Processes.make;
+			const saved = yield* processes.capture(98765);
+			group.state.leaderAlive = false;
+			yield* processes.terminate(saved, true);
+			expect(group.kill).toHaveBeenCalledWith(-98765, 'SIGTERM');
+			expect(group.state.groupAlive).toBe(false);
 		}),
 	);
 
@@ -91,6 +103,21 @@ describe('live process group ownership', () => {
 		}),
 	);
 
+	it.live('force still refuses an invalid recovered process group', () =>
+		Effect.gen(function* () {
+			const group = fakeGroup();
+			const processes = yield* Processes.make;
+			const result = yield* Effect.exit(
+				processes.terminate(
+					{ pid: 98765, processGroupId: 1, startedAt: 'birth' },
+					true,
+				),
+			);
+			expect(result._tag).toBe('Failure');
+			expect(group.kill).not.toHaveBeenCalled();
+		}),
+	);
+
 	it.live(
 		'escalates to SIGKILL while the recovered leader remains identifiable',
 		() =>
@@ -99,7 +126,7 @@ describe('live process group ownership', () => {
 				const group = fakeGroup(false);
 				const processes = yield* Processes.make;
 				const saved = yield* processes.capture(98765);
-				const completion = Effect.runPromise(processes.terminate(saved));
+				const completion = Effect.runPromise(processes.terminate(saved, false));
 				yield* Effect.promise(() => vi.runAllTimersAsync());
 				yield* Effect.promise(() => completion);
 				expect(group.kill).toHaveBeenCalledWith(-98765, 'SIGKILL');

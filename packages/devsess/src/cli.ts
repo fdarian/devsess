@@ -39,8 +39,8 @@ const startCommand = Command.make(
 );
 const stopCommand = Command.make(
 	'stop',
-	{ ...options, preset: optionalPreset },
-	(input) => stop(commandOptions(input)),
+	{ ...options, preset: optionalPreset, force: Flag.boolean('force') },
+	(input) => stop({ ...commandOptions(input), force: input.force }),
 );
 const tailCommand = Command.make(
 	'tail',

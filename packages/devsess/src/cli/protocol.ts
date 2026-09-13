@@ -33,7 +33,10 @@ export const StopRunRequest = Schema.Struct({
 	version: Schema.Literal(PROTOCOL_VERSION),
 	requestId: Identifier,
 	method: Schema.Literal('stopRun'),
-	params: Schema.Struct({ runId: Identifier }),
+	params: Schema.Struct({
+		runId: Identifier,
+		force: Schema.optional(Schema.Boolean),
+	}),
 });
 export const TailRequest = Schema.Struct({
 	version: Schema.Literal(PROTOCOL_VERSION),
