@@ -9,8 +9,14 @@ const ServiceSchema = Schema.Struct({
 	cwd: Schema.optionalKey(Schema.NonEmptyString),
 });
 
+const ServicesSchema = IdentifierRecord(ServiceSchema).check(
+	Schema.makeFilter((services) => Object.keys(services).length > 0, {
+		message: 'Expected a preset to define at least one service',
+	}),
+);
+
 const PresetSchema = Schema.Struct({
-	services: IdentifierRecord(ServiceSchema),
+	services: ServicesSchema,
 });
 
 const ProjectPathSchema = Schema.String.check(

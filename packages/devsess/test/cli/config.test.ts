@@ -153,6 +153,24 @@ describe('CLI configuration', () => {
 		}),
 	);
 
+	it.effect('rejects presets without services', () =>
+		Effect.gen(function* () {
+			const exit = yield* Effect.exit(
+				decodeConfig(
+					JSON.stringify({
+						projects: {
+							project: {
+								matcher: { type: 'path', path: '/work/project' },
+								presets: { dev: { services: {} } },
+							},
+						},
+					}),
+				),
+			);
+			expect(exit._tag).toBe('Failure');
+		}),
+	);
+
 	it.effect('rejects unknown configuration fields at every level', () =>
 		Effect.gen(function* () {
 			const exit = yield* Effect.exit(
