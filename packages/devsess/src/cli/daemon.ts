@@ -282,7 +282,8 @@ export const makeDaemon = (options: {
 			});
 		const sendOverflow = (socket: Socket, requestId: string) => {
 			const state = sockets.get(socket);
-			if (state === undefined) return Effect.void;
+			if (state === undefined || state.closed || socket.destroyed)
+				return Effect.void;
 			const operation = state.writes.then(() =>
 				overflowFrame(socket, state, requestId),
 			);
