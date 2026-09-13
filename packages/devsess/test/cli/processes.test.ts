@@ -23,9 +23,15 @@ const missing = () =>
 const fakeGroup = (termKillsGroup = true) => {
 	const state = { leaderAlive: true, groupAlive: true };
 	vi.mocked(execFile).mockImplementation((...args: Array<unknown>) => {
+		const commandArgs = args.slice(1, -1);
 		const callback = args.at(-1);
 		if (typeof callback !== 'function')
 			throw new Error('Expected process inspection callback');
+		if (commandArgs[0] === '-g') {
+			if (state.groupAlive) callback(null, ' 98765\n', '');
+			else callback(Object.assign(new Error('missing'), { code: 1 }), '', '');
+			return {} as ReturnType<typeof execFile>;
+		}
 		if (state.leaderAlive)
 			callback(null, ' 98765 Wed Sep 9 00:00:00 2026\n', '');
 		else callback(Object.assign(new Error('missing'), { code: 1 }), '', '');
@@ -66,6 +72,33 @@ describe('live process group ownership', () => {
 				yield* owned.terminate;
 				expect(group.kill.mock.calls.length).toBe(calls);
 			}),
+	);
+
+	it.live('confirms a group after a transient EPERM from kill zero', () =>
+		Effect.gen(function* () {
+			const group = fakeGroup();
+			let transient = true;
+			group.kill.mockImplementation((_pid, signal) => {
+				if (signal === 0 && transient) {
+					transient = false;
+					throw Object.assign(new Error('operation not permitted'), {
+						code: 'EPERM',
+					});
+				}
+				if (!group.state.groupAlive) throw missing();
+				if (signal === 'SIGTERM') group.state.groupAlive = false;
+				return true;
+			});
+			const processes = yield* Processes.make;
+			const saved = yield* processes.capture(98765);
+			yield* processes.terminate(saved, false);
+			expect(group.kill).toHaveBeenCalledWith(-98765, 'SIGTERM');
+			expect(vi.mocked(execFile)).toHaveBeenCalledWith(
+				'ps',
+				['-g', '98765', '-o', 'pid='],
+				expect.any(Function),
+			);
+		}),
 	);
 
 	it.live('refuses to signal a recovered group after its leader exits', () =>
