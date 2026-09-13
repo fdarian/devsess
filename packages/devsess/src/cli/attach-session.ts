@@ -25,47 +25,49 @@ export const parseAttachInput = (
 	readonly state: AttachInputState;
 	readonly actions: ReadonlyArray<AttachAction>;
 } => {
-	const input = data.toString();
-	const actions: Array<AttachAction> = [];
-	let pending = '';
-	let index = state.awaitingEscape ? 1 : 0;
-	if (
-		!state.awaitingEscape &&
-		input.length > 1 &&
-		input.includes('\u001d') &&
-		input !== '\u001d\u001d'
-	)
-		return {
-			state: { awaitingEscape: false },
-			actions: [{ _tag: 'input', data: input }],
-		};
-	if (state.awaitingEscape) {
-		if (input[0] !== '\u001d')
-			return {
-				state: { awaitingEscape: false },
-				actions: [{ _tag: 'detach' }],
-			};
-		pending = '\u001d';
+	const escapeByte = 0x1d;
+	const pending: Array<number> = [];
+	let awaitingEscape = state.awaitingEscape;
+	let detaches = false;
+	let index = 0;
+	if (awaitingEscape && data.length > 0) {
+		awaitingEscape = false;
+		if (data[0] === escapeByte) {
+			pending.push(escapeByte);
+			index = 1;
+		} else {
+			detaches = true;
+			pending.push(...data);
+			index = data.length;
+		}
 	}
-	while (index < input.length) {
-		if (input[index] !== '\u001d') {
-			pending += input[index];
+	while (!detaches && index < data.length) {
+		const byte = data[index];
+		if (byte === undefined) break;
+		if (byte !== escapeByte) {
+			pending.push(byte);
 			index += 1;
 			continue;
 		}
-		if (input[index + 1] === '\u001d') {
-			pending += '\u001d';
+		if (data[index + 1] === escapeByte) {
+			pending.push(escapeByte);
 			index += 2;
 			continue;
 		}
-		if (pending.length > 0) actions.push({ _tag: 'input', data: pending });
-		if (index + 1 === input.length)
-			return { state: { awaitingEscape: true }, actions };
-		actions.push({ _tag: 'detach' });
-		return { state: { awaitingEscape: false }, actions };
+		if (index + 1 === data.length) {
+			awaitingEscape = true;
+			index += 1;
+			continue;
+		}
+		detaches = true;
+		pending.push(...data.subarray(index + 1));
+		index = data.length;
 	}
-	if (pending.length > 0) actions.push({ _tag: 'input', data: pending });
-	return { state: { awaitingEscape: false }, actions };
+	const actions: Array<AttachAction> = [];
+	if (pending.length > 0)
+		actions.push({ _tag: 'input', data: Buffer.from(pending).toString() });
+	if (detaches) actions.push({ _tag: 'detach' });
+	return { state: { awaitingEscape }, actions };
 };
 
 const terminalSize = <E>(error: (message: string) => E) => {
