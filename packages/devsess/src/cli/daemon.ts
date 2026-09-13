@@ -14,11 +14,7 @@ import type { Path } from 'effect/Path';
 import type { Scope } from 'effect/Scope';
 import type { IPty } from 'node-pty';
 import { type LogAddress, Logs } from './logs';
-import {
-	type LiveProcessOwnership,
-	ProcessError,
-	Processes,
-} from './processes';
+import { type LiveProcessOwnership, Processes } from './processes';
 import {
 	type DaemonEvent,
 	type DaemonRequest,
@@ -296,11 +292,24 @@ export const makeDaemon = (options: {
 						if (!active(service.state) || service.process === undefined) {
 							return Effect.succeed(service);
 						}
-						return processes.owns(service.process).pipe(
-							Effect.map(() => ({
-								...service,
-								state: 'orphaned' as const,
-							})),
+						const process = service.process;
+						return processes.owns(process).pipe(
+							Effect.flatMap((owned) =>
+								owned
+									? Effect.succeed({
+											...service,
+											state: 'orphaned' as const,
+										})
+									: processes
+											.groupAlive(process.processGroupId)
+											.pipe(
+												Effect.map((alive) =>
+													alive
+														? { ...service, state: 'orphaned' as const }
+														: { ...service, state: 'exited' as const },
+												),
+											),
+							),
 						);
 					}).pipe(
 						Effect.flatMap((services) =>
@@ -326,8 +335,34 @@ export const makeDaemon = (options: {
 						candidate.presetName !== request.params.presetName
 					)
 						continue;
+					const refreshedServices = yield* Effect.forEach(
+						candidate.services,
+						(service) => {
+							if (service.state === 'orphaned' && service.process === undefined)
+								return Effect.succeed({
+									...service,
+									state: 'exited' as const,
+								});
+							if (service.process === undefined) return Effect.succeed(service);
+							return processes
+								.groupAlive(service.process.processGroupId)
+								.pipe(
+									Effect.map((alive) =>
+										alive ||
+										(!active(service.state) && service.state !== 'orphaned')
+											? service
+											: { ...service, state: 'exited' as const },
+									),
+								);
+						},
+					);
+					const refreshed = {
+						...candidate,
+						services: refreshedServices,
+						state: aggregateState(refreshedServices),
+					};
 					if (
-						candidate.services.some(
+						refreshed.services.some(
 							(service) =>
 								active(service.state) || service.state === 'orphaned',
 						)
@@ -336,16 +371,23 @@ export const makeDaemon = (options: {
 							message: `Run ${candidate.runId} still has an active service`,
 						});
 					}
-					for (const service of candidate.services) {
+					for (const service of refreshed.services) {
 						if (
 							service.process !== undefined &&
-							(yield* processes.owns(service.process))
+							(yield* processes.groupAlive(service.process.processGroupId))
 						) {
 							return yield* new DaemonError({
 								message: `Run ${candidate.runId} still owns a service process`,
 							});
 						}
 					}
+					if (
+						refreshed.services.some(
+							(service, index) =>
+								service.state !== candidate.services[index]?.state,
+						)
+					)
+						yield* registry.replace(refreshed);
 				}
 				const run: RunRecord = {
 					runId: request.params.runId,
@@ -507,15 +549,13 @@ export const makeDaemon = (options: {
 								: service;
 						const result = yield* Effect.exit(
 							live === undefined
-								? processes.owns(identity).pipe(
-										Effect.flatMap((owned) =>
-											owned
-												? processes.terminate(identity)
-												: new ProcessError({
-														message: `Cannot verify recovered process group for ${service.name}`,
-													}),
-										),
-									)
+								? processes
+										.groupAlive(identity.processGroupId)
+										.pipe(
+											Effect.flatMap((alive) =>
+												alive ? processes.terminate(identity) : Effect.void,
+											),
+										)
 								: live.ownership.terminate,
 						);
 						if (Exit.isFailure(result)) {

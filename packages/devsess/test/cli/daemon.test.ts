@@ -1,7 +1,7 @@
 import { createConnection, createServer, Socket } from 'node:net';
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
-import { Cause, Effect, Exit, Layer, Schema } from 'effect';
+import { Cause, Deferred, Effect, Exit, Layer, Schema } from 'effect';
 import { vi } from 'vitest';
 import { Daemon, makeDaemon } from '../../src/cli/daemon';
 import { Logs } from '../../src/cli/logs';
@@ -59,6 +59,26 @@ const identity = (pid: number) => ({
 	processGroupId: pid,
 	startedAt: 'birth',
 });
+const orphanedRun = (runId: string): RunRecord => ({
+	runId,
+	projectName: 'project',
+	presetName: 'dev',
+	canonicalCwd: '/tmp',
+	invocationCwd: '/tmp',
+	configSnapshot: {},
+	startedAt: '2026-09-09T00:00:00.000Z',
+	state: 'orphaned',
+	daemon: identity(12345),
+	services: [
+		{
+			name: 'web',
+			command: 'sleep 30',
+			cwd: '/tmp',
+			state: 'orphaned',
+			process: identity(98765),
+		},
+	],
+});
 const fixture = () => {
 	const records = new Map<string, RunRecord>();
 	const get = (runId: string) =>
@@ -90,6 +110,7 @@ const fixture = () => {
 			_identity: ReturnType<typeof identity>,
 		): Effect.Effect<void, ProcessError> => Effect.void,
 	);
+	const groupAlive = vi.fn(() => Effect.succeed(true));
 	const capture = vi.fn(
 		(pid: number): Effect.Effect<ReturnType<typeof identity>, ProcessError> =>
 			Effect.succeed(identity(pid)),
@@ -105,7 +126,7 @@ const fixture = () => {
 				})),
 			),
 		terminate,
-		groupAlive: () => Effect.succeed(true),
+		groupAlive,
 		owns: () => Effect.succeed(true),
 	});
 	const logs = Logs.of({
@@ -143,6 +164,7 @@ const fixture = () => {
 		registry,
 		replace,
 		terminate,
+		groupAlive,
 		capture,
 		unsubscribe,
 		terminal,
@@ -259,6 +281,46 @@ describe('daemon lifetime and failure handling', () => {
 					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
 				}),
 			),
+	);
+
+	it.live('stops an orphaned run whose recovered group is already dead', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				state.records.set('orphan', orphanedRun('orphan'));
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					state.groupAlive.mockReturnValueOnce(Effect.succeed(false));
+					const result = yield* daemon.request({
+						version: 1,
+						requestId: 'stop-orphan',
+						method: 'stopRun',
+						params: { runId: 'orphan' },
+					});
+					expect(result).toMatchObject({ state: 'exited' });
+					expect(state.terminate).not.toHaveBeenCalled();
+					expect((yield* state.registry.get('orphan')).state).toBe('exited');
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live('allows a new start after an orphaned group has disappeared', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				state.records.set('orphan', orphanedRun('orphan'));
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					state.groupAlive.mockReturnValue(Effect.succeed(false));
+					const result = yield* daemon.request(start('replacement'));
+					expect(result).toMatchObject({ runId: 'replacement' });
+					expect(state.records.has('replacement')).toBe(true);
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
 	);
 
 	it.live(
