@@ -296,8 +296,10 @@ const timeoutError = (
 
 const timeoutWithOwner = (location: DaemonLocation) =>
 	owner(location).pipe(
-		Effect.map((current) => timeoutError(location, current)),
-		Effect.catch(() => Effect.succeed(timeoutError(location))),
+		Effect.matchEffect({
+			onFailure: () => timeoutError(location),
+			onSuccess: (current) => timeoutError(location, current),
+		}),
 	);
 
 const waitForDaemon = (
