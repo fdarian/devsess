@@ -29,6 +29,16 @@ export const parseAttachInput = (
 	const actions: Array<AttachAction> = [];
 	let pending = '';
 	let index = state.awaitingEscape ? 1 : 0;
+	if (
+		!state.awaitingEscape &&
+		input.length > 1 &&
+		input.includes('\u001d') &&
+		input !== '\u001d\u001d'
+	)
+		return {
+			state: { awaitingEscape: false },
+			actions: [{ _tag: 'input', data: input }],
+		};
 	if (state.awaitingEscape) {
 		if (input[0] !== '\u001d')
 			return {

@@ -52,6 +52,15 @@ describe('attach session', () => {
 		});
 	});
 
+	it('forwards a Ctrl-] that arrives with other bytes in one chunk', () => {
+		expect(
+			parseAttachInput({ awaitingEscape: false }, Buffer.from('\u001dx')),
+		).toEqual({
+			state: { awaitingEscape: false },
+			actions: [{ _tag: 'input', data: '\u001dx' }],
+		});
+	});
+
 	it('turns a lone Ctrl-] followed by another key into detach', () => {
 		const first = parseAttachInput(
 			{ awaitingEscape: false },
