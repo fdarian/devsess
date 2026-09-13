@@ -655,6 +655,98 @@ describe('daemon lifetime and failure handling', () => {
 		),
 	);
 
+	it.live('completes subscriptions when stop removes a live terminal', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					yield* daemon.request(start());
+					const client = createConnection(join(root, 'daemon.sock'));
+					client.on('error', () => undefined);
+					const response = yield* Deferred.make<void>();
+					const completed = yield* Deferred.make<void>();
+					let received = '';
+					client.on('data', (chunk) => {
+						received += chunk.toString();
+						if (received.includes('"requestId":"tail"'))
+							Deferred.succeed(response, undefined).pipe(Effect.runFork);
+						if (received.includes('"event":"exit"'))
+							Deferred.succeed(completed, undefined).pipe(Effect.runFork);
+					});
+					yield* Effect.promise(
+						() =>
+							new Promise<void>((resolve) => client.once('connect', resolve)),
+					);
+					client.write(
+						`${JSON.stringify({ version: 1, requestId: 'tail', method: 'tail', params: { runId: 'run', serviceName: 'web' } })}\n`,
+					);
+					yield* Deferred.await(response).pipe(Effect.timeout('1 second'));
+					yield* daemon.request(stop);
+					yield* Deferred.await(completed).pipe(Effect.timeout('1 second'));
+					expect(received).toContain('"event":"exit"');
+					expect(received).toContain('"signal":15');
+					expect((yield* state.registry.get('run')).services[0]).toMatchObject({
+						exitCode: 0,
+						signal: 15,
+					});
+					client.destroy();
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live(
+		'replays and completes a service that exited before tail subscribed',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const finished = start('finished');
+					state.records.set('finished', {
+						...finished.params,
+						startedAt: '2026-09-09T00:00:00.000Z',
+						state: 'exited',
+						daemon: identity(12345),
+						services: [
+							{
+								name: 'web',
+								command: 'sleep 30',
+								cwd: '/tmp',
+								state: 'exited',
+								exitCode: 7,
+								signal: undefined,
+							},
+						],
+					});
+					yield* Effect.gen(function* () {
+						yield* Daemon;
+						const client = createConnection(join(root, 'daemon.sock'));
+						client.on('error', () => undefined);
+						const completed = yield* Deferred.make<void>();
+						let received = '';
+						client.on('data', (chunk) => {
+							received += chunk.toString();
+							if (received.includes('"event":"exit"'))
+								Deferred.succeed(completed, undefined).pipe(Effect.runFork);
+						});
+						yield* Effect.promise(
+							() =>
+								new Promise<void>((resolve) => client.once('connect', resolve)),
+						);
+						client.write(
+							`${JSON.stringify({ version: 1, requestId: 'tail-finished', method: 'tail', params: { runId: 'finished', serviceName: 'web' } })}\n`,
+						);
+						yield* Deferred.await(completed).pipe(Effect.timeout('1 second'));
+						expect(received).toContain('"exitCode":7');
+						client.destroy();
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+
 	it.live('delivers the last output chunk before the exit frame', () =>
 		runTest(
 			Effect.gen(function* () {

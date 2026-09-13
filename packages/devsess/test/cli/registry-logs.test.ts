@@ -41,6 +41,26 @@ describe('Registry', () => {
 		expect(exit._tag).toBe('Failure');
 	});
 
+	it('accepts persisted service completion status', () => {
+		const exit = Effect.runSyncExit(
+			Schema.decodeUnknownEffect(RunRecordSchema)({
+				...run('finished'),
+				state: 'exited',
+				services: [
+					{
+						name: 'web',
+						command: 'exit 7',
+						cwd: '/workspace',
+						state: 'failed',
+						exitCode: 7,
+						signal: undefined,
+					},
+				],
+			}),
+		);
+		expect(exit._tag).toBe('Success');
+	});
+
 	it.effect('atomically reserves the project and preset identity', () =>
 		runTest(
 			Effect.gen(function* () {

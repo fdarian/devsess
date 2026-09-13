@@ -29,6 +29,8 @@ export const ServiceRecordSchema = Schema.Struct({
 			startedAt: Schema.NonEmptyString,
 		}),
 	),
+	exitCode: Schema.optionalKey(Schema.Int),
+	signal: Schema.optionalKey(Schema.Int),
 });
 
 export type ServiceRecord = typeof ServiceRecordSchema.Type;
