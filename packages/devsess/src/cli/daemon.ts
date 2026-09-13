@@ -1028,7 +1028,9 @@ export const makeDaemon = (options: {
 					);
 				for (const live of terminals.values())
 					yield* live.ownership.terminate.pipe(
-						Effect.andThen(replaceService(live.address, 'exited')),
+						Effect.andThen(
+							replaceService(live.address, 'exited', stoppedExit(live)),
+						),
 						Effect.catch((cause) => Effect.logError(cause)),
 					);
 				if (server.listening)
