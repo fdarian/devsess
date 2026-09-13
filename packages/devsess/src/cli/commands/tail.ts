@@ -1,7 +1,7 @@
-import { Effect, Queue } from 'effect';
+import { Effect, Queue, Ref } from 'effect';
 import { type ServiceExitError, serviceExit } from '../exit-status';
 import type { RunRecord } from '../registry';
-import { openDaemonStream } from '../terminal';
+import { openDaemonStream, type TerminalTransportError } from '../terminal';
 import {
 	CommandError,
 	type CommandOptions,
@@ -69,35 +69,52 @@ const tailService = (
 		}),
 	);
 
+type TailFailure = CommandError | ServiceExitError | TerminalTransportError;
+
 /** Streams all matching services, qualifying output when more than one is selected. */
 export const tail = (options: CommandOptions) =>
 	Effect.scoped(
 		resolveCurrentRuns(options).pipe(
 			Effect.flatMap((resolved) =>
 				chooseRun(resolved.current, options).pipe(
-					Effect.flatMap((run) => {
-						const services =
-							options.service === undefined
-								? run.services
-								: run.services.filter(
-										(service) => service.name === options.service,
-									);
-						if (services.length === 0)
-							return Effect.fail(
-								new CommandError({ message: 'No matching service is running' }),
+					Effect.flatMap((run) =>
+						Effect.gen(function* () {
+							const services =
+								options.service === undefined
+									? run.services
+									: run.services.filter(
+											(service) => service.name === options.service,
+										);
+							if (services.length === 0)
+								return yield* new CommandError({
+									message: 'No matching service is running',
+								});
+							const firstFailure = yield* Ref.make<TailFailure | undefined>(
+								undefined,
 							);
-						return Effect.all(
-							services.map((service) =>
-								tailService(
-									resolved.location,
-									run,
-									service,
-									services.length > 1,
+							yield* Effect.all(
+								services.map((service) =>
+									tailService(
+										resolved.location,
+										run,
+										service,
+										services.length > 1,
+									).pipe(
+										Effect.tapError((failure) =>
+											Ref.update(firstFailure, (current) =>
+												current === undefined ? failure : current,
+											),
+										),
+										Effect.exit,
+									),
 								),
-							),
-							{ concurrency: 'unbounded', discard: true },
-						);
-					}),
+								{ concurrency: 'unbounded', discard: true },
+							);
+							const failure = yield* Ref.get(firstFailure);
+							if (failure !== undefined) return yield* Effect.fail(failure);
+							return;
+						}),
+					),
 				),
 			),
 		),
