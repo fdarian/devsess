@@ -1,9 +1,10 @@
 import { describe, expect, it } from '@effect/vitest';
-import { Effect, Queue } from 'effect';
+import { Cause, Effect, Queue, Runtime } from 'effect';
 import {
 	awaitAttachLease,
 	parseAttachInput,
 } from '../../src/cli/attach-session';
+import { ServiceExitError } from '../../src/cli/exit-status';
 import {
 	type DaemonStreamFrame,
 	decodeDaemonStreamFrame,
@@ -40,8 +41,28 @@ describe('attach session', () => {
 		}),
 	);
 
+	it.effect('returns success for a zero exit before the lease', () =>
+		Effect.gen(function* () {
+			const frames = yield* Queue.unbounded<DaemonStreamFrame>();
+			yield* Queue.offer(frames, {
+				_tag: 'output',
+				value: {
+					version: 1,
+					requestId: 'request',
+					event: 'exit',
+					exitCode: 0,
+				},
+			});
+			const leaseId = yield* awaitAttachLease(
+				{ frames },
+				(message) => new Error(message),
+			);
+			expect(leaseId).toBeUndefined();
+		}),
+	);
+
 	it.effect(
-		'exits when the service completion frame arrives before the lease',
+		'preserves a nonzero service completion status before the lease',
 		() =>
 			Effect.gen(function* () {
 				const frames = yield* Queue.unbounded<DaemonStreamFrame>();
@@ -60,6 +81,11 @@ describe('attach session', () => {
 					),
 				);
 				expect(result._tag).toBe('Failure');
+				if (result._tag === 'Failure') {
+					const error = Cause.squash(result.cause);
+					expect(error).toBeInstanceOf(ServiceExitError);
+					expect(Runtime.getErrorExitCode(error)).toBe(7);
+				}
 			}),
 	);
 
