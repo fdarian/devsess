@@ -281,33 +281,61 @@ const endpointIsMissing = (error: DaemonBootstrapError) =>
 	(error.cause.cause.code === 'ENOENT' ||
 		error.cause.cause.code === 'ECONNREFUSED');
 
+const bootstrapTimeoutMs = 10_000;
+
+const timeoutError = (
+	location: DaemonLocation,
+	current?: { pid: number; startedAt: string; token: string },
+) =>
+	new DaemonBootstrapError({
+		message:
+			current === undefined
+				? `Timed out bootstrapping daemon at ${location.socketPath}; launch lock ${lockDirectory(location)} did not become available (owner record ${ownerPath(location)})`
+				: `Timed out bootstrapping daemon at ${location.socketPath}; launch lock ${lockDirectory(location)} is held by owner PID ${current.pid} (owner record ${ownerPath(location)})`,
+	});
+
+const timeoutWithOwner = (location: DaemonLocation) =>
+	owner(location).pipe(
+		Effect.map((current) => timeoutError(location, current)),
+		Effect.catch(() => Effect.succeed(timeoutError(location))),
+	);
+
 const waitForDaemon = (
 	location: DaemonLocation,
-	remaining: number,
-): Effect.Effect<void, DaemonBootstrapError> =>
-	awaitDaemonHandshake({
-		socketPath: location.socketPath,
-		timeoutMs: 100,
-	}).pipe(
-		Effect.catch(() => {
-			if (remaining <= 0)
-				return new DaemonBootstrapError({
-					message: `Timed out waiting for the daemon launch lock at ${lockDirectory(location)}`,
-				});
-			return Effect.sleep('25 millis').pipe(
-				Effect.andThen(waitForDaemon(location, remaining - 1)),
-			);
-		}),
-	);
+	deadline: number,
+): Effect.Effect<boolean, DaemonBootstrapError> =>
+	Effect.suspend(() => {
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) return Effect.succeed(false);
+		return awaitDaemonHandshake({
+			socketPath: location.socketPath,
+			timeoutMs: Math.min(remaining, 100),
+		}).pipe(
+			Effect.as(true),
+			Effect.catch(() => Effect.succeed(false)),
+		);
+	});
 
 /** Serializes per-user daemon startup; stale owners are identified by PID and process birth value. */
 export const ensureDaemon = (options: {
 	location: DaemonLocation;
 	launch: LaunchDaemon;
+	timeoutMs?: number;
 }) => {
+	const timeoutMs =
+		options.timeoutMs === undefined ? bootstrapTimeoutMs : options.timeoutMs;
+	const deadline = Date.now() + timeoutMs;
+	const handshake = (limitMs: number) =>
+		Effect.suspend(() => {
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) return timeoutWithOwner(options.location);
+			return awaitDaemonHandshake({
+				socketPath: options.location.socketPath,
+				timeoutMs: Math.min(remaining, limitMs),
+			});
+		});
 	const acquire = (
 		missingOwnerAttempts: number,
-		waitAttempts: number,
 	): Effect.Effect<void, DaemonBootstrapError> =>
 		Effect.tryPromise({
 			try: () =>
@@ -375,20 +403,12 @@ export const ensureDaemon = (options: {
 									}),
 							}).pipe(
 								Effect.andThen(
-									awaitDaemonHandshake({
-										socketPath: options.location.socketPath,
-										timeoutMs: 150,
-									}).pipe(
+									handshake(150).pipe(
 										Effect.catch((error) =>
 											endpointIsMissing(error)
 												? removeStaleSocket(options.location.socketPath).pipe(
 														Effect.andThen(options.launch()),
-														Effect.andThen(
-															awaitDaemonHandshake({
-																socketPath: options.location.socketPath,
-																timeoutMs: 5_000,
-															}),
-														),
+														Effect.andThen(handshake(5_000)),
 													)
 												: error,
 										),
@@ -399,47 +419,53 @@ export const ensureDaemon = (options: {
 						}),
 					);
 				}
-				return waitForDaemon(options.location, 1).pipe(
-					Effect.catch(() =>
-						owner(options.location).pipe(
+				return waitForDaemon(options.location, deadline).pipe(
+					Effect.flatMap((ready) => {
+						if (ready) return Effect.succeed(undefined);
+						return owner(options.location).pipe(
 							Effect.flatMap((current) => {
+								if (deadline - Date.now() <= 0)
+									return timeoutError(options.location, current);
 								if (current === undefined && missingOwnerAttempts < 10)
-									return Effect.sleep('25 millis').pipe(
-										Effect.andThen(
-											acquire(missingOwnerAttempts + 1, waitAttempts + 1),
-										),
+									return Effect.sleep(Math.min(25, deadline - Date.now())).pipe(
+										Effect.andThen(acquire(missingOwnerAttempts + 1)),
 									);
 								if (current === undefined)
 									return new DaemonBootstrapError({
 										message: `Daemon launch lock at ${lockDirectory(options.location)} has no valid owner`,
 									});
-								if (waitAttempts >= 200)
-									return new DaemonBootstrapError({
-										message: `Timed out waiting for daemon launch owner ${current.pid}`,
-									});
 								return ownsLock(current).pipe(
 									Effect.flatMap((live) =>
 										live
-											? Effect.sleep('25 millis').pipe(
-													Effect.andThen(acquire(0, waitAttempts + 1)),
-												)
+											? Effect.suspend(() => {
+													const remaining = deadline - Date.now();
+													if (remaining <= 0)
+														return timeoutError(options.location, current);
+													return Effect.sleep(Math.min(25, remaining)).pipe(
+														Effect.andThen(acquire(0)),
+													);
+												})
 											: removeStaleLock(options.location).pipe(
-													Effect.andThen(acquire(0, 0)),
+													Effect.andThen(acquire(0)),
 												),
 									),
 								);
 							}),
-						),
-					),
+						);
+					}),
 				);
 			}),
 		);
-	return awaitDaemonHandshake({
-		socketPath: options.location.socketPath,
-		timeoutMs: 150,
-	}).pipe(
-		Effect.catch(() =>
-			createDirectories(options.location).pipe(Effect.andThen(acquire(0, 0))),
-		),
-	);
+	return handshake(150)
+		.pipe(
+			Effect.catch(() =>
+				createDirectories(options.location).pipe(Effect.andThen(acquire(0))),
+			),
+		)
+		.pipe(
+			Effect.timeoutOrElse({
+				duration: timeoutMs,
+				orElse: () => timeoutWithOwner(options.location),
+			}),
+		);
 };
