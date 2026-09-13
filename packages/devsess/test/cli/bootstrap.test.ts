@@ -85,6 +85,28 @@ describe('daemon bootstrap', () => {
 		),
 	);
 
+	it.live('uses one deadline across handshake retries', () =>
+		runTest(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const rootDir = yield* makeTempDir;
+					const socketPath = join(rootDir, 'daemon.sock');
+					const server = createServer(() => undefined);
+					yield* listen(server, socketPath);
+					yield* Effect.addFinalizer(() => Effect.sync(() => server.close()));
+
+					const startedAt = Date.now();
+					const exit = yield* Effect.exit(
+						awaitDaemonHandshake({ socketPath, timeoutMs: 200 }),
+					);
+
+					expect(exit._tag).toBe('Failure');
+					expect(Date.now() - startedAt).toBeLessThan(1_000);
+				}),
+			),
+		),
+	);
+
 	it.live(
 		'leaves a detached daemon alive after the launcher scope closes',
 		() =>
