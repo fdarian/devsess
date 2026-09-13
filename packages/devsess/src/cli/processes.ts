@@ -198,7 +198,7 @@ export class Processes extends Context.Service<Processes>()(
 							),
 							Effect.andThen(waitForExit(identity, 200)),
 							Effect.andThen(
-								owns(identity).pipe(
+								ownsProcessOrGroup(identity).pipe(
 									Effect.flatMap((stillOwned) =>
 										stillOwned
 											? signalGroup(identity.processGroupId, 'SIGKILL').pipe(

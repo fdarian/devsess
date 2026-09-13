@@ -13,11 +13,14 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 	const actual = await importOriginal<typeof import('node:fs/promises')>();
 	return { ...actual, readFile: vi.fn(actual.readFile) };
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+	vi.restoreAllMocks();
+	vi.useRealTimers();
+});
 
 const missing = () =>
 	Object.assign(new Error('No such process'), { code: 'ESRCH' });
-const fakeGroup = () => {
+const fakeGroup = (termKillsGroup = true) => {
 	const state = { leaderAlive: true, groupAlive: true };
 	vi.mocked(execFile).mockImplementation((...args: Array<unknown>) => {
 		const callback = args.at(-1);
@@ -38,7 +41,8 @@ const fakeGroup = () => {
 	});
 	const kill = vi.spyOn(process, 'kill').mockImplementation((_pid, signal) => {
 		if (!state.groupAlive) throw missing();
-		if (signal === 'SIGTERM') state.groupAlive = false;
+		if (signal === 'SIGTERM' && termKillsGroup) state.groupAlive = false;
+		if (signal === 'SIGKILL') state.groupAlive = false;
 		return true;
 	});
 	return { state, kill };
@@ -75,6 +79,23 @@ describe('live process group ownership', () => {
 				yield* processes.terminate(saved);
 				expect(group.kill).toHaveBeenCalledWith(-98765, 0);
 				expect(group.kill).toHaveBeenCalledWith(-98765, 'SIGTERM');
+				expect(group.state.groupAlive).toBe(false);
+			}),
+	);
+
+	it.live(
+		'escalates to SIGKILL when descendants survive SIGTERM after leader exit',
+		() =>
+			Effect.gen(function* () {
+				vi.useFakeTimers();
+				const group = fakeGroup(false);
+				const processes = yield* Processes.make;
+				const saved = yield* processes.capture(98765);
+				group.state.leaderAlive = false;
+				const completion = Effect.runPromise(processes.terminate(saved));
+				yield* Effect.promise(() => vi.runAllTimersAsync());
+				yield* Effect.promise(() => completion);
+				expect(group.kill).toHaveBeenCalledWith(-98765, 'SIGKILL');
 				expect(group.state.groupAlive).toBe(false);
 			}),
 	);
