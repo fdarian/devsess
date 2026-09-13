@@ -33,6 +33,23 @@ export const ServiceRecordSchema = Schema.Struct({
 
 export type ServiceRecord = typeof ServiceRecordSchema.Type;
 
+export type ServiceRefreshStatus = 'owned' | 'alive' | 'dead' | 'missing';
+
+export const refreshService = (
+	service: ServiceRecord,
+	status: ServiceRefreshStatus,
+): ServiceRecord => {
+	const unresolved = isActive(service.state) || service.state === 'orphaned';
+	if (!unresolved) return service;
+	if (
+		service.process === undefined ||
+		status === 'missing' ||
+		status === 'dead'
+	)
+		return { ...service, state: 'exited' };
+	return { ...service, state: 'orphaned' };
+};
+
 export const RunRecordSchema = Schema.Struct({
 	runId: Identifier,
 	projectName: Identifier,
@@ -106,11 +123,6 @@ export class Registry extends Context.Service<
 			FileSystem | Path
 		>;
 		readonly list: Effect.Effect<
-			ReadonlyArray<RunRecord>,
-			PlatformError | Schema.SchemaError,
-			FileSystem | Path
-		>;
-		readonly markOrphans: Effect.Effect<
 			ReadonlyArray<RunRecord>,
 			PlatformError | Schema.SchemaError,
 			FileSystem | Path
@@ -207,28 +219,10 @@ const makeRegistry = (options: { dataDirectory: string }) =>
 					}),
 				),
 			);
-		const markOrphans = serialize(
-			read.pipe(
-				Effect.map((runs) =>
-					runs.map((run) => ({
-						...run,
-						state: isActive(run.state) ? ('orphaned' as const) : run.state,
-						services: run.services.map((service) => ({
-							...service,
-							state: isActive(service.state)
-								? ('orphaned' as const)
-								: service.state,
-						})),
-					})),
-				),
-				Effect.tap(persist),
-			),
-		);
 		return Registry.of({
 			reserve,
 			replace,
 			get,
 			list: serialize(read),
-			markOrphans,
 		});
 	});

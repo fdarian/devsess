@@ -9,7 +9,7 @@ import {
 import { callDaemon } from '../client';
 import { DaemonLifecycle } from '../lifecycle';
 import { captureInvocation } from '../project-matching';
-import { type RunRecord, RunRecordSchema } from '../registry';
+import { isActive, type RunRecord, RunRecordSchema } from '../registry';
 
 export class CommandError extends Schema.TaggedErrorClass<CommandError>()(
 	'devsess/cli/CommandError',
@@ -27,11 +27,7 @@ export type DaemonLocation = { dataDirectory: string; socketPath: string };
 
 export const isRunActive = (run: RunRecord) =>
 	run.services.some(
-		(service) =>
-			service.state === 'starting' ||
-			service.state === 'running' ||
-			service.state === 'stopping' ||
-			service.state === 'orphaned',
+		(service) => isActive(service.state) || service.state === 'orphaned',
 	);
 
 const containsPath = (parent: string, child: string) => {

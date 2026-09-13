@@ -26,8 +26,10 @@ import {
 } from './protocol';
 import { createPty, resizePty, writePty } from './pty';
 import {
+	isActive,
 	Registry,
 	type RunRecord,
+	refreshService,
 	type ServiceRecord,
 	type ServiceState,
 } from './registry';
@@ -103,8 +105,6 @@ const serviceKey = (address: LogAddress) =>
 	`${address.runId}:${address.serviceName}`;
 const parseShellCommand = (command: string) =>
 	['/bin/sh', ['-c', command]] as const;
-const active = (state: ServiceState) =>
-	state === 'starting' || state === 'running' || state === 'stopping';
 const aggregateState = (
 	services: ReadonlyArray<ServiceRecord>,
 ): ServiceState => {
@@ -201,6 +201,37 @@ export const makeDaemon = (options: {
 					});
 				}),
 			);
+		const refreshServiceRecord = (
+			service: ServiceRecord,
+			verifyOwnership: boolean,
+		) => {
+			if (service.process === undefined)
+				return Effect.succeed(refreshService(service, 'missing'));
+			const process = service.process;
+			if (!verifyOwnership)
+				return processes
+					.groupAlive(process.processGroupId)
+					.pipe(
+						Effect.map((alive) =>
+							refreshService(service, alive ? 'alive' : 'dead'),
+						),
+					);
+			return processes
+				.owns(process)
+				.pipe(
+					Effect.flatMap((owned) =>
+						owned
+							? Effect.succeed(refreshService(service, 'owned'))
+							: processes
+									.groupAlive(process.processGroupId)
+									.pipe(
+										Effect.map((alive) =>
+											refreshService(service, alive ? 'alive' : 'dead'),
+										),
+									),
+					),
+				);
+		};
 		const releaseSocket = (socket: Socket) =>
 			Effect.gen(function* () {
 				const state = sockets.get(socket);
@@ -285,32 +316,16 @@ export const makeDaemon = (options: {
 		const reconcile = registry.list.pipe(
 			Effect.flatMap((runs) =>
 				Effect.forEach(runs, (run) => {
-					if (!run.services.some((service) => active(service.state)))
+					if (
+						!run.services.some(
+							(service) =>
+								isActive(service.state) || service.state === 'orphaned',
+						)
+					)
 						return Effect.void;
-					return Effect.forEach(run.services, (service) => {
-						if (!active(service.state) || service.process === undefined) {
-							return Effect.succeed(service);
-						}
-						const process = service.process;
-						return processes.owns(process).pipe(
-							Effect.flatMap((owned) =>
-								owned
-									? Effect.succeed({
-											...service,
-											state: 'orphaned' as const,
-										})
-									: processes
-											.groupAlive(process.processGroupId)
-											.pipe(
-												Effect.map((alive) =>
-													alive
-														? { ...service, state: 'orphaned' as const }
-														: { ...service, state: 'exited' as const },
-												),
-											),
-							),
-						);
-					}).pipe(
+					return Effect.forEach(run.services, (service) =>
+						refreshServiceRecord(service, true),
+					).pipe(
 						Effect.flatMap((services) =>
 							registry.replace({
 								...run,
@@ -336,24 +351,7 @@ export const makeDaemon = (options: {
 						continue;
 					const refreshedServices = yield* Effect.forEach(
 						candidate.services,
-						(service) => {
-							if (service.state === 'orphaned' && service.process === undefined)
-								return Effect.succeed({
-									...service,
-									state: 'exited' as const,
-								});
-							if (service.process === undefined) return Effect.succeed(service);
-							return processes
-								.groupAlive(service.process.processGroupId)
-								.pipe(
-									Effect.map((alive) =>
-										alive ||
-										(!active(service.state) && service.state !== 'orphaned')
-											? service
-											: { ...service, state: 'exited' as const },
-									),
-								);
-						},
+						(service) => refreshServiceRecord(service, false),
 					);
 					const refreshed = {
 						...candidate,
@@ -363,7 +361,7 @@ export const makeDaemon = (options: {
 					if (
 						refreshed.services.some(
 							(service) =>
-								active(service.state) || service.state === 'orphaned',
+								isActive(service.state) || service.state === 'orphaned',
 						)
 					) {
 						return yield* new DaemonError({
@@ -517,7 +515,7 @@ export const makeDaemon = (options: {
 			Effect.gen(function* () {
 				const run = yield* registry.get(runId);
 				const stopping = run.services.map((service) =>
-					active(service.state) || service.state === 'orphaned'
+					isActive(service.state) || service.state === 'orphaned'
 						? { ...service, state: 'stopping' as const }
 						: service,
 				);
@@ -536,7 +534,7 @@ export const makeDaemon = (options: {
 						const live = terminals.get(serviceKey(address));
 						if (
 							live === undefined &&
-							!active(service.state) &&
+							!isActive(service.state) &&
 							service.state !== 'orphaned'
 						)
 							return service;
