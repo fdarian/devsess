@@ -797,7 +797,7 @@ describe('daemon lifetime and failure handling', () => {
 	);
 
 	it.live(
-		'drops a backpressured socket without blocking subsequent requests',
+		'waits for a backpressured socket before sending subsequent responses',
 		() =>
 			runTest(
 				Effect.gen(function* () {
@@ -806,17 +806,68 @@ describe('daemon lifetime and failure handling', () => {
 					yield* Effect.gen(function* () {
 						const daemon = yield* Daemon;
 						const socket = new Socket();
-						const write = vi.spyOn(socket, 'write').mockReturnValue(false);
+						const drained = yield* Deferred.make<void>();
+						let isDrained = false;
+						Object.defineProperty(socket, 'writableNeedDrain', {
+							configurable: true,
+							get: () => !isDrained,
+						});
+						const write = vi.spyOn(socket, 'write').mockImplementation(() => {
+							setTimeout(() => {
+								isDrained = true;
+								socket.emit('drain');
+								Effect.runFork(Deferred.succeed(drained, undefined));
+							}, 10);
+							return false;
+						});
 						lastServer().emit('connection', socket);
 						socket.emit('data', Buffer.from(`${JSON.stringify(list)}\n`));
+						yield* Deferred.await(drained).pipe(Effect.timeout('1 second'));
 						yield* daemon.request(list).pipe(Effect.timeout('1 second'));
 						expect(write).toHaveBeenCalledOnce();
-						expect(socket.destroyed).toBe(true);
+						expect(socket.destroyed).toBe(false);
 						expect(
 							yield* daemon.request(list).pipe(Effect.timeout('1 second')),
 						).toEqual([]);
 					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
 				}),
 			),
+	);
+
+	it.live('reports socket buffer overflow before disconnecting', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					const socket = new Socket();
+					Object.defineProperty(socket, 'writableLength', {
+						configurable: true,
+						get: () => 1024 * 1024,
+					});
+					const written = yield* Deferred.make<string>();
+					vi.spyOn(socket, 'write').mockImplementation((chunk) => {
+						Effect.runFork(
+							Deferred.succeed(
+								written,
+								typeof chunk === 'string' ? chunk : chunk.toString(),
+							),
+						);
+						return true;
+					});
+					const end = vi.spyOn(socket, 'end').mockReturnValue(socket);
+					lastServer().emit('connection', socket);
+					socket.emit('data', Buffer.from(`${JSON.stringify(list)}\n`));
+					const frame = JSON.parse(
+						yield* Deferred.await(written).pipe(Effect.timeout('1 second')),
+					) as { ok: boolean; error?: string };
+					expect(frame.ok).toBe(false);
+					expect(frame.error).toContain('output buffer exceeded');
+					expect(end).toHaveBeenCalledOnce();
+					yield* daemon.request(list).pipe(Effect.timeout('1 second'));
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
 	);
 });
