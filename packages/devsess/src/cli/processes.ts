@@ -107,6 +107,12 @@ const readProcess = (pid: number) =>
 const isSafeProcessId = (value: number) =>
 	Number.isSafeInteger(value) && value > 1;
 
+const isGoneCause = (cause: unknown) =>
+	cause instanceof Error &&
+	'code' in cause &&
+	((cause as NodeJS.ErrnoException).code === 'ESRCH' ||
+		(cause as NodeJS.ErrnoException).code === 'ENOENT');
+
 const signalGroup = (processGroupId: number, signal: NodeJS.Signals | 0) => {
 	if (!isSafeProcessId(processGroupId))
 		return Effect.fail(
@@ -166,9 +172,9 @@ const groupIsAlive = (processGroupId: number) =>
 				Effect.as(true),
 				Effect.catchTag('ProcessError', (error) =>
 					Effect.gen(function* () {
+						if (isGoneCause(error.cause)) return false;
 						if (!(error.cause instanceof Error)) return yield* error;
 						const code = (error.cause as NodeJS.ErrnoException).code;
-						if (code === 'ESRCH' || code === 'ENOENT') return false;
 						if (code === 'EPERM')
 							return yield* readGroupMembers(processGroupId);
 						return yield* error;
@@ -257,10 +263,7 @@ export class Processes extends Context.Service<Processes>()(
 					}
 					yield* signalGroup(identity.processGroupId, 'SIGTERM').pipe(
 						Effect.catchTag('ProcessError', (error) =>
-							error.cause instanceof Error &&
-							(error.cause as NodeJS.ErrnoException).code === 'ESRCH'
-								? Effect.void
-								: error,
+							isGoneCause(error.cause) ? Effect.void : error,
 						),
 					);
 					if (yield* waitForGroupExit(groupAlive, identity.processGroupId, 200))
@@ -271,10 +274,7 @@ export class Processes extends Context.Service<Processes>()(
 						});
 					yield* signalGroup(identity.processGroupId, 'SIGKILL').pipe(
 						Effect.catchTag('ProcessError', (error) =>
-							error.cause instanceof Error &&
-							(error.cause as NodeJS.ErrnoException).code === 'ESRCH'
-								? Effect.void
-								: error,
+							isGoneCause(error.cause) ? Effect.void : error,
 						),
 					);
 					if (
@@ -309,10 +309,7 @@ export class Processes extends Context.Service<Processes>()(
 							return signalGroup(identity.processGroupId, value).pipe(
 								Effect.as(true),
 								Effect.catch((error) => {
-									if (
-										error.cause instanceof Error &&
-										(error.cause as NodeJS.ErrnoException).code === 'ESRCH'
-									) {
+									if (isGoneCause(error.cause)) {
 										valid = false;
 										return Effect.succeed(false);
 									}
