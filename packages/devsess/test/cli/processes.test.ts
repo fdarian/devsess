@@ -23,9 +23,9 @@ const missing = () =>
 const fakeGroup = (termKillsGroup = true) => {
 	const state = { leaderAlive: true, groupAlive: true };
 	vi.mocked(execFile).mockImplementation((...args: Array<unknown>) => {
-		const commandArgs = args.slice(1, -1);
+		const commandArgs = args[1];
 		const callback = args.at(-1);
-		if (typeof callback !== 'function')
+		if (!Array.isArray(commandArgs) || typeof callback !== 'function')
 			throw new Error('Expected process inspection callback');
 		if (commandArgs[0] === '-g') {
 			if (state.groupAlive) callback(null, ' 98765\n', '');
@@ -96,6 +96,7 @@ describe('live process group ownership', () => {
 			expect(vi.mocked(execFile)).toHaveBeenCalledWith(
 				'ps',
 				['-g', '98765', '-o', 'pid='],
+				{ timeout: 500 },
 				expect.any(Function),
 			);
 		}),
@@ -151,19 +152,17 @@ describe('live process group ownership', () => {
 		}),
 	);
 
-	it.live(
-		'escalates to SIGKILL while the recovered leader remains identifiable',
-		() =>
-			Effect.gen(function* () {
-				vi.useFakeTimers();
-				const group = fakeGroup(false);
-				const processes = yield* Processes.make;
-				const saved = yield* processes.capture(98765);
-				const completion = Effect.runPromise(processes.terminate(saved, false));
-				yield* Effect.promise(() => vi.runAllTimersAsync());
-				yield* Effect.promise(() => completion);
-				expect(group.kill).toHaveBeenCalledWith(-98765, 'SIGKILL');
-				expect(group.state.groupAlive).toBe(false);
-			}),
+	it.live('reports SIGKILL for a SIGTERM-ignoring service', () =>
+		Effect.gen(function* () {
+			vi.useFakeTimers();
+			const group = fakeGroup(false);
+			const processes = yield* Processes.make;
+			const saved = yield* processes.capture(98765);
+			const completion = Effect.runPromise(processes.terminate(saved, false));
+			yield* Effect.promise(() => vi.runAllTimersAsync());
+			expect(yield* Effect.promise(() => completion)).toBe(9);
+			expect(group.kill).toHaveBeenCalledWith(-98765, 'SIGKILL');
+			expect(group.state.groupAlive).toBe(false);
+		}),
 	);
 });

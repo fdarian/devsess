@@ -1,5 +1,6 @@
 import { Effect } from 'effect';
 import { callDaemon } from '../client';
+import { STOP_REQUEST_TIMEOUT_MS } from '../termination';
 import {
 	type CommandOptions,
 	chooseRun,
@@ -13,15 +14,19 @@ export const stop = (options: CommandOptions) =>
 		Effect.flatMap((resolved) =>
 			chooseRun(resolved.current, options).pipe(
 				Effect.flatMap((run) =>
-					callDaemon(resolved.location.socketPath, {
-						version: 1,
-						requestId: requestId(),
-						method: 'stopRun',
-						params: {
-							runId: run.runId,
-							...(options.force === true ? { force: true } : {}),
+					callDaemon(
+						resolved.location.socketPath,
+						{
+							version: 1,
+							requestId: requestId(),
+							method: 'stopRun',
+							params: {
+								runId: run.runId,
+								...(options.force === true ? { force: true } : {}),
+							},
 						},
-					}).pipe(
+						STOP_REQUEST_TIMEOUT_MS,
+					).pipe(
 						Effect.andThen(
 							write(`Stopped ${run.projectName}/${run.presetName}`),
 						),

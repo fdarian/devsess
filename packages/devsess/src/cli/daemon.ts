@@ -14,7 +14,11 @@ import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { Scope } from 'effect/Scope';
 import type { IPty } from 'node-pty';
-import { type ServiceExit, serviceExitCode } from './exit-status';
+import {
+	type ServiceExit,
+	serviceExitCode,
+	UNKNOWN_EXIT_CODE,
+} from './exit-status';
 import { type LogAddress, Logs } from './logs';
 import { type LiveProcessOwnership, Processes } from './processes';
 import {
@@ -23,7 +27,6 @@ import {
 	type DaemonResponse,
 	decodeRequest,
 	decodeRequestId,
-	MAX_FRAME_BYTES,
 	PROTOCOL_VERSION,
 	splitFrames,
 } from './protocol';
@@ -36,6 +39,8 @@ import {
 	type ServiceRecord,
 	type ServiceState,
 } from './registry';
+import { makeSocketWriter, type SocketWriter } from './socket-writer';
+import { TERMINATION_TERM_SIGNAL } from './termination';
 
 export class DaemonError extends Schema.TaggedErrorClass<DaemonError>()(
 	'DaemonError',
@@ -87,8 +92,7 @@ type Subscription = {
 };
 type SocketState = {
 	readonly subscriptions: Map<string, Subscription>;
-	writes: Promise<void>;
-	closed: boolean;
+	readonly writer: SocketWriter;
 };
 type Message =
 	| {
@@ -178,128 +182,11 @@ export const makeDaemon = (options: {
 		const terminals = new Map<string, LiveService>();
 		const sockets = new Map<Socket, SocketState>();
 		const lifecycle = { closing: false };
-		const waitForDrain = (socket: Socket) =>
-			new Promise<void>((resolve, reject) => {
-				const cleanup = () => {
-					socket.off('drain', onDrain);
-					socket.off('close', onClose);
-					socket.off('error', onError);
-				};
-				const onDrain = () => {
-					cleanup();
-					resolve();
-				};
-				const onClose = () => {
-					cleanup();
-					resolve();
-				};
-				const onError = (cause: Error) => {
-					cleanup();
-					reject(cause);
-				};
-				if (socket.destroyed) {
-					resolve();
-					return;
-				}
-				socket.once('drain', onDrain);
-				socket.once('close', onClose);
-				socket.once('error', onError);
-				if (!socket.writableNeedDrain) {
-					cleanup();
-					resolve();
-				}
-			});
-		const overflowFrame = (
-			socket: Socket,
-			state: SocketState,
-			requestId: string,
-		) => {
-			if (state.closed || socket.destroyed) return Promise.resolve();
-			state.closed = true;
-			const encoded = `${JSON.stringify({
-				version: PROTOCOL_VERSION,
-				requestId,
-				ok: false,
-				error: 'Daemon output buffer exceeded 1 MiB; disconnecting',
-			})}\n`;
-			try {
-				socket.write(encoded);
-				socket.end();
-			} catch (cause) {
-				state.closed = true;
-				socket.destroy();
-				return Promise.reject(cause);
-			}
-			return Promise.resolve();
-		};
-		const writeFrame = (
-			socket: Socket,
-			state: SocketState,
-			frame: DaemonResponse | DaemonEvent,
-		) => {
-			if (state.closed || socket.destroyed) return Promise.resolve();
-			const encoded = `${JSON.stringify(frame)}\n`;
-			if (socket.writableLength + Buffer.byteLength(encoded) > MAX_FRAME_BYTES)
-				return overflowFrame(socket, state, frame.requestId);
-			try {
-				if (socket.write(encoded)) return Promise.resolve();
-				return waitForDrain(socket);
-			} catch (cause) {
-				state.closed = true;
-				socket.destroy();
-				return Promise.reject(cause);
-			}
-		};
-		const queueWrite = (
-			socket: Socket,
-			state: SocketState,
-			frame: DaemonResponse | DaemonEvent,
-		) => {
-			const operation = state.writes.then(() =>
-				writeFrame(socket, state, frame),
-			);
-			const tracked = operation.catch(() => {
-				state.closed = true;
-				if (!socket.destroyed) socket.destroy();
-			});
-			state.writes = tracked;
-			return tracked;
-		};
-		const awaitWrites = (state: SocketState) =>
-			Effect.tryPromise({
-				try: () => state.writes,
-				catch: (cause) =>
-					new DaemonError({
-						message: 'Could not write daemon response',
-						cause,
-					}),
-			});
 		const send = (socket: Socket, frame: DaemonResponse | DaemonEvent) =>
-			Effect.sync(() => {
+			Effect.suspend(() => {
 				const state = sockets.get(socket);
-				if (state === undefined || state.closed || socket.destroyed) return;
-				queueWrite(socket, state, frame);
+				return state === undefined ? Effect.void : state.writer.send(frame);
 			});
-		const sendOverflow = (socket: Socket, requestId: string) => {
-			const state = sockets.get(socket);
-			if (state === undefined || state.closed || socket.destroyed)
-				return Effect.void;
-			const operation = state.writes.then(() =>
-				overflowFrame(socket, state, requestId),
-			);
-			state.writes = operation.catch(() => {
-				state.closed = true;
-				if (!socket.destroyed) socket.destroy();
-			});
-			return Effect.tryPromise({
-				try: () => operation,
-				catch: (cause) =>
-					new DaemonError({
-						message: 'Could not report daemon output overflow',
-						cause,
-					}),
-			});
-		};
 		const reply = (socket: Socket, requestId: string, result: unknown) =>
 			send(socket, {
 				version: PROTOCOL_VERSION,
@@ -318,18 +205,23 @@ export const makeDaemon = (options: {
 			address: LogAddress,
 			state: ServiceState,
 			exit?: ServiceExit,
-		) =>
-			registry.get(address.runId).pipe(
+		) => {
+			const completionStatus =
+				state === 'exited' || state === 'failed'
+					? ('unknown' as const)
+					: undefined;
+			return registry.get(address.runId).pipe(
 				Effect.flatMap((run) => {
 					const services = run.services.map((service) =>
 						service.name === address.serviceName
 							? exit === undefined
-								? { ...service, state }
+								? { ...service, state, exitStatus: completionStatus }
 								: {
 										...service,
 										state,
 										exitCode: exit.exitCode,
 										signal: exit.signal,
+										exitStatus: undefined,
 									}
 							: service,
 					);
@@ -340,6 +232,7 @@ export const makeDaemon = (options: {
 					});
 				}),
 			);
+		};
 		const refreshServiceRecord = (
 			service: ServiceRecord,
 			verifyOwnership: boolean,
@@ -375,19 +268,22 @@ export const makeDaemon = (options: {
 			Effect.gen(function* () {
 				const state = sockets.get(socket);
 				if (state !== undefined) {
-					state.closed = true;
+					state.writer.close();
 					for (const subscription of state.subscriptions.values())
 						yield* subscription.unsubscribe;
+					state.subscriptions.clear();
 					sockets.delete(socket);
 				}
 				for (const live of terminals.values())
 					if (live.lease?.socket === socket) live.lease = undefined;
 			});
-		const completedExit = (service: ServiceRecord): ServiceExit | undefined =>
-			(service.state === 'exited' || service.state === 'failed') &&
-			service.exitCode !== undefined
-				? { exitCode: service.exitCode, signal: service.signal }
-				: undefined;
+		const completedExit = (service: ServiceRecord): ServiceExit | undefined => {
+			if (service.state !== 'exited' && service.state !== 'failed')
+				return undefined;
+			if (service.exitCode !== undefined)
+				return { exitCode: service.exitCode, signal: service.signal };
+			return { exitCode: UNKNOWN_EXIT_CODE };
+		};
 		const finishSubscription = (
 			socket: Socket,
 			state: SocketState,
@@ -405,7 +301,6 @@ export const makeDaemon = (options: {
 						signal: exit.signal,
 					}),
 				),
-				Effect.andThen(awaitWrites(state)),
 				Effect.andThen(subscription.unsubscribe),
 				Effect.tap(() =>
 					Effect.sync(() => {
@@ -434,8 +329,6 @@ export const makeDaemon = (options: {
 							data: event.data,
 							offset: event.offset,
 						}).pipe(Effect.catch(() => Effect.void)),
-					(flush) =>
-						flush.pipe(Effect.andThen(sendOverflow(socket, requestId))),
 				);
 				for (const event of subscription.replay)
 					yield* send(socket, {
@@ -482,9 +375,18 @@ export const makeDaemon = (options: {
 				},
 				{ discard: true },
 			);
-		const stoppedExit = (live: LiveService | undefined): ServiceExit =>
+		const stoppedExit = (
+			live: LiveService | undefined,
+			terminationSignal?: number,
+		): ServiceExit =>
 			live === undefined || live.exit === undefined
-				? { exitCode: 0, signal: 15 }
+				? {
+						exitCode: 0,
+						signal:
+							terminationSignal === undefined
+								? TERMINATION_TERM_SIGNAL
+								: terminationSignal,
+					}
 				: live.exit;
 		const reconcile = registry.list.pipe(
 			Effect.flatMap((runs) =>
@@ -750,6 +652,7 @@ export const makeDaemon = (options: {
 								state: 'exited' as const,
 								exitCode: exit.exitCode,
 								signal: exit.signal,
+								exitStatus: undefined,
 							};
 						}
 						const result = yield* Effect.exit(
@@ -760,7 +663,7 @@ export const makeDaemon = (options: {
 											Effect.flatMap((alive) =>
 												alive || force
 													? processes.terminate(identity, force)
-													: Effect.void,
+													: Effect.succeed(undefined),
 											),
 										)
 								: live.ownership.terminate,
@@ -785,7 +688,10 @@ export const makeDaemon = (options: {
 							};
 						}
 						terminals.delete(serviceKey(address));
-						const exit = stoppedExit(live);
+						const terminationSignal = Exit.isSuccess(result)
+							? result.value
+							: undefined;
+						const exit = stoppedExit(live, terminationSignal);
 						yield* finishSubscriptions(address, exit);
 						return {
 							...service,
@@ -795,6 +701,7 @@ export const makeDaemon = (options: {
 									: ('exited' as const),
 							exitCode: exit.exitCode,
 							signal: exit.signal,
+							exitStatus: undefined,
 						};
 					}),
 				);
@@ -981,10 +888,12 @@ export const makeDaemon = (options: {
 				socket.destroy();
 				return;
 			}
+			const writer = makeSocketWriter(socket, {
+				onClose: () => Queue.offerUnsafe(queue, { _tag: 'closed', socket }),
+			});
 			sockets.set(socket, {
 				subscriptions: new Map(),
-				writes: Promise.resolve(),
-				closed: false,
+				writer,
 			});
 			let remainder = '';
 			const decoder = new StringDecoder('utf8');
@@ -1002,12 +911,6 @@ export const makeDaemon = (options: {
 						socket,
 						reply: undefined,
 					});
-			});
-			socket.once('close', () => {
-				Queue.offerUnsafe(queue, { _tag: 'closed', socket });
-			});
-			socket.once('error', () => {
-				Queue.offerUnsafe(queue, { _tag: 'closed', socket });
 			});
 		});
 		yield* Effect.addFinalizer(() =>
@@ -1028,8 +931,12 @@ export const makeDaemon = (options: {
 					);
 				for (const live of terminals.values())
 					yield* live.ownership.terminate.pipe(
-						Effect.andThen(
-							replaceService(live.address, 'exited', stoppedExit(live)),
+						Effect.flatMap((terminationSignal) =>
+							replaceService(
+								live.address,
+								'exited',
+								stoppedExit(live, terminationSignal),
+							),
 						),
 						Effect.catch((cause) => Effect.logError(cause)),
 					);
