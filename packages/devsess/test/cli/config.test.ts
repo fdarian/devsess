@@ -349,6 +349,82 @@ describe('project matching', () => {
 	);
 
 	it.effect(
+		'matches host-qualified repos across the supported remote forms',
+		() =>
+			Effect.gen(function* () {
+				const config = yield* decodeConfig(
+					JSON.stringify({
+						projects: {
+							gitProject: {
+								matcher: { type: 'git', repo: 'github.com/acme/project' },
+								presets: {},
+							},
+						},
+					}),
+				);
+				for (const repo of [
+					'git@github.com:acme/project.git',
+					'https://github.com/acme/project',
+					'https://github.com/acme/project.git',
+					'ssh://git@github.com/acme/project',
+					'ssh://git@github.com/acme/project.git',
+				]) {
+					const invocation = yield* captureInvocation(projectDir, repo);
+					const matches = yield* matchProjects(config, invocation);
+					expect(matches.matchType).toBe('git');
+					expect(
+						matches.projects.map((project) => project.projectName),
+					).toEqual(['gitProject']);
+				}
+			}),
+	);
+
+	it.effect('does not let a host-qualified matcher cross hosts', () =>
+		Effect.gen(function* () {
+			const config = yield* decodeConfig(
+				JSON.stringify({
+					projects: {
+						gitProject: {
+							matcher: { type: 'git', repo: 'github.com/acme/project' },
+							presets: {},
+						},
+					},
+				}),
+			);
+			const invocation = yield* captureInvocation(
+				projectDir,
+				'https://evil.example/github.com/acme/project.git',
+			);
+			const matches = yield* matchProjects(config, invocation);
+			expect(matches).toEqual({ matchType: 'none', projects: [] });
+		}),
+	);
+
+	it.effect('keeps hostless shorthand suffix matching', () =>
+		Effect.gen(function* () {
+			const config = yield* decodeConfig(
+				JSON.stringify({
+					projects: {
+						gitProject: {
+							matcher: { type: 'git', repo: 'acme/project' },
+							presets: {},
+						},
+					},
+				}),
+			);
+			const invocation = yield* captureInvocation(
+				projectDir,
+				'https://evil.example/github.com/acme/project.git',
+			);
+			const matches = yield* matchProjects(config, invocation);
+			expect(matches.matchType).toBe('git');
+			expect(matches.projects.map((project) => project.projectName)).toEqual([
+				'gitProject',
+			]);
+		}),
+	);
+
+	it.effect(
 		'does not let a shorthand match land mid-segment across a `/` boundary',
 		() =>
 			Effect.gen(function* () {
