@@ -1,7 +1,11 @@
 import { describe, expect, it } from '@effect/vitest';
 import { Deferred, Duration, Effect, Exit, Ref, Schema } from 'effect';
 import { LogAddressSchema, Logs } from '../../src/cli/logs';
-import { Registry, type RunRecord } from '../../src/cli/registry';
+import {
+	Registry,
+	type RunRecord,
+	RunRecordSchema,
+} from '../../src/cli/registry';
 import { runTest } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
 
@@ -23,6 +27,20 @@ const run = (runId: string): RunRecord => ({
 });
 
 describe('Registry', () => {
+	it('rejects unsafe persisted process identifiers', () => {
+		const exit = Effect.runSyncExit(
+			Schema.decodeUnknownEffect(RunRecordSchema)({
+				...run('unsafe'),
+				daemon: {
+					pid: 1,
+					processGroupId: 0,
+					startedAt: 'birth',
+				},
+			}),
+		);
+		expect(exit._tag).toBe('Failure');
+	});
+
 	it.effect('atomically reserves the project and preset identity', () =>
 		runTest(
 			Effect.gen(function* () {
