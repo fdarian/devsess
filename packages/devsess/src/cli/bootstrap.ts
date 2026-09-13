@@ -9,7 +9,7 @@ import {
 	writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { Effect, Schedule, Schema } from 'effect';
+import { Effect, Schema } from 'effect';
 import { callDaemon, DaemonClientError } from './client';
 
 export class DaemonBootstrapError extends Schema.TaggedErrorClass<DaemonBootstrapError>()(
@@ -23,21 +23,39 @@ export class DaemonBootstrapError extends Schema.TaggedErrorClass<DaemonBootstra
 export const awaitDaemonHandshake = (options: {
 	socketPath: string;
 	timeoutMs: number;
-}) =>
-	callDaemon(
-		options.socketPath,
-		{
-			version: 1,
-			requestId: crypto.randomUUID(),
-			method: 'listRuns',
-			params: {},
-		},
-		Math.min(options.timeoutMs, 250),
-	).pipe(
-		Effect.retry({
-			schedule: Schedule.spaced('25 millis'),
-			times: Math.ceil(options.timeoutMs / 25),
-		}),
+}) => {
+	const deadline = Date.now() + options.timeoutMs;
+	const attempt = (
+		lastError?: DaemonClientError,
+	): Effect.Effect<unknown, DaemonClientError> =>
+		Effect.suspend(() => {
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) {
+				if (lastError !== undefined) return lastError;
+				return new DaemonClientError({
+					message: `Timed out contacting daemon at ${options.socketPath}`,
+				});
+			}
+			return callDaemon(
+				options.socketPath,
+				{
+					version: 1,
+					requestId: crypto.randomUUID(),
+					method: 'listRuns',
+					params: {},
+				},
+				Math.min(remaining, 250),
+			).pipe(
+				Effect.catch((error) => {
+					const nextRemaining = deadline - Date.now();
+					if (nextRemaining <= 0) return error;
+					return Effect.sleep(Math.min(nextRemaining, 25)).pipe(
+						Effect.andThen(attempt(error)),
+					);
+				}),
+			);
+		});
+	return attempt().pipe(
 		Effect.asVoid,
 		Effect.mapError(
 			(cause) =>
@@ -47,6 +65,7 @@ export const awaitDaemonHandshake = (options: {
 				}),
 		),
 	);
+};
 
 export const launchDetachedDaemon = (options: {
 	command: string;
