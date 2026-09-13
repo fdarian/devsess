@@ -6,6 +6,7 @@ import {
 	DaemonResponse,
 	PROTOCOL_VERSION,
 } from './protocol';
+import { DEFAULT_DAEMON_REQUEST_TIMEOUT_MS } from './termination';
 
 export class DaemonClientError extends Schema.TaggedErrorClass<DaemonClientError>()(
 	'DaemonClientError',
@@ -19,7 +20,7 @@ const decodeResponse = Schema.decodeUnknownEffect(
 export const callDaemon = (
 	socketPath: string,
 	request: DaemonRequest,
-	timeoutMs = 5_000,
+	timeoutMs = DEFAULT_DAEMON_REQUEST_TIMEOUT_MS,
 ) =>
 	Effect.tryPromise({
 		try: () =>

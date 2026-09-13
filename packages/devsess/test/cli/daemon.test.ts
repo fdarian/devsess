@@ -157,6 +157,37 @@ const delayedLogs = () => {
 		});
 	return Logs.of({ append, replayAndSubscribe });
 };
+const streamingLogs = (
+	subscribed: Deferred.Deferred<void>,
+	released: Deferred.Deferred<void>,
+) => {
+	let listener: ((event: LogEvent) => Effect.Effect<void>) | undefined;
+	let offset = 0;
+	const append = (_address: LogAddress, data: string) => {
+		const event = { data, offset: offset + data.length };
+		offset = event.offset;
+		const current = listener;
+		return current === undefined
+			? Effect.succeed(event)
+			: current(event).pipe(Effect.as(event));
+	};
+	const replayAndSubscribe = (
+		_address: LogAddress,
+		_after: number,
+		current: (event: LogEvent) => Effect.Effect<void>,
+	) =>
+		Effect.sync(() => {
+			listener = current;
+			return {
+				replay: [] as Array<LogEvent>,
+				flush: Effect.void,
+				unsubscribe: Effect.sync(() => {
+					listener = undefined;
+				}).pipe(Effect.andThen(Deferred.succeed(released, undefined))),
+			};
+		}).pipe(Effect.tap(() => Deferred.succeed(subscribed, undefined)));
+	return Logs.of({ append, replayAndSubscribe });
+};
 const fixture = () => {
 	const records = new Map<string, RunRecord>();
 	const get = (runId: string) =>
@@ -185,13 +216,15 @@ const fixture = () => {
 	const terminate = vi.fn(
 		(
 			_identity: ReturnType<typeof identity>,
-		): Effect.Effect<void, ProcessError> => Effect.void,
+			_force?: boolean,
+		): Effect.Effect<number | undefined, ProcessError> => Effect.succeed(15),
 	);
 	const groupAlive = vi.fn(() => Effect.succeed(true));
 	const capture = vi.fn(
 		(pid: number): Effect.Effect<ReturnType<typeof identity>, ProcessError> =>
 			Effect.succeed(identity(pid)),
 	);
+	const owns = vi.fn(() => Effect.succeed(true));
 	const unsubscribe = vi.fn(() => undefined);
 	const processes = Processes.of({
 		capture,
@@ -204,7 +237,7 @@ const fixture = () => {
 			),
 		terminate,
 		groupAlive,
-		owns: () => Effect.succeed(true),
+		owns,
 	});
 	const logs = Logs.of({
 		append: (_address, data) => Effect.succeed({ data, offset: data.length }),
@@ -252,6 +285,7 @@ const fixture = () => {
 		terminate,
 		groupAlive,
 		capture,
+		owns,
 		unsubscribe,
 		terminal,
 		layer,
@@ -683,13 +717,14 @@ describe('daemon lifetime and failure handling', () => {
 						`${JSON.stringify({ version: 1, requestId: 'tail', method: 'tail', params: { runId: 'run', serviceName: 'web' } })}\n`,
 					);
 					yield* Deferred.await(response).pipe(Effect.timeout('1 second'));
+					state.terminate.mockReturnValueOnce(Effect.succeed(9));
 					yield* daemon.request(stop);
 					yield* Deferred.await(completed).pipe(Effect.timeout('1 second'));
 					expect(received).toContain('"event":"exit"');
-					expect(received).toContain('"signal":15');
+					expect(received).toContain('"signal":9');
 					expect((yield* state.registry.get('run')).services[0]).toMatchObject({
 						exitCode: 0,
-						signal: 15,
+						signal: 9,
 					});
 					client.destroy();
 				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
@@ -745,6 +780,70 @@ describe('daemon lifetime and failure handling', () => {
 					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
 				}),
 			),
+	);
+
+	it.live('replays and completes a dead service after daemon restart', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				const recovered = orphanedRun('recovered');
+				const recoveredService = recovered.services[0];
+				if (recoveredService === undefined)
+					return yield* Effect.die('Missing recovered service');
+				state.records.set('recovered', {
+					...recovered,
+					state: 'running',
+					services: [{ ...recoveredService, state: 'running' }],
+				});
+				state.owns.mockReturnValue(Effect.succeed(false));
+				state.groupAlive.mockReturnValue(Effect.succeed(false));
+				const unsubscribe = vi.fn();
+				const logs = Logs.of({
+					append: (_address, data) =>
+						Effect.succeed({ data, offset: data.length }),
+					replayAndSubscribe: () =>
+						Effect.succeed({
+							replay: [{ data: 'persisted', offset: 9 }],
+							flush: Effect.void,
+							unsubscribe: Effect.sync(unsubscribe),
+						}),
+				});
+				yield* Effect.gen(function* () {
+					yield* Daemon;
+					const client = createConnection(join(root, 'daemon.sock'));
+					client.on('error', () => undefined);
+					const completed = yield* Deferred.make<void>();
+					let received = '';
+					client.on('data', (chunk) => {
+						received += chunk.toString();
+						if (received.includes('"event":"exit"'))
+							Deferred.succeed(completed, undefined).pipe(Effect.runFork);
+					});
+					yield* Effect.promise(
+						() =>
+							new Promise<void>((resolve) => client.once('connect', resolve)),
+					);
+					client.write(
+						`${JSON.stringify({ version: 1, requestId: 'tail-recovered', method: 'tail', params: { runId: 'recovered', serviceName: 'web' } })}\n`,
+					);
+					yield* Deferred.await(completed).pipe(Effect.timeout('1 second'));
+					expect(received).toContain('"data":"persisted"');
+					expect(received).toContain('"exitCode":1');
+					expect(received).not.toContain('"signal"');
+					expect(
+						(yield* state.registry.get('recovered')).services[0],
+					).toMatchObject({
+						state: 'exited',
+						exitStatus: 'unknown',
+					});
+					client.destroy();
+					expect(unsubscribe).toHaveBeenCalledOnce();
+				}).pipe(
+					Effect.provide(state.layerWithLogs(join(root, 'daemon.sock'), logs)),
+				);
+			}),
+		),
 	);
 
 	it.live('delivers the last output chunk before the exit frame', () =>
@@ -834,7 +933,59 @@ describe('daemon lifetime and failure handling', () => {
 			),
 	);
 
-	it.live('reports socket buffer overflow before disconnecting', () =>
+	it.live(
+		'isolates a paused tail reader from other RPCs and releases it on close',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const subscribed = yield* Deferred.make<void>();
+					const released = yield* Deferred.make<void>();
+					const logs = streamingLogs(subscribed, released);
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						yield* daemon.request(start());
+						const socket = new Socket();
+						Object.defineProperty(socket, 'writableNeedDrain', {
+							configurable: true,
+							get: () => true,
+						});
+						vi.spyOn(socket, 'write').mockReturnValue(false);
+						lastServer().emit('connection', socket);
+						socket.emit(
+							'data',
+							Buffer.from(
+								`${JSON.stringify({ version: 1, requestId: 'tail', method: 'tail', params: { runId: 'run', serviceName: 'web' } })}\n`,
+							),
+						);
+						yield* Deferred.await(subscribed).pipe(Effect.timeout('1 second'));
+						const onData = state.terminal.onData.mock.calls[0]?.[0];
+						if (typeof onData !== 'function')
+							return yield* Effect.die('Missing PTY output callback');
+						for (let index = 0; index < 40; index += 1)
+							onData('x'.repeat(64 * 1024));
+						expect(
+							yield* callDaemon(join(root, 'daemon.sock'), list).pipe(
+								Effect.timeout('1 second'),
+							),
+						).toHaveLength(1);
+						yield* callDaemon(join(root, 'daemon.sock'), stop).pipe(
+							Effect.timeout('1 second'),
+						);
+						yield* Deferred.await(released).pipe(Effect.timeout('1 second'));
+						socket.destroy();
+					}).pipe(
+						Effect.provide(
+							state.layerWithLogs(join(root, 'daemon.sock'), logs),
+						),
+						Effect.timeout('3 seconds'),
+					);
+				}),
+			),
+	);
+
+	it.live('disconnects when the socket cannot accept an overflow frame', () =>
 		runTest(
 			Effect.gen(function* () {
 				const root = yield* makeTempDir;
@@ -846,26 +997,11 @@ describe('daemon lifetime and failure handling', () => {
 						configurable: true,
 						get: () => 1024 * 1024,
 					});
-					const written = yield* Deferred.make<string>();
-					vi.spyOn(socket, 'write').mockImplementation((chunk) => {
-						Effect.runFork(
-							Deferred.succeed(
-								written,
-								typeof chunk === 'string' ? chunk : chunk.toString(),
-							),
-						);
-						return true;
-					});
-					const end = vi.spyOn(socket, 'end').mockReturnValue(socket);
+					const destroy = vi.spyOn(socket, 'destroy').mockReturnValue(socket);
 					lastServer().emit('connection', socket);
 					socket.emit('data', Buffer.from(`${JSON.stringify(list)}\n`));
-					const frame = JSON.parse(
-						yield* Deferred.await(written).pipe(Effect.timeout('1 second')),
-					) as { ok: boolean; error?: string };
 					yield* Effect.sleep('1 millis');
-					expect(frame.ok).toBe(false);
-					expect(frame.error).toContain('output buffer exceeded');
-					expect(end).toHaveBeenCalledOnce();
+					expect(destroy).toHaveBeenCalledOnce();
 					yield* daemon.request(list).pipe(Effect.timeout('1 second'));
 				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
 			}),

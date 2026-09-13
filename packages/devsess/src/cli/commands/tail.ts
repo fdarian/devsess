@@ -1,5 +1,5 @@
-import { Effect, Queue, Ref } from 'effect';
-import { type ServiceExitError, serviceExit } from '../exit-status';
+import { Cause, Effect, Exit, Queue } from 'effect';
+import { ServiceExitError, serviceExit } from '../exit-status';
 import type { RunRecord } from '../registry';
 import { openDaemonStream, type TerminalTransportError } from '../terminal';
 import {
@@ -74,7 +74,7 @@ type TailFailure = CommandError | ServiceExitError | TerminalTransportError;
 /** Streams all matching services, qualifying output when more than one is selected. */
 export const tail = (options: CommandOptions) =>
 	Effect.scoped(
-		resolveCurrentRuns(options).pipe(
+		resolveCurrentRuns(options, true).pipe(
 			Effect.flatMap((resolved) =>
 				chooseRun(resolved.current, options).pipe(
 					Effect.flatMap((run) =>
@@ -89,29 +89,39 @@ export const tail = (options: CommandOptions) =>
 								return yield* new CommandError({
 									message: 'No matching service is running',
 								});
-							const firstFailure = yield* Ref.make<TailFailure | undefined>(
-								undefined,
-							);
-							yield* Effect.all(
-								services.map((service) =>
-									tailService(
-										resolved.location,
-										run,
-										service,
-										services.length > 1,
-									).pipe(
-										Effect.tapError((failure) =>
-											Ref.update(firstFailure, (current) =>
-												current === undefined ? failure : current,
-											),
-										),
-										Effect.exit,
-									),
-								),
-								{ concurrency: 'unbounded', discard: true },
-							);
-							const failure = yield* Ref.get(firstFailure);
-							if (failure !== undefined) return yield* Effect.fail(failure);
+							const completions =
+								yield* Queue.unbounded<Exit.Exit<void, TailFailure>>();
+							for (const service of services)
+								yield* tailService(
+									resolved.location,
+									run,
+									service,
+									services.length > 1,
+								).pipe(
+									Effect.exit,
+									Effect.flatMap((result) => Queue.offer(completions, result)),
+									Effect.forkScoped({ startImmediately: true }),
+								);
+							let firstExitFailure: ServiceExitError | undefined;
+							let firstOtherFailure: TailFailure | undefined;
+							for (let index = 0; index < services.length; index += 1) {
+								const result = yield* Queue.take(completions);
+								const failure = Exit.match(result, {
+									onSuccess: () => undefined,
+									onFailure: (cause) => Cause.squash(cause) as TailFailure,
+								});
+								if (failure === undefined) continue;
+								if (failure instanceof ServiceExitError) {
+									if (firstExitFailure === undefined)
+										firstExitFailure = failure;
+								} else if (firstOtherFailure === undefined) {
+									firstOtherFailure = failure;
+								}
+							}
+							if (firstOtherFailure !== undefined)
+								return yield* Effect.fail(firstOtherFailure);
+							if (firstExitFailure !== undefined)
+								return yield* Effect.fail(firstExitFailure);
 							return;
 						}),
 					),

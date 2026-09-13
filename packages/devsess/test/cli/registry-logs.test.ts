@@ -5,6 +5,7 @@ import {
 	Registry,
 	type RunRecord,
 	RunRecordSchema,
+	refreshService,
 } from '../../src/cli/registry';
 import { runTest } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
@@ -58,6 +59,43 @@ describe('Registry', () => {
 			}),
 		);
 		expect(exit._tag).toBe('Success');
+	});
+
+	it('accepts an explicit unknown completion status', () => {
+		const exit = Effect.runSyncExit(
+			Schema.decodeUnknownEffect(RunRecordSchema)({
+				...run('unknown'),
+				state: 'exited',
+				services: [
+					{
+						name: 'web',
+						command: 'sleep 30',
+						cwd: '/workspace',
+						state: 'exited',
+						exitStatus: 'unknown',
+					},
+				],
+			}),
+		);
+		expect(exit._tag).toBe('Success');
+	});
+
+	it('records unknown status when a persisted process is already dead', () => {
+		const service = {
+			name: 'web',
+			command: 'sleep 30',
+			cwd: '/workspace',
+			state: 'running' as const,
+			process: { pid: 123, processGroupId: 123, startedAt: 'birth' },
+			exitCode: 7,
+			signal: 9,
+		};
+		expect(refreshService(service, 'dead')).toMatchObject({
+			state: 'exited',
+			exitStatus: 'unknown',
+		});
+		expect(refreshService(service, 'dead').exitCode).toBeUndefined();
+		expect(refreshService(service, 'dead').signal).toBeUndefined();
 	});
 
 	it.effect('atomically reserves the project and preset identity', () =>
@@ -159,24 +197,28 @@ describe('Logs', () => {
 		),
 	);
 
-	it.effect('reports a bounded subscription overflow once', () =>
+	it.effect('retains a burst while a subscription listener is paused', () =>
 		runTest(
 			Effect.gen(function* () {
 				const dataDirectory = yield* makeTempDir;
 				const logs = yield* Logs.pipe(
 					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 4096 })),
 				);
-				const overflowCount = yield* Ref.make(0);
 				const subscription = yield* logs.replayAndSubscribe(
 					{ runId: 'run', serviceName: 'web' },
 					0,
 					() => Effect.never,
-					() => Ref.update(overflowCount, (count) => count + 1),
 				);
 				for (let index = 0; index < 258; index += 1)
 					yield* logs.append({ runId: 'run', serviceName: 'web' }, 'x');
-				expect(yield* Ref.get(overflowCount)).toBe(1);
 				yield* subscription.unsubscribe;
+				const replay = yield* logs.replayAndSubscribe(
+					{ runId: 'run', serviceName: 'web' },
+					0,
+					() => Effect.void,
+				);
+				expect(replay.replay).toHaveLength(258);
+				yield* replay.unsubscribe;
 			}),
 		),
 	);
