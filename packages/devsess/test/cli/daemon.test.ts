@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 import { Cause, Deferred, Effect, Exit, Layer, Schema } from 'effect';
 import { vi } from 'vitest';
+import { callDaemon } from '../../src/cli/client';
 import { Daemon, makeDaemon } from '../../src/cli/daemon';
 import { Logs } from '../../src/cli/logs';
 import { ProcessError, Processes } from '../../src/cli/processes';
@@ -318,6 +319,33 @@ describe('daemon lifetime and failure handling', () => {
 					const result = yield* daemon.request(start('replacement'));
 					expect(result).toMatchObject({ runId: 'replacement' });
 					expect(state.records.has('replacement')).toBe(true);
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live('echoes a decodable request id for malformed requests', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				yield* Effect.gen(function* () {
+					yield* Daemon;
+					const malformed = {
+						version: 1,
+						requestId: 'validation',
+						method: 'stopRun',
+						params: { runId: '' },
+					} as unknown as DaemonRequest;
+					const result = yield* Effect.exit(
+						callDaemon(join(root, 'daemon.sock'), malformed),
+					);
+					expect(Exit.isFailure(result)).toBe(true);
+					if (Exit.isFailure(result)) {
+						const message = Cause.pretty(result.cause);
+						expect(message).not.toContain('Daemon response ID did not match');
+						expect(message).toContain('runId');
+					}
 				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
 			}),
 		),
