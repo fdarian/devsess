@@ -5,7 +5,7 @@ import { Cause, Deferred, Effect, Exit, Layer, Schema } from 'effect';
 import { vi } from 'vitest';
 import { callDaemon } from '../../src/cli/client';
 import { Daemon, makeDaemon } from '../../src/cli/daemon';
-import { Logs } from '../../src/cli/logs';
+import { type LogAddress, type LogEvent, Logs } from '../../src/cli/logs';
 import { ProcessError, Processes } from '../../src/cli/processes';
 import type { DaemonRequest } from '../../src/cli/protocol';
 import { createPty, terminatePty } from '../../src/cli/pty';
@@ -80,6 +80,64 @@ const orphanedRun = (runId: string): RunRecord => ({
 		},
 	],
 });
+const delayedLogs = () => {
+	const listeners = new Map<string, (event: LogEvent) => Effect.Effect<void>>();
+	const pending = new Map<string, Set<Deferred.Deferred<void>>>();
+	const key = (address: LogAddress) =>
+		`${address.runId}:${address.serviceName}`;
+	const append = (address: LogAddress, data: string) =>
+		Effect.gen(function* () {
+			const event = { data, offset: data.length };
+			const listener = listeners.get(key(address));
+			if (listener !== undefined) {
+				const completion = yield* Deferred.make<void>();
+				const current = pending.get(key(address));
+				const pendingEvents =
+					current === undefined ? new Set<Deferred.Deferred<void>>() : current;
+				pendingEvents.add(completion);
+				pending.set(key(address), pendingEvents);
+				yield* Effect.gen(function* () {
+					yield* Effect.sleep('25 millis');
+					if (listeners.get(key(address)) === listener) yield* listener(event);
+				}).pipe(
+					Effect.ensuring(
+						Effect.sync(() => {
+							pendingEvents.delete(completion);
+						}).pipe(Effect.andThen(Deferred.succeed(completion, undefined))),
+					),
+					Effect.forkDetach,
+				);
+			}
+			return event;
+		});
+	const replayAndSubscribe = (
+		address: LogAddress,
+		_after: number,
+		listener: (event: LogEvent) => Effect.Effect<void>,
+	) =>
+		Effect.sync(() => {
+			const addressKey = key(address);
+			listeners.set(addressKey, listener);
+			const current = pending.get(addressKey);
+			const pendingEvents =
+				current === undefined ? new Set<Deferred.Deferred<void>>() : current;
+			pending.set(addressKey, pendingEvents);
+			return {
+				replay: [] as Array<LogEvent>,
+				flush: Effect.suspend(() =>
+					Effect.forEach(
+						Array.from(pendingEvents),
+						(completion) => Deferred.await(completion),
+						{ discard: true },
+					),
+				),
+				unsubscribe: Effect.sync(() => {
+					listeners.delete(addressKey);
+				}),
+			};
+		});
+	return Logs.of({ append, replayAndSubscribe });
+};
 const fixture = () => {
 	const records = new Map<string, RunRecord>();
 	const get = (runId: string) =>
@@ -133,7 +191,11 @@ const fixture = () => {
 	const logs = Logs.of({
 		append: (_address, data) => Effect.succeed({ data, offset: data.length }),
 		replayAndSubscribe: () =>
-			Effect.succeed({ replay: [], unsubscribe: Effect.sync(unsubscribe) }),
+			Effect.succeed({
+				replay: [],
+				flush: Effect.void,
+				unsubscribe: Effect.sync(unsubscribe),
+			}),
 	});
 	const terminal = {
 		pid: 98765,
@@ -141,7 +203,9 @@ const fixture = () => {
 		rows: 24,
 		process: 'shell',
 		handleFlowControl: false,
-		onData: vi.fn(() => ({ dispose: () => undefined })),
+		onData: vi.fn((_listener: (data: string) => void) => ({
+			dispose: () => undefined,
+		})),
 		onExit: vi.fn((_listener: (event: { exitCode: number }) => void) => ({
 			dispose: () => undefined,
 		})),
@@ -154,12 +218,13 @@ const fixture = () => {
 	};
 	vi.mocked(createPty).mockReturnValue(Effect.succeed(terminal));
 	vi.mocked(terminatePty).mockClear();
-	const layer = (socketPath: string) =>
+	const layerWithLogs = (socketPath: string, configuredLogs: typeof logs) =>
 		Layer.effect(Daemon, makeDaemon({ socketPath })).pipe(
 			Layer.provide(Layer.succeed(Registry, registry)),
-			Layer.provide(Layer.succeed(Logs, logs)),
+			Layer.provide(Layer.succeed(Logs, configuredLogs)),
 			Layer.provide(Layer.succeed(Processes, processes)),
 		);
+	const layer = (socketPath: string) => layerWithLogs(socketPath, logs);
 	return {
 		records,
 		registry,
@@ -170,6 +235,7 @@ const fixture = () => {
 		unsubscribe,
 		terminal,
 		layer,
+		layerWithLogs,
 	};
 };
 const lastServer = () => {
@@ -460,6 +526,55 @@ describe('daemon lifetime and failure handling', () => {
 					expect(state.unsubscribe).toHaveBeenCalledOnce();
 					client.destroy();
 				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live('delivers the last output chunk before the exit frame', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				const logs = delayedLogs();
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					yield* daemon.request(start());
+					const client = createConnection(join(root, 'daemon.sock'));
+					client.on('error', () => undefined);
+					const response = yield* Deferred.make<void>();
+					const completed = yield* Deferred.make<void>();
+					let received = '';
+					client.on('data', (chunk) => {
+						received += chunk.toString();
+						if (received.includes('"ok":true'))
+							Deferred.succeed(response, undefined).pipe(Effect.runFork);
+						if (received.includes('"event":"exit"'))
+							Deferred.succeed(completed, undefined).pipe(Effect.runFork);
+					});
+					yield* Effect.promise(
+						() =>
+							new Promise<void>((resolve) => client.once('connect', resolve)),
+					);
+					client.write(
+						`${JSON.stringify({ version: 1, requestId: 'tail', method: 'tail', params: { runId: 'run', serviceName: 'web' } })}\n`,
+					);
+					yield* Deferred.await(response).pipe(Effect.timeout('1 second'));
+					const onData = state.terminal.onData.mock.calls[0]?.[0];
+					const onExit = state.terminal.onExit.mock.calls[0]?.[0];
+					if (typeof onData !== 'function' || typeof onExit !== 'function')
+						return yield* Effect.die('Missing PTY callbacks');
+					onData('hello');
+					onExit({ exitCode: 0 });
+					yield* Deferred.await(completed).pipe(Effect.timeout('1 second'));
+					const output = received.indexOf('"event":"output"');
+					const exit = received.indexOf('"event":"exit"');
+					expect(output).toBeGreaterThanOrEqual(0);
+					expect(exit).toBeGreaterThan(output);
+					expect(received).toContain('"data":"hello"');
+					client.destroy();
+				}).pipe(
+					Effect.provide(state.layerWithLogs(join(root, 'daemon.sock'), logs)),
+				);
 			}),
 		),
 	);
