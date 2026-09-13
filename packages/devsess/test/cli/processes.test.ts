@@ -68,30 +68,37 @@ describe('live process group ownership', () => {
 			}),
 	);
 
-	it.live(
-		'can terminate a surviving recovered process group after its leader exits',
-		() =>
-			Effect.gen(function* () {
-				const group = fakeGroup();
-				const processes = yield* Processes.make;
-				const saved = yield* processes.capture(98765);
-				group.state.leaderAlive = false;
-				yield* processes.terminate(saved);
-				expect(group.kill).toHaveBeenCalledWith(-98765, 0);
-				expect(group.kill).toHaveBeenCalledWith(-98765, 'SIGTERM');
-				expect(group.state.groupAlive).toBe(false);
-			}),
+	it.live('refuses to signal a recovered group after its leader exits', () =>
+		Effect.gen(function* () {
+			const group = fakeGroup();
+			const processes = yield* Processes.make;
+			const saved = yield* processes.capture(98765);
+			group.state.leaderAlive = false;
+			const result = yield* Effect.exit(processes.terminate(saved));
+			expect(result._tag).toBe('Failure');
+			expect(group.kill).toHaveBeenCalledWith(-98765, 0);
+			expect(group.kill).not.toHaveBeenCalledWith(-98765, 'SIGTERM');
+			expect(group.kill).not.toHaveBeenCalledWith(-98765, 'SIGKILL');
+		}),
+	);
+
+	it.live('does not signal an invalid recovered process group', () =>
+		Effect.gen(function* () {
+			const group = fakeGroup();
+			const processes = yield* Processes.make;
+			expect(yield* processes.groupAlive(0)).toBe(false);
+			expect(group.kill).not.toHaveBeenCalled();
+		}),
 	);
 
 	it.live(
-		'escalates to SIGKILL when descendants survive SIGTERM after leader exit',
+		'escalates to SIGKILL while the recovered leader remains identifiable',
 		() =>
 			Effect.gen(function* () {
 				vi.useFakeTimers();
 				const group = fakeGroup(false);
 				const processes = yield* Processes.make;
 				const saved = yield* processes.capture(98765);
-				group.state.leaderAlive = false;
 				const completion = Effect.runPromise(processes.terminate(saved));
 				yield* Effect.promise(() => vi.runAllTimersAsync());
 				yield* Effect.promise(() => completion);

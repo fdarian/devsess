@@ -58,7 +58,7 @@ const readMacProcess = (pid: number) =>
 							return;
 						}
 						const processGroupId = Number(match[1]);
-						if (!Number.isSafeInteger(processGroupId) || processGroupId <= 0) {
+						if (!isSafeProcessId(processGroupId)) {
 							reject(new Error(`Process ${pid} has an invalid process group`));
 							return;
 						}
@@ -82,11 +82,7 @@ const readLinuxProcess = (pid: number) =>
 					.split(/\s+/);
 				const processGroupId = Number(fields[2]);
 				const startTicks = fields[19];
-				if (
-					!Number.isSafeInteger(processGroupId) ||
-					processGroupId <= 0 ||
-					startTicks === undefined
-				) {
+				if (!isSafeProcessId(processGroupId) || startTicks === undefined) {
 					throw new Error(`Process ${pid} has invalid Linux process metadata`);
 				}
 				return { processGroupId, startedAt: `linux:${startTicks}` };
@@ -108,8 +104,17 @@ const readLinuxProcess = (pid: number) =>
 const readProcess = (pid: number) =>
 	process.platform === 'linux' ? readLinuxProcess(pid) : readMacProcess(pid);
 
-const signalGroup = (processGroupId: number, signal: NodeJS.Signals | 0) =>
-	Effect.try({
+const isSafeProcessId = (value: number) =>
+	Number.isSafeInteger(value) && value > 1;
+
+const signalGroup = (processGroupId: number, signal: NodeJS.Signals | 0) => {
+	if (!isSafeProcessId(processGroupId))
+		return Effect.fail(
+			new ProcessError({
+				message: `Refusing to signal invalid process group ${processGroupId}`,
+			}),
+		);
+	return Effect.try({
 		try: () => process.kill(-processGroupId, signal),
 		catch: (cause) =>
 			new ProcessError({
@@ -117,17 +122,45 @@ const signalGroup = (processGroupId: number, signal: NodeJS.Signals | 0) =>
 				cause,
 			}),
 	});
+};
 
 const groupIsAlive = (processGroupId: number) =>
-	signalGroup(processGroupId, 0).pipe(
-		Effect.as(true),
-		Effect.catchTag('ProcessError', (error) =>
-			error.cause instanceof Error &&
-			((error.cause as NodeJS.ErrnoException).code === 'ESRCH' ||
-				(error.cause as NodeJS.ErrnoException).code === 'ENOENT')
-				? Effect.succeed(false)
-				: error,
-		),
+	!isSafeProcessId(processGroupId)
+		? Effect.succeed(false)
+		: signalGroup(processGroupId, 0).pipe(
+				Effect.as(true),
+				Effect.catchTag('ProcessError', (error) =>
+					error.cause instanceof Error &&
+					((error.cause as NodeJS.ErrnoException).code === 'ESRCH' ||
+						(error.cause as NodeJS.ErrnoException).code === 'ENOENT')
+						? Effect.succeed(false)
+						: error,
+				),
+			);
+
+const isValidIdentity = (identity: ProcessIdentity) =>
+	isSafeProcessId(identity.pid) && isSafeProcessId(identity.processGroupId);
+
+const invalidIdentity = (identity: ProcessIdentity) =>
+	new ProcessError({
+		message: `Refusing to use invalid process identity ${identity.pid}/${identity.processGroupId}`,
+	});
+
+const waitForGroupExit = (
+	groupAlive: (processGroupId: number) => Effect.Effect<boolean, ProcessError>,
+	processGroupId: number,
+	remaining: number,
+): Effect.Effect<boolean, ProcessError> =>
+	groupAlive(processGroupId).pipe(
+		Effect.flatMap((alive) => {
+			if (!alive) return Effect.succeed(true);
+			if (remaining <= 0) return Effect.succeed(false);
+			return Effect.sleep('25 millis').pipe(
+				Effect.andThen(
+					waitForGroupExit(groupAlive, processGroupId, remaining - 1),
+				),
+			);
+		}),
 	);
 
 export class Processes extends Context.Service<Processes>()(
@@ -138,85 +171,80 @@ export class Processes extends Context.Service<Processes>()(
 			const groupAlive = (processGroupId: number) =>
 				groupIsAlive(processGroupId);
 			const capture = (pid: number) =>
-				inspect(pid).pipe(
-					Effect.flatMap((process) => {
-						if (process === undefined) {
-							return new ProcessError({
-								message: `Process ${pid} exited before ownership could be recorded`,
-							});
-						}
-						return Effect.succeed({
-							pid,
-							processGroupId: process.processGroupId,
-							startedAt: process.startedAt,
-						});
-					}),
-				);
-			const owns = (identity: ProcessIdentity) =>
-				inspect(identity.pid).pipe(
-					Effect.flatMap((process) => {
-						if (process === undefined) return Effect.succeed(false);
-						return Effect.succeed(
-							process.processGroupId === identity.processGroupId &&
-								process.startedAt === identity.startedAt,
+				!isSafeProcessId(pid)
+					? Effect.fail(
+							new ProcessError({
+								message: `Refusing to inspect invalid process ${pid}`,
+							}),
+						)
+					: inspect(pid).pipe(
+							Effect.flatMap((process) => {
+								if (process === undefined) {
+									return new ProcessError({
+										message: `Process ${pid} exited before ownership could be recorded`,
+									});
+								}
+								return Effect.succeed({
+									pid,
+									processGroupId: process.processGroupId,
+									startedAt: process.startedAt,
+								});
+							}),
 						);
-					}),
-				);
-			const ownsProcessOrGroup = (identity: ProcessIdentity) =>
-				inspect(identity.pid).pipe(
-					Effect.flatMap((process) =>
-						process === undefined
-							? groupAlive(identity.processGroupId)
-							: Effect.succeed(
+			const owns = (identity: ProcessIdentity) =>
+				!isValidIdentity(identity)
+					? Effect.succeed(false)
+					: inspect(identity.pid).pipe(
+							Effect.flatMap((process) => {
+								if (process === undefined) return Effect.succeed(false);
+								return Effect.succeed(
 									process.processGroupId === identity.processGroupId &&
 										process.startedAt === identity.startedAt,
-								),
-					),
-				);
-			const waitForExit = (
+								);
+							}),
+						);
+			const terminate = (
 				identity: ProcessIdentity,
-				remaining: number,
 			): Effect.Effect<void, ProcessError> =>
-				ownsProcessOrGroup(identity).pipe(
-					Effect.flatMap((isOwned) => {
-						if (!isOwned || remaining <= 0) return Effect.void;
-						return Effect.sleep('25 millis').pipe(
-							Effect.andThen(waitForExit(identity, remaining - 1)),
-						);
-					}),
-				);
-			const terminate = (identity: ProcessIdentity) =>
-				ownsProcessOrGroup(identity).pipe(
-					Effect.flatMap((isOwned) => {
-						if (!isOwned) return Effect.void;
-						return signalGroup(identity.processGroupId, 'SIGTERM').pipe(
-							Effect.catchTag('ProcessError', (error) =>
-								error.cause instanceof Error &&
-								(error.cause as NodeJS.ErrnoException).code === 'ESRCH'
-									? Effect.void
-									: error,
-							),
-							Effect.andThen(waitForExit(identity, 200)),
-							Effect.andThen(
-								ownsProcessOrGroup(identity).pipe(
-									Effect.flatMap((stillOwned) =>
-										stillOwned
-											? signalGroup(identity.processGroupId, 'SIGKILL').pipe(
-													Effect.catchTag('ProcessError', (error) =>
-														error.cause instanceof Error &&
-														(error.cause as NodeJS.ErrnoException).code ===
-															'ESRCH'
-															? Effect.void
-															: error,
-													),
-												)
-											: Effect.void,
-									),
-								),
-							),
-						);
-					}),
-				);
+				Effect.gen(function* () {
+					if (!isValidIdentity(identity))
+						return yield* invalidIdentity(identity);
+					if (!(yield* owns(identity))) {
+						if (yield* groupAlive(identity.processGroupId))
+							return yield* new ProcessError({
+								message: `Cannot verify recovered process group ${identity.processGroupId} after its leader exited`,
+							});
+						return;
+					}
+					yield* signalGroup(identity.processGroupId, 'SIGTERM').pipe(
+						Effect.catchTag('ProcessError', (error) =>
+							error.cause instanceof Error &&
+							(error.cause as NodeJS.ErrnoException).code === 'ESRCH'
+								? Effect.void
+								: error,
+						),
+					);
+					if (yield* waitForGroupExit(groupAlive, identity.processGroupId, 200))
+						return;
+					if (!(yield* owns(identity)))
+						return yield* new ProcessError({
+							message: `Cannot safely escalate recovered process group ${identity.processGroupId} after its leader changed`,
+						});
+					yield* signalGroup(identity.processGroupId, 'SIGKILL').pipe(
+						Effect.catchTag('ProcessError', (error) =>
+							error.cause instanceof Error &&
+							(error.cause as NodeJS.ErrnoException).code === 'ESRCH'
+								? Effect.void
+								: error,
+						),
+					);
+					if (
+						!(yield* waitForGroupExit(groupAlive, identity.processGroupId, 200))
+					)
+						return yield* new ProcessError({
+							message: `Process group ${identity.processGroupId} survived SIGKILL`,
+						});
+				});
 			const captureLive = (
 				pid: number,
 			): Effect.Effect<LiveProcessOwnership, ProcessError> =>

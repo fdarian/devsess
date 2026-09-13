@@ -13,6 +13,8 @@ const ServiceStateSchema = Schema.Union([
 	Schema.Literal('orphaned'),
 ]);
 
+const ProcessId = Schema.Int.check(Schema.makeFilter((value) => value > 1));
+
 export type ServiceState = typeof ServiceStateSchema.Type;
 
 export const ServiceRecordSchema = Schema.Struct({
@@ -22,8 +24,8 @@ export const ServiceRecordSchema = Schema.Struct({
 	state: ServiceStateSchema,
 	process: Schema.optionalKey(
 		Schema.Struct({
-			pid: Schema.Int,
-			processGroupId: Schema.Int,
+			pid: ProcessId,
+			processGroupId: ProcessId,
 			startedAt: Schema.NonEmptyString,
 		}),
 	),
@@ -41,8 +43,8 @@ export const RunRecordSchema = Schema.Struct({
 	startedAt: Schema.NonEmptyString,
 	state: ServiceStateSchema,
 	daemon: Schema.Struct({
-		pid: Schema.Int,
-		processGroupId: Schema.Int,
+		pid: ProcessId,
+		processGroupId: ProcessId,
 		startedAt: Schema.NonEmptyString,
 	}),
 	services: Schema.Array(ServiceRecordSchema),
@@ -66,7 +68,7 @@ class RunNotFound extends Schema.TaggedErrorClass<RunNotFound>()(
 
 const StoredRunsSchema = Schema.fromJsonString(Schema.Array(RunRecordSchema));
 
-const isActive = (state: ServiceState) =>
+export const isActive = (state: ServiceState) =>
 	state === 'starting' || state === 'running' || state === 'stopping';
 
 const writeAtomically = (target: string, content: string) =>
