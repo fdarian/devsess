@@ -82,8 +82,12 @@ const terminalSize = <E>(error: (message: string) => E) => {
 };
 
 const render = <E>(frame: DaemonStreamFrame, error: (message: string) => E) => {
-	if (frame._tag === 'output')
-		return Effect.sync(() => process.stdout.write(frame.value.data));
+	if (frame._tag === 'output') {
+		const event = frame.value;
+		if (event.event === 'exit')
+			return Effect.fail(error(`Service exited with code ${event.exitCode}`));
+		return Effect.sync(() => process.stdout.write(event.data));
+	}
 	if (frame._tag === 'closed')
 		return Effect.fail(error('Daemon output stream closed'));
 	if (frame._tag === 'error') return Effect.fail(error(frame.error.message));
