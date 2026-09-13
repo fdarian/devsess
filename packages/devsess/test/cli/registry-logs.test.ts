@@ -173,7 +173,7 @@ describe('Logs', () => {
 					() => Effect.never,
 					() => Ref.update(overflowCount, (count) => count + 1),
 				);
-				for (let index = 0; index < 257; index += 1)
+				for (let index = 0; index < 258; index += 1)
 					yield* logs.append({ runId: 'run', serviceName: 'web' }, 'x');
 				expect(yield* Ref.get(overflowCount)).toBe(1);
 				yield* subscription.unsubscribe;
