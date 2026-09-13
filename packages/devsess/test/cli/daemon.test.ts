@@ -224,9 +224,11 @@ const fixture = () => {
 		onData: vi.fn((_listener: (data: string) => void) => ({
 			dispose: () => undefined,
 		})),
-		onExit: vi.fn((_listener: (event: { exitCode: number }) => void) => ({
-			dispose: () => undefined,
-		})),
+		onExit: vi.fn(
+			(_listener: (event: { exitCode: number; signal?: number }) => void) => ({
+				dispose: () => undefined,
+			}),
+		),
 		write: vi.fn(),
 		resize: vi.fn(),
 		kill: vi.fn(),
@@ -556,10 +558,11 @@ describe('daemon lifetime and failure handling', () => {
 					const onExit = state.terminal.onExit.mock.calls[0]?.[0];
 					if (onExit === undefined)
 						return yield* Effect.die('Missing PTY exit callback');
-					onExit({ exitCode: 7 });
+					onExit({ exitCode: 0, signal: 9 });
 					yield* Deferred.await(completed).pipe(Effect.timeout('1 second'));
 					expect(received).toContain('"event":"exit"');
-					expect(received).toContain('"exitCode":7');
+					expect(received).toContain('"exitCode":0');
+					expect(received).toContain('"signal":9');
 					expect(state.unsubscribe).toHaveBeenCalledOnce();
 					client.destroy();
 				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));

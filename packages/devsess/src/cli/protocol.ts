@@ -119,6 +119,7 @@ export const DaemonExitEvent = Schema.Struct({
 	requestId: Identifier,
 	event: Schema.Literal('exit'),
 	exitCode: Schema.Int,
+	signal: Schema.optional(Schema.Int),
 });
 export const DaemonEvent = Schema.Union([DaemonOutputEvent, DaemonExitEvent]);
 export type DaemonEvent = typeof DaemonEvent.Type;

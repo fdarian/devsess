@@ -2,6 +2,7 @@ import { Deferred, Effect, Fiber, Queue, Schema } from 'effect';
 import type { Scope } from 'effect/Scope';
 import { callDaemon } from './client';
 import type { DaemonLocation } from './commands/daemon';
+import { type ServiceExitError, serviceExit } from './exit-status';
 import type { DaemonRequest } from './protocol';
 import type { RunRecord } from './registry';
 import type { DaemonStream, DaemonStreamFrame } from './terminal';
@@ -83,17 +84,28 @@ const terminalSize = <E>(error: (message: string) => E) => {
 	return Effect.succeed({ cols, rows });
 };
 
-const render = <E>(frame: DaemonStreamFrame, error: (message: string) => E) => {
+type RenderResult = 'continue' | 'complete';
+
+const render = <E>(
+	frame: DaemonStreamFrame,
+	error: (message: string) => E,
+): Effect.Effect<RenderResult, E | ServiceExitError> => {
 	if (frame._tag === 'output') {
 		const event = frame.value;
-		if (event.event === 'exit')
-			return Effect.fail(error(`Service exited with code ${event.exitCode}`));
-		return Effect.sync(() => process.stdout.write(event.data));
+		if (event.event === 'exit') {
+			const exitError = serviceExit(event);
+			return exitError === undefined
+				? Effect.succeed<RenderResult>('complete')
+				: Effect.fail(exitError);
+		}
+		return Effect.sync(() => process.stdout.write(event.data)).pipe(
+			Effect.as<RenderResult>('continue'),
+		);
 	}
 	if (frame._tag === 'closed')
 		return Effect.fail(error('Daemon output stream closed'));
 	if (frame._tag === 'error') return Effect.fail(error(frame.error.message));
-	if (frame.value.ok) return Effect.void;
+	if (frame.value.ok) return Effect.succeed('continue');
 	if (frame.value.error === undefined)
 		return Effect.fail(
 			error('Daemon rejected attach request without an error'),
@@ -104,13 +116,17 @@ const render = <E>(frame: DaemonStreamFrame, error: (message: string) => E) => {
 export const awaitAttachLease = <E>(
 	stream: DaemonStream,
 	error: (message: string) => E,
-): Effect.Effect<string, E> =>
+): Effect.Effect<string | undefined, E | ServiceExitError> =>
 	Effect.suspend(() =>
 		Queue.take(stream.frames).pipe(
 			Effect.flatMap((frame) => {
 				if (frame._tag === 'output')
 					return render(frame, error).pipe(
-						Effect.andThen(awaitAttachLease(stream, error)),
+						Effect.flatMap((result) =>
+							result === 'complete'
+								? Effect.succeed(undefined)
+								: awaitAttachLease(stream, error),
+						),
 					);
 				if (frame._tag === 'closed')
 					return Effect.fail(error('Daemon output stream closed'));
@@ -177,13 +193,14 @@ export const attachSession = <E>(options: {
 	readonly stream: DaemonStream;
 	readonly requestId: () => string;
 	readonly error: (message: string) => E;
-}): Effect.Effect<void, E, Scope> =>
+}): Effect.Effect<void, E | ServiceExitError, Scope> =>
 	Effect.gen(function* () {
 		if (!process.stdin.isTTY || !process.stdout.isTTY)
 			return yield* Effect.fail(
 				options.error('Attach requires an interactive terminal'),
 			);
 		const leaseId = yield* awaitAttachLease(options.stream, options.error);
+		if (leaseId === undefined) return;
 		yield* Effect.sync(() => process.stdout.write(attachHint));
 		const actions = yield* Queue.unbounded<AttachAction>();
 		const detached = yield* Deferred.make<void, E>();
@@ -200,11 +217,19 @@ export const attachSession = <E>(options: {
 				Effect.asVoid,
 				Effect.mapError((cause) => options.error(cause.message)),
 			);
-		const reader = yield* Effect.forever(
-			Queue.take(options.stream.frames).pipe(
-				Effect.flatMap((frame) => render(frame, options.error)),
-			),
-		).pipe(Effect.forkScoped);
+		const read = (): Effect.Effect<void, E | ServiceExitError> =>
+			Effect.suspend(() =>
+				Queue.take(options.stream.frames).pipe(
+					Effect.flatMap((frame) =>
+						render(frame, options.error).pipe(
+							Effect.flatMap((result) =>
+								result === 'complete' ? Effect.void : read(),
+							),
+						),
+					),
+				),
+			);
+		const reader = yield* read().pipe(Effect.forkScoped);
 		const writer = yield* Effect.forever(
 			Queue.take(actions).pipe(
 				Effect.flatMap((action) =>

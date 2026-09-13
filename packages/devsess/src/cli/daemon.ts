@@ -13,6 +13,7 @@ import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { Scope } from 'effect/Scope';
 import type { IPty } from 'node-pty';
+import { type ServiceExit, serviceExitCode } from './exit-status';
 import { type LogAddress, Logs } from './logs';
 import { type LiveProcessOwnership, Processes } from './processes';
 import {
@@ -99,6 +100,7 @@ type Message =
 			readonly _tag: 'exited';
 			readonly address: LogAddress;
 			readonly exitCode: number;
+			readonly signal?: number;
 	  };
 
 const serviceKey = (address: LogAddress) =>
@@ -278,7 +280,7 @@ export const makeDaemon = (options: {
 					unsubscribe: subscription.unsubscribe,
 				});
 			});
-		const finishSubscriptions = (address: LogAddress, exitCode: number) =>
+		const finishSubscriptions = (address: LogAddress, exit: ServiceExit) =>
 			Effect.forEach(
 				Array.from(sockets.entries()),
 				(entry) => {
@@ -297,7 +299,8 @@ export const makeDaemon = (options: {
 										version: PROTOCOL_VERSION,
 										requestId,
 										event: 'exit',
-										exitCode,
+										exitCode: exit.exitCode,
+										signal: exit.signal,
 									}),
 								),
 								Effect.andThen(subscription.unsubscribe),
@@ -428,28 +431,27 @@ export const makeDaemon = (options: {
 							rows: 24,
 						});
 						const address = { runId: run.runId, serviceName: service.name };
-						const observed: { exitCode: number | undefined } = {
-							exitCode: undefined,
-						};
+						let observedExit: ServiceExit | undefined;
 						terminal.onData((data) => {
 							Queue.offerUnsafe(queue, { _tag: 'ptyOutput', address, data });
 						});
 						terminal.onExit((event) => {
-							observed.exitCode = event.exitCode;
+							observedExit = event;
 							Queue.offerUnsafe(queue, {
 								_tag: 'exited',
 								address,
 								exitCode: event.exitCode,
+								signal: event.signal,
 							});
 						});
 						const captured = yield* Effect.exit(
 							processes.captureLive(terminal.pid),
 						);
 						if (Exit.isFailure(captured)) {
-							if (observed.exitCode !== undefined) {
+							if (observedExit !== undefined) {
 								yield* replaceService(
 									address,
-									observed.exitCode === 0 ? 'exited' : 'failed',
+									serviceExitCode(observedExit) === 0 ? 'exited' : 'failed',
 								);
 								continue;
 							}
@@ -659,23 +661,23 @@ export const makeDaemon = (options: {
 				const key = serviceKey(message.address);
 				const live = terminals.get(key);
 				if (live === undefined) return Effect.void;
+				const exit: ServiceExit = {
+					exitCode: message.exitCode,
+					signal: message.signal,
+				};
 				return live.ownership.terminate.pipe(
 					Effect.andThen(
 						replaceService(
 							message.address,
-							message.exitCode === 0 ? 'exited' : 'failed',
+							serviceExitCode(exit) === 0 ? 'exited' : 'failed',
 						),
 					),
 					Effect.tap(() => Effect.sync(() => terminals.delete(key))),
-					Effect.andThen(
-						finishSubscriptions(message.address, message.exitCode),
-					),
+					Effect.andThen(finishSubscriptions(message.address, exit)),
 					Effect.asVoid,
 					Effect.catch((cause) =>
 						replaceService(message.address, 'orphaned').pipe(
-							Effect.andThen(
-								finishSubscriptions(message.address, message.exitCode),
-							),
+							Effect.andThen(finishSubscriptions(message.address, exit)),
 							Effect.andThen(Effect.logError(cause)),
 						),
 					),
