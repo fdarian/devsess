@@ -118,11 +118,25 @@ const signalGroup = (processGroupId: number, signal: NodeJS.Signals | 0) =>
 			}),
 	});
 
+const groupIsAlive = (processGroupId: number) =>
+	signalGroup(processGroupId, 0).pipe(
+		Effect.as(true),
+		Effect.catchTag('ProcessError', (error) =>
+			error.cause instanceof Error &&
+			((error.cause as NodeJS.ErrnoException).code === 'ESRCH' ||
+				(error.cause as NodeJS.ErrnoException).code === 'ENOENT')
+				? Effect.succeed(false)
+				: error,
+		),
+	);
+
 export class Processes extends Context.Service<Processes>()(
 	'devsess/cli/Processes',
 	{
 		make: Effect.gen(function* () {
 			const inspect = (pid: number) => readProcess(pid);
+			const groupAlive = (processGroupId: number) =>
+				groupIsAlive(processGroupId);
 			const capture = (pid: number) =>
 				inspect(pid).pipe(
 					Effect.flatMap((process) => {
@@ -148,11 +162,22 @@ export class Processes extends Context.Service<Processes>()(
 						);
 					}),
 				);
+			const ownsProcessOrGroup = (identity: ProcessIdentity) =>
+				inspect(identity.pid).pipe(
+					Effect.flatMap((process) =>
+						process === undefined
+							? groupAlive(identity.processGroupId)
+							: Effect.succeed(
+									process.processGroupId === identity.processGroupId &&
+										process.startedAt === identity.startedAt,
+								),
+					),
+				);
 			const waitForExit = (
 				identity: ProcessIdentity,
 				remaining: number,
 			): Effect.Effect<void, ProcessError> =>
-				owns(identity).pipe(
+				ownsProcessOrGroup(identity).pipe(
 					Effect.flatMap((isOwned) => {
 						if (!isOwned || remaining <= 0) return Effect.void;
 						return Effect.sleep('25 millis').pipe(
@@ -161,7 +186,7 @@ export class Processes extends Context.Service<Processes>()(
 					}),
 				);
 			const terminate = (identity: ProcessIdentity) =>
-				owns(identity).pipe(
+				ownsProcessOrGroup(identity).pipe(
 					Effect.flatMap((isOwned) => {
 						if (!isOwned) return Effect.void;
 						return signalGroup(identity.processGroupId, 'SIGTERM').pipe(
@@ -245,7 +270,7 @@ export class Processes extends Context.Service<Processes>()(
 					);
 					return { identity, terminate } satisfies LiveProcessOwnership;
 				});
-			return { capture, captureLive, owns, terminate };
+			return { capture, captureLive, owns, groupAlive, terminate };
 		}),
 	},
 ) {

@@ -105,6 +105,7 @@ const fixture = () => {
 				})),
 			),
 		terminate,
+		groupAlive: () => Effect.succeed(true),
 		owns: () => Effect.succeed(true),
 	});
 	const logs = Logs.of({
