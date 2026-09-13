@@ -100,12 +100,15 @@ export const makeSocketWriter = (
 		}
 		pumping = true;
 		try {
-			const accepted = socket.write(item.encoded, () => {
-				if (closed) return;
+			let completed = false;
+			const complete = () => {
+				if (completed || closed) return;
+				completed = true;
 				queuedBytes -= item.bytes;
 				if (!pumping && queue.length === 0 && queuedBytes === 0)
 					releaseIdleWaiters();
-			});
+			};
+			const accepted = socket.write(item.encoded, complete);
 			if (accepted) {
 				pumping = false;
 				pump();
@@ -116,6 +119,7 @@ export const makeSocketWriter = (
 					pumping = false;
 					return;
 				}
+				complete();
 				pumping = false;
 				if (queue.length === 0 && queuedBytes === 0) releaseIdleWaiters();
 				pump();
