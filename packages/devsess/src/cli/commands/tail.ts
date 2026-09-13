@@ -1,4 +1,5 @@
 import { Effect, Queue } from 'effect';
+import { type ServiceExitError, serviceExit } from '../exit-status';
 import type { RunRecord } from '../registry';
 import { openDaemonStream } from '../terminal';
 import {
@@ -26,7 +27,7 @@ const tailService = (
 		},
 	}).pipe(
 		Effect.flatMap((stream) => {
-			const read = (): Effect.Effect<void, CommandError> =>
+			const read = (): Effect.Effect<void, CommandError | ServiceExitError> =>
 				Effect.suspend(() =>
 					Queue.take(stream.frames).pipe(
 						Effect.flatMap((frame) => {
@@ -38,7 +39,10 @@ const tailService = (
 											prefix ? `[${service.name}] ${event.data}` : event.data,
 										),
 									).pipe(Effect.andThen(read));
-								return Effect.void;
+								const exitError = serviceExit(event);
+								return exitError === undefined
+									? Effect.void
+									: Effect.fail(exitError);
 							}
 							if (frame._tag === 'closed')
 								return Effect.fail(
