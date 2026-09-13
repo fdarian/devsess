@@ -21,6 +21,7 @@ export type CommandOptions = {
 	project?: string;
 	service?: string;
 	preset?: string;
+	force?: boolean;
 };
 
 export type DaemonLocation = { dataDirectory: string; socketPath: string };

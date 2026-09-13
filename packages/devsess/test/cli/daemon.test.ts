@@ -336,6 +336,91 @@ describe('daemon lifetime and failure handling', () => {
 		),
 	);
 
+	it.live('reports an actionable remedy for an unverifiable orphan', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				state.records.set('orphan', orphanedRun('orphan'));
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					state.terminate.mockReturnValueOnce(
+						new ProcessError({
+							message:
+								'Cannot verify recovered process group 98765 after its leader exited',
+						}),
+					);
+					const result = yield* Effect.exit(
+						daemon.request({
+							version: 1,
+							requestId: 'stop-orphan',
+							method: 'stopRun',
+							params: { runId: 'orphan' },
+						}),
+					);
+					expect(Exit.isFailure(result)).toBe(true);
+					if (Exit.isFailure(result)) {
+						const message = Cause.pretty(result.cause);
+						expect(message).toContain('Service web');
+						expect(message).toContain('run orphan');
+						expect(message).toContain('98765');
+						expect(message).toContain('kill -TERM -98765');
+						expect(message).toContain('devsess stop --force');
+					}
+					expect((yield* state.registry.get('orphan')).state).toBe('orphaned');
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live('points a blocked start at the orphan remedy', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				state.records.set('orphan', orphanedRun('orphan'));
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					const result = yield* Effect.exit(
+						daemon.request(start('replacement')),
+					);
+					expect(Exit.isFailure(result)).toBe(true);
+					if (Exit.isFailure(result)) {
+						const message = Cause.pretty(result.cause);
+						expect(message).toContain('Service web');
+						expect(message).toContain('kill -TERM -98765');
+						expect(message).toContain('devsess stop --force');
+					}
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live('force stops an orphan and unblocks a replacement start', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				state.records.set('orphan', orphanedRun('orphan'));
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					state.groupAlive.mockReturnValueOnce(Effect.succeed(true));
+					state.groupAlive.mockReturnValue(Effect.succeed(false));
+					const result = yield* daemon.request({
+						version: 1,
+						requestId: 'force-stop-orphan',
+						method: 'stopRun',
+						params: { runId: 'orphan', force: true },
+					});
+					expect(result).toMatchObject({ state: 'exited' });
+					expect(state.terminate).toHaveBeenCalledWith(identity(98765), true);
+					const replacement = yield* daemon.request(start('replacement'));
+					expect(replacement).toMatchObject({ runId: 'replacement' });
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
 	it.live(
 		'refuses duplicate identity when aggregate failed still contains a running service',
 		() =>
