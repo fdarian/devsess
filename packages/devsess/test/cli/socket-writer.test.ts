@@ -60,4 +60,23 @@ describe('socket writer', () => {
 				expect(destroy).toHaveBeenCalledOnce();
 			}),
 	);
+
+	it.effect('retires a backpressured frame when drain arrives', () =>
+		Effect.gen(function* () {
+			const socket = new Socket();
+			const writer = makeSocketWriter(socket, { onClose: () => undefined });
+			let needDrain = true;
+			Object.defineProperty(socket, 'writableNeedDrain', {
+				configurable: true,
+				get: () => needDrain,
+			});
+			vi.spyOn(socket, 'write').mockReturnValue(false);
+			yield* writer.send(response);
+			const idle = Effect.runPromise(writer.awaitIdle);
+			needDrain = false;
+			socket.emit('drain');
+			yield* Effect.promise(() => idle);
+			expect(writer.isClosed()).toBe(false);
+		}),
+	);
 });
