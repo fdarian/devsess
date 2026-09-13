@@ -1,4 +1,5 @@
 import { createConnection } from 'node:net';
+import { StringDecoder } from 'node:string_decoder';
 import { Effect, Schema } from 'effect';
 import {
 	type DaemonRequest,
@@ -25,6 +26,7 @@ export const callDaemon = (
 			new Promise<string>((resolve, reject) => {
 				const socket = createConnection(socketPath);
 				let input = '';
+				const decoder = new StringDecoder('utf8');
 				let settled = false;
 				const finish = (result: () => void) => {
 					if (settled) return;
@@ -44,7 +46,7 @@ export const callDaemon = (
 					socket.write(`${JSON.stringify(request)}\n`),
 				);
 				socket.on('data', (chunk) => {
-					input += chunk.toString();
+					input += decoder.write(chunk);
 					const boundary = input.indexOf('\n');
 					if (boundary === -1) return;
 					finish(() => resolve(input.slice(0, boundary)));

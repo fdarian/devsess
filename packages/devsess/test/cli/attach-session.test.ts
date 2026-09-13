@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import { describe, expect, it } from '@effect/vitest';
 import { Cause, Effect, Queue, Runtime } from 'effect';
 import {
@@ -127,6 +128,22 @@ describe('attach session', () => {
 			state: { awaitingEscape: false },
 			actions: [{ _tag: 'input', data: 'xyz' }, { _tag: 'detach' }],
 		});
+	});
+
+	it('preserves a UTF-8 code point split across input chunks', () => {
+		const decoder = new StringDecoder('utf8');
+		const bytes = Buffer.from('🦄');
+		const first = parseAttachInput(
+			{ awaitingEscape: false },
+			bytes.subarray(0, 2),
+			(chunk) => decoder.write(chunk),
+		);
+		expect(first.actions).toEqual([]);
+		expect(
+			parseAttachInput(first.state, bytes.subarray(2), (chunk) =>
+				decoder.write(chunk),
+			).actions,
+		).toEqual([{ _tag: 'input', data: '🦄' }]);
 	});
 
 	it.effect('rejects a malformed daemon stream frame', () =>
