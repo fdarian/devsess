@@ -80,6 +80,25 @@ const orphanedRun = (runId: string): RunRecord => ({
 		},
 	],
 });
+const processlessRun = (runId: string): RunRecord => ({
+	runId,
+	projectName: 'project',
+	presetName: 'dev',
+	canonicalCwd: '/tmp',
+	invocationCwd: '/tmp',
+	configSnapshot: {},
+	startedAt: '2026-09-09T00:00:00.000Z',
+	state: 'starting',
+	daemon: identity(12345),
+	services: [
+		{
+			name: 'web',
+			command: 'sleep 30',
+			cwd: '/tmp',
+			state: 'starting',
+		},
+	],
+});
 const delayedLogs = () => {
 	const listeners = new Map<string, (event: LogEvent) => Effect.Effect<void>>();
 	const pending = new Map<string, Set<Deferred.Deferred<void>>>();
@@ -162,7 +181,6 @@ const fixture = () => {
 				records.set(run.runId, run);
 			}),
 		list: Effect.sync(() => [...records.values()]),
-		markOrphans: Effect.sync(() => [...records.values()]),
 	});
 	const terminate = vi.fn(
 		(
@@ -368,6 +386,25 @@ describe('daemon lifetime and failure handling', () => {
 					expect(result).toMatchObject({ state: 'exited' });
 					expect(state.terminate).not.toHaveBeenCalled();
 					expect((yield* state.registry.get('orphan')).state).toBe('exited');
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live('resolves a processless starting record during reconciliation', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				state.records.set('crashed', processlessRun('crashed'));
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					const recovered = yield* state.registry.get('crashed');
+					expect(recovered.state).toBe('exited');
+					expect(recovered.services[0]?.state).toBe('exited');
+					expect(recovered.services[0]?.process).toBeUndefined();
+					const replacement = yield* daemon.request(start('replacement'));
+					expect(replacement).toMatchObject({ runId: 'replacement' });
 				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
 			}),
 		),
