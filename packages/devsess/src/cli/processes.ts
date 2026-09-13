@@ -124,17 +124,55 @@ const signalGroup = (processGroupId: number, signal: NodeJS.Signals | 0) => {
 	});
 };
 
+const readGroupMembers = (processGroupId: number) =>
+	Effect.tryPromise({
+		try: () =>
+			new Promise<boolean>((resolve, reject) => {
+				execFile(
+					'ps',
+					['-g', String(processGroupId), '-o', 'pid='],
+					(error, stdout) => {
+						if (error !== null) {
+							const nodeError = error as NodeJS.ErrnoException;
+							const exitCode = (
+								error as NodeJS.ErrnoException & { code?: string | number }
+							).code;
+							if (
+								nodeError.code === 'ESRCH' ||
+								nodeError.code === 'ENOENT' ||
+								Number(exitCode) === 1
+							) {
+								resolve(false);
+								return;
+							}
+							reject(error);
+							return;
+						}
+						resolve(stdout.trim().length > 0);
+					},
+				);
+			}),
+		catch: (cause) =>
+			new ProcessError({
+				message: `Could not inspect process group ${processGroupId}`,
+				cause,
+			}),
+	});
+
 const groupIsAlive = (processGroupId: number) =>
 	!isSafeProcessId(processGroupId)
 		? Effect.succeed(false)
 		: signalGroup(processGroupId, 0).pipe(
 				Effect.as(true),
 				Effect.catchTag('ProcessError', (error) =>
-					error.cause instanceof Error &&
-					((error.cause as NodeJS.ErrnoException).code === 'ESRCH' ||
-						(error.cause as NodeJS.ErrnoException).code === 'ENOENT')
-						? Effect.succeed(false)
-						: error,
+					Effect.gen(function* () {
+						if (!(error.cause instanceof Error)) return yield* error;
+						const code = (error.cause as NodeJS.ErrnoException).code;
+						if (code === 'ESRCH' || code === 'ENOENT') return false;
+						if (code === 'EPERM')
+							return yield* readGroupMembers(processGroupId);
+						return yield* error;
+					}),
 				),
 			);
 
@@ -260,6 +298,14 @@ export class Processes extends Context.Service<Processes>()(
 					const signal = (value: NodeJS.Signals | 0) =>
 						Effect.suspend(() => {
 							if (!valid) return Effect.succeed(false);
+							if (value === 0)
+								return groupAlive(identity.processGroupId).pipe(
+									Effect.tap((alive) =>
+										Effect.sync(() => {
+											if (!alive) valid = false;
+										}),
+									),
+								);
 							return signalGroup(identity.processGroupId, value).pipe(
 								Effect.as(true),
 								Effect.catch((error) => {
