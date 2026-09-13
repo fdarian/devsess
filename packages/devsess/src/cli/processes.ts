@@ -1,6 +1,15 @@
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { Context, Effect, Layer, Schema, Semaphore } from 'effect';
+import {
+	GROUP_LIVENESS_BACKOFF_INITIAL_MS,
+	GROUP_LIVENESS_BACKOFF_MAX_MS,
+	PROCESS_INSPECTION_TIMEOUT_MS,
+	TERMINATION_KILL_SIGNAL,
+	TERMINATION_POLL_ATTEMPTS,
+	TERMINATION_POLL_INTERVAL_MS,
+	TERMINATION_TERM_SIGNAL,
+} from './termination';
 
 export type ProcessIdentity = {
 	readonly pid: number;
@@ -11,7 +20,7 @@ export type ProcessIdentity = {
 
 export type LiveProcessOwnership = {
 	readonly identity: ProcessIdentity;
-	readonly terminate: Effect.Effect<void, ProcessError>;
+	readonly terminate: Effect.Effect<number | undefined, ProcessError>;
 };
 
 export class ProcessError extends Schema.TaggedErrorClass<ProcessError>()(
@@ -31,6 +40,7 @@ const readMacProcess = (pid: number) =>
 				execFile(
 					'ps',
 					['-o', 'pgid=', '-o', 'lstart=', '-p', String(pid)],
+					{ timeout: PROCESS_INSPECTION_TIMEOUT_MS },
 					(error, stdout) => {
 						if (error !== null) {
 							const nodeError = error as NodeJS.ErrnoException;
@@ -137,6 +147,7 @@ const readGroupMembers = (processGroupId: number) =>
 				execFile(
 					'ps',
 					['-g', String(processGroupId), '-o', 'pid='],
+					{ timeout: PROCESS_INSPECTION_TIMEOUT_MS },
 					(error, stdout) => {
 						if (error !== null) {
 							const nodeError = error as NodeJS.ErrnoException;
@@ -165,19 +176,56 @@ const readGroupMembers = (processGroupId: number) =>
 			}),
 	});
 
-const groupIsAlive = (processGroupId: number) =>
+type GroupLivenessFallback = {
+	readonly alive: boolean;
+	readonly expiresAt: number;
+	readonly delayMs: number;
+};
+
+const groupIsAlive = (
+	processGroupId: number,
+	fallbacks: Map<number, GroupLivenessFallback>,
+) =>
 	!isSafeProcessId(processGroupId)
 		? Effect.succeed(false)
 		: signalGroup(processGroupId, 0).pipe(
+				Effect.tap(() =>
+					Effect.sync(() => {
+						fallbacks.delete(processGroupId);
+					}),
+				),
 				Effect.as(true),
 				Effect.catchTag('ProcessError', (error) =>
 					Effect.gen(function* () {
-						if (isGoneCause(error.cause)) return false;
+						if (isGoneCause(error.cause)) {
+							fallbacks.delete(processGroupId);
+							return false;
+						}
 						if (!(error.cause instanceof Error)) return yield* error;
 						const code = (error.cause as NodeJS.ErrnoException).code;
-						if (code === 'EPERM')
-							return yield* readGroupMembers(processGroupId);
-						return yield* error;
+						if (code !== 'EPERM') return yield* error;
+						const cached = fallbacks.get(processGroupId);
+						if (cached !== undefined && cached.expiresAt > Date.now())
+							return cached.alive;
+						return yield* readGroupMembers(processGroupId).pipe(
+							Effect.tap((alive) =>
+								Effect.sync(() => {
+									const previous = fallbacks.get(processGroupId);
+									const delayMs =
+										previous === undefined
+											? GROUP_LIVENESS_BACKOFF_INITIAL_MS
+											: Math.min(
+													previous.delayMs * 2,
+													GROUP_LIVENESS_BACKOFF_MAX_MS,
+												);
+									fallbacks.set(processGroupId, {
+										alive,
+										expiresAt: Date.now() + delayMs,
+										delayMs,
+									});
+								}),
+							),
+						);
 					}),
 				),
 			);
@@ -199,7 +247,7 @@ const waitForGroupExit = (
 		Effect.flatMap((alive) => {
 			if (!alive) return Effect.succeed(true);
 			if (remaining <= 0) return Effect.succeed(false);
-			return Effect.sleep('25 millis').pipe(
+			return Effect.sleep(`${TERMINATION_POLL_INTERVAL_MS} millis`).pipe(
 				Effect.andThen(
 					waitForGroupExit(groupAlive, processGroupId, remaining - 1),
 				),
@@ -211,9 +259,10 @@ export class Processes extends Context.Service<Processes>()(
 	'devsess/cli/Processes',
 	{
 		make: Effect.gen(function* () {
+			const livenessFallbacks = new Map<number, GroupLivenessFallback>();
 			const inspect = (pid: number) => readProcess(pid);
 			const groupAlive = (processGroupId: number) =>
-				groupIsAlive(processGroupId);
+				groupIsAlive(processGroupId, livenessFallbacks);
 			const capture = (pid: number) =>
 				!isSafeProcessId(pid)
 					? Effect.fail(
@@ -250,7 +299,7 @@ export class Processes extends Context.Service<Processes>()(
 			const terminate = (
 				identity: ProcessIdentity,
 				force: boolean,
-			): Effect.Effect<void, ProcessError> =>
+			): Effect.Effect<number | undefined, ProcessError> =>
 				Effect.gen(function* () {
 					if (!isValidIdentity(identity))
 						return yield* invalidIdentity(identity);
@@ -261,28 +310,49 @@ export class Processes extends Context.Service<Processes>()(
 							});
 						return;
 					}
+					let termSent = true;
 					yield* signalGroup(identity.processGroupId, 'SIGTERM').pipe(
 						Effect.catchTag('ProcessError', (error) =>
-							isGoneCause(error.cause) ? Effect.void : error,
+							isGoneCause(error.cause)
+								? Effect.sync(() => {
+										termSent = false;
+									})
+								: error,
 						),
 					);
-					if (yield* waitForGroupExit(groupAlive, identity.processGroupId, 200))
-						return;
+					if (
+						yield* waitForGroupExit(
+							groupAlive,
+							identity.processGroupId,
+							TERMINATION_POLL_ATTEMPTS,
+						)
+					)
+						return termSent ? TERMINATION_TERM_SIGNAL : undefined;
 					if (!force && !(yield* owns(identity)))
 						return yield* new ProcessError({
 							message: `Cannot safely escalate recovered process group ${identity.processGroupId} after its leader changed`,
 						});
+					let killSent = true;
 					yield* signalGroup(identity.processGroupId, 'SIGKILL').pipe(
 						Effect.catchTag('ProcessError', (error) =>
-							isGoneCause(error.cause) ? Effect.void : error,
+							isGoneCause(error.cause)
+								? Effect.sync(() => {
+										killSent = false;
+									})
+								: error,
 						),
 					);
 					if (
-						!(yield* waitForGroupExit(groupAlive, identity.processGroupId, 200))
+						!(yield* waitForGroupExit(
+							groupAlive,
+							identity.processGroupId,
+							TERMINATION_POLL_ATTEMPTS,
+						))
 					)
 						return yield* new ProcessError({
 							message: `Process group ${identity.processGroupId} survived SIGKILL`,
 						});
+					return killSent ? TERMINATION_KILL_SIGNAL : undefined;
 				});
 			const captureLive = (
 				pid: number,
@@ -323,7 +393,7 @@ export class Processes extends Context.Service<Processes>()(
 						Effect.gen(function* () {
 							if (!(yield* signal(0))) return true;
 							if (attempts === 0) return false;
-							yield* Effect.sleep('25 millis');
+							yield* Effect.sleep(`${TERMINATION_POLL_INTERVAL_MS} millis`);
 							return yield* wait(attempts - 1);
 						});
 					/** Only newly owned PTYs get this capability; never reconstruct it from saved PIDs.
@@ -331,13 +401,15 @@ export class Processes extends Context.Service<Processes>()(
 					 * immediately on leader exit and invalidate it permanently on observed disappearance. */
 					const terminate = permit.withPermit(
 						Effect.gen(function* () {
-							if (!(yield* signal('SIGTERM'))) return;
-							if (yield* wait(200)) return;
-							if (!(yield* signal('SIGKILL'))) return;
-							if (!(yield* wait(200)))
-								return yield* new ProcessError({
-									message: `Process group ${identity.processGroupId} survived SIGKILL`,
-								});
+							if (!(yield* signal('SIGTERM'))) return undefined;
+							if (yield* wait(TERMINATION_POLL_ATTEMPTS))
+								return TERMINATION_TERM_SIGNAL;
+							if (!(yield* signal('SIGKILL'))) return undefined;
+							if (yield* wait(TERMINATION_POLL_ATTEMPTS))
+								return TERMINATION_KILL_SIGNAL;
+							return yield* new ProcessError({
+								message: `Process group ${identity.processGroupId} survived SIGKILL`,
+							});
 						}),
 					);
 					return { identity, terminate } satisfies LiveProcessOwnership;

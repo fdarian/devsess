@@ -5,6 +5,9 @@ export type ServiceExit = {
 	readonly signal?: number;
 };
 
+/** Persisted records without an observed status use a non-success exit code. */
+export const UNKNOWN_EXIT_CODE = 1;
+
 export const serviceExitCode = (exit: ServiceExit) =>
 	exit.signal !== undefined && exit.signal > 0
 		? 128 + exit.signal

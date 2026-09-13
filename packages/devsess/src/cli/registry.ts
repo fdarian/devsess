@@ -31,6 +31,7 @@ export const ServiceRecordSchema = Schema.Struct({
 	),
 	exitCode: Schema.optionalKey(Schema.Int),
 	signal: Schema.optionalKey(Schema.Int),
+	exitStatus: Schema.optionalKey(Schema.Literal('unknown')),
 });
 
 export type ServiceRecord = typeof ServiceRecordSchema.Type;
@@ -48,7 +49,13 @@ export const refreshService = (
 		status === 'missing' ||
 		status === 'dead'
 	)
-		return { ...service, state: 'exited' };
+		return {
+			...service,
+			state: 'exited',
+			exitCode: undefined,
+			signal: undefined,
+			exitStatus: 'unknown',
+		};
 	return { ...service, state: 'orphaned' };
 };
 

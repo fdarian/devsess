@@ -30,6 +30,8 @@ export const isRunActive = (run: RunRecord) =>
 	run.services.some(
 		(service) => isActive(service.state) || service.state === 'orphaned',
 	);
+const isRunTailable = (run: RunRecord) =>
+	isRunActive(run) || run.state === 'exited' || run.state === 'failed';
 
 const containsPath = (parent: string, child: string) => {
 	const path = relative(parent, child);
@@ -111,7 +113,10 @@ export const ensureDaemon = (location: DaemonLocation) =>
 			}),
 	});
 
-export const resolveCurrentRuns = (options: CommandOptions) =>
+export const resolveCurrentRuns = (
+	options: CommandOptions,
+	includeCompleted = false,
+) =>
 	Effect.gen(function* () {
 		const invocation = yield* captureInvocation(process.cwd());
 		const location = yield* resolveDaemonLocation;
@@ -125,7 +130,7 @@ export const resolveCurrentRuns = (options: CommandOptions) =>
 		const current = runs.filter(
 			(run) =>
 				containsPath(run.canonicalCwd, invocation.canonicalCwd) &&
-				isRunActive(run) &&
+				(includeCompleted ? isRunTailable(run) : isRunActive(run)) &&
 				(options.project === undefined || run.projectName === options.project),
 		);
 		return { location, runs, current };
