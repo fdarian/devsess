@@ -25,40 +25,45 @@ const tailService = (
 			params: { runId: run.runId, serviceName: service.name },
 		},
 	}).pipe(
-		Effect.flatMap((stream) =>
-			Effect.forever(
-				Queue.take(stream.frames).pipe(
-					Effect.flatMap((frame) => {
-						if (frame._tag === 'output')
-							return Effect.sync(() =>
-								process.stdout.write(
-									prefix
-										? `[${service.name}] ${frame.value.data}`
-										: frame.value.data,
-								),
-							);
-						if (frame._tag === 'closed')
+		Effect.flatMap((stream) => {
+			const read = (): Effect.Effect<void, CommandError> =>
+				Effect.suspend(() =>
+					Queue.take(stream.frames).pipe(
+						Effect.flatMap((frame) => {
+							if (frame._tag === 'output') {
+								if (frame.value.event === 'output')
+									return Effect.sync(() =>
+										process.stdout.write(
+											prefix
+												? `[${service.name}] ${frame.value.data}`
+												: frame.value.data,
+										),
+									).pipe(Effect.andThen(read));
+								return Effect.void;
+							}
+							if (frame._tag === 'closed')
+								return Effect.fail(
+									new CommandError({ message: 'Daemon output stream closed' }),
+								);
+							if (frame._tag === 'error')
+								return Effect.fail(
+									new CommandError({ message: frame.error.message }),
+								);
+							if (frame.value.ok) return read();
+							if (frame.value.error === undefined)
+								return Effect.fail(
+									new CommandError({
+										message: 'Daemon rejected tail request without an error',
+									}),
+								);
 							return Effect.fail(
-								new CommandError({ message: 'Daemon output stream closed' }),
+								new CommandError({ message: frame.value.error }),
 							);
-						if (frame._tag === 'error')
-							return Effect.fail(
-								new CommandError({ message: frame.error.message }),
-							);
-						if (frame.value.ok) return Effect.void;
-						if (frame.value.error === undefined)
-							return Effect.fail(
-								new CommandError({
-									message: 'Daemon rejected tail request without an error',
-								}),
-							);
-						return Effect.fail(
-							new CommandError({ message: frame.value.error }),
-						);
-					}),
-				),
-			),
-		),
+						}),
+					),
+				);
+			return read();
+		}),
 	);
 
 /** Streams all matching services, qualifying output when more than one is selected. */
