@@ -31,12 +31,11 @@ const tailService = (
 					Queue.take(stream.frames).pipe(
 						Effect.flatMap((frame) => {
 							if (frame._tag === 'output') {
-								if (frame.value.event === 'output')
+								const event = frame.value;
+								if (event.event === 'output')
 									return Effect.sync(() =>
 										process.stdout.write(
-											prefix
-												? `[${service.name}] ${frame.value.data}`
-												: frame.value.data,
+											prefix ? `[${service.name}] ${event.data}` : event.data,
 										),
 									).pipe(Effect.andThen(read));
 								return Effect.void;
