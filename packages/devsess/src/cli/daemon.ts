@@ -20,6 +20,7 @@ import {
 	type DaemonRequest,
 	type DaemonResponse,
 	decodeRequest,
+	decodeRequestId,
 	PROTOCOL_VERSION,
 	splitFrames,
 } from './protocol';
@@ -728,11 +729,20 @@ export const makeDaemon = (options: {
 						),
 					),
 				),
-				Effect.catch((cause) =>
-					message.socket === undefined
-						? Effect.void
-						: fail(message.socket, 'invalid', cause),
-				),
+				Effect.catch((cause) => {
+					const socket = message.socket;
+					if (socket === undefined) return Effect.void;
+					const requestId =
+						typeof message.incoming === 'string'
+							? decodeRequestId(message.incoming).pipe(
+									Effect.map((request) => request.requestId),
+									Effect.catch(() => Effect.succeed('invalid')),
+								)
+							: Effect.succeed(message.incoming.requestId);
+					return requestId.pipe(
+						Effect.flatMap((id) => fail(socket, id, cause)),
+					);
+				}),
 			);
 		};
 		const worker = yield* Effect.forever(
