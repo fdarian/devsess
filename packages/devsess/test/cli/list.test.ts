@@ -16,8 +16,8 @@ const run = (
 	startedAt: '2026-09-12T00:00:00.000Z',
 	state,
 	daemon: {
-		pid: 1,
-		processGroupId: 1,
+		pid: 2,
+		processGroupId: 2,
 		startedAt: '2026-09-12T00:00:00.000Z',
 	},
 	services: [
