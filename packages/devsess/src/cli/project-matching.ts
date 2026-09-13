@@ -1,4 +1,5 @@
 import { realpathSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { Effect, Option, Schema, Stream } from 'effect';
@@ -95,31 +96,51 @@ export const captureInvocationWithGit = (cwd: string) =>
 		return yield* captureInvocation(cwd, Option.getOrUndefined(repo));
 	});
 
-/** Makes equivalent SSH and HTTPS remote spellings comparable. */
-export const normalizeGitRepo = (repo: string) => {
+type NormalizedGitRepo = {
+	host?: string;
+	path: string;
+};
+
+const isHostname = (value: string) =>
+	value === 'localhost' || value.includes('.') || isIP(value) !== 0;
+
+const parseGitRepo = (repo: string): NormalizedGitRepo => {
 	const trimmedRepo = repo
 		.trim()
 		.replace(/\/+$/, '')
-		.replace(/\.git$/, '');
+		.replace(/\.git$/i, '');
 	const urlRepo = trimmedRepo.match(
 		/^(?:https?|ssh):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+)$/i,
 	);
 	if (urlRepo !== null) {
 		const host = urlRepo[1];
 		const path = urlRepo[2];
-		if (host !== undefined && path !== undefined) {
-			return `${host}/${path}`.toLowerCase();
-		}
+		if (host !== undefined && path !== undefined)
+			return { host: host.toLowerCase(), path: path.toLowerCase() };
 	}
 	const scpRepo = trimmedRepo.match(/^(?:[^@/:]+@)?([^/:]+):(.+)$/);
 	if (scpRepo !== null) {
 		const host = scpRepo[1];
 		const path = scpRepo[2];
-		if (host !== undefined && path !== undefined) {
-			return `${host}/${path}`.toLowerCase();
-		}
+		if (host !== undefined && path !== undefined)
+			return { host: host.toLowerCase(), path: path.toLowerCase() };
 	}
-	return trimmedRepo.toLowerCase();
+	const normalizedRepo = trimmedRepo.toLowerCase();
+	const separator = normalizedRepo.indexOf('/');
+	if (separator > 0) {
+		const host = normalizedRepo.slice(0, separator);
+		if (isHostname(host))
+			return { host, path: normalizedRepo.slice(separator + 1) };
+	}
+	return { path: normalizedRepo };
+};
+
+/** Makes equivalent SSH and HTTPS remote spellings comparable. */
+export const normalizeGitRepo = (repo: string) => {
+	const normalized = parseGitRepo(repo);
+	return normalized.host === undefined
+		? normalized.path
+		: `${normalized.host}/${normalized.path}`;
 };
 
 /**
@@ -131,10 +152,16 @@ export const matchesGitRepo = (
 	invocationRepo: string,
 	configuredRepo: string,
 ) => {
-	const normalizedConfiguredRepo = normalizeGitRepo(configuredRepo);
+	const normalizedInvocationRepo = parseGitRepo(invocationRepo);
+	const normalizedConfiguredRepo = parseGitRepo(configuredRepo);
+	if (normalizedConfiguredRepo.host !== undefined)
+		return (
+			normalizedInvocationRepo.host === normalizedConfiguredRepo.host &&
+			normalizedInvocationRepo.path === normalizedConfiguredRepo.path
+		);
 	return (
-		invocationRepo === normalizedConfiguredRepo ||
-		invocationRepo.endsWith(`/${normalizedConfiguredRepo}`)
+		normalizedInvocationRepo.path === normalizedConfiguredRepo.path ||
+		normalizedInvocationRepo.path.endsWith(`/${normalizedConfiguredRepo.path}`)
 	);
 };
 
