@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
@@ -28,6 +29,26 @@ const listen = (server: ReturnType<typeof createServer>, socketPath: string) =>
 			}),
 		catch: (cause) => cause,
 	});
+
+const currentProcessBirth = () => {
+	if (process.platform === 'linux') {
+		const stat = readFileSync(`/proc/${process.pid}/stat`, 'utf8');
+		const fields = stat
+			.slice(stat.lastIndexOf(')') + 2)
+			.trim()
+			.split(/\s+/);
+		const startedAt = fields[19];
+		if (startedAt === undefined) throw new Error('Missing process birth value');
+		return `linux:${startedAt}`;
+	}
+	const startedAt = execFileSync(
+		'ps',
+		['-o', 'lstart=', '-p', String(process.pid)],
+		{ encoding: 'utf8' },
+	).trim();
+	if (startedAt.length === 0) throw new Error('Missing process birth value');
+	return `ps:${startedAt}`;
+};
 
 describe('daemon bootstrap', () => {
 	it.live('waits for the daemon handshake', () =>
@@ -203,6 +224,45 @@ describe('daemon bootstrap', () => {
 					}),
 				),
 			),
+	);
+
+	it.live('times out a live launch lock that never opens its socket', () =>
+		runTest(
+			Effect.gen(function* () {
+				const rootDir = yield* makeTempDir;
+				const socketPath = join(rootDir, 'daemon.sock');
+				const dataDirectory = join(rootDir, 'state');
+				const lockDirectory = join(dataDirectory, 'daemon-launch.lock');
+				mkdirSync(lockDirectory, { recursive: true, mode: 0o700 });
+				writeFileSync(
+					join(lockDirectory, 'owner'),
+					`${process.pid}\n${currentProcessBirth()}\nheld\n`,
+				);
+				const startedAt = Date.now();
+				const exit = yield* Effect.exit(
+					ensureDaemon({
+						location: { dataDirectory, socketPath },
+						timeoutMs: 200,
+						launch: () => Effect.die('launch must not run while lock is held'),
+					}),
+				);
+				expect(Date.now() - startedAt).toBeLessThan(1_000);
+				expect(exit._tag).toBe('Failure');
+				if (exit._tag === 'Failure') {
+					const error = Cause.findErrorOption(exit.cause);
+					expect(Option.isSome(error)).toBe(true);
+					if (Option.isSome(error)) {
+						expect(error.value).toBeInstanceOf(DaemonBootstrapError);
+						expect(error.value.message).toContain(
+							`launch lock ${lockDirectory}`,
+						);
+						expect(error.value.message).toContain(`owner PID ${process.pid}`);
+						expect(error.value.message).toContain(socketPath);
+					}
+				}
+				expect(existsSync(lockDirectory)).toBe(true);
+			}),
+		),
 	);
 
 	it.live(
