@@ -77,7 +77,11 @@ type LiveService = {
 		| { readonly id: string; readonly socket: Socket | undefined }
 		| undefined;
 };
-type SocketState = { readonly subscriptions: Map<string, Effect.Effect<void>> };
+type Subscription = {
+	readonly address: LogAddress;
+	readonly unsubscribe: Effect.Effect<void>;
+};
+type SocketState = { readonly subscriptions: Map<string, Subscription> };
 type Message =
 	| {
 			readonly _tag: 'request';
@@ -209,8 +213,8 @@ export const makeDaemon = (options: {
 			Effect.gen(function* () {
 				const state = sockets.get(socket);
 				if (state !== undefined) {
-					for (const unsubscribe of state.subscriptions.values())
-						yield* unsubscribe;
+					for (const subscription of state.subscriptions.values())
+						yield* subscription.unsubscribe;
 					sockets.delete(socket);
 				}
 				for (const live of terminals.values())
@@ -246,8 +250,43 @@ export const makeDaemon = (options: {
 						data: event.data,
 						offset: event.offset,
 					});
-				state.subscriptions.set(requestId, subscription.unsubscribe);
+				state.subscriptions.set(requestId, {
+					address,
+					unsubscribe: subscription.unsubscribe,
+				});
 			});
+		const finishSubscriptions = (address: LogAddress, exitCode: number) =>
+			Effect.forEach(
+				Array.from(sockets.entries()),
+				(entry) => {
+					const socket = entry[0];
+					const state = entry[1];
+					return Effect.forEach(
+						Array.from(state.subscriptions.entries()),
+						(subscriptionEntry) => {
+							const requestId = subscriptionEntry[0];
+							const subscription = subscriptionEntry[1];
+							if (serviceKey(subscription.address) !== serviceKey(address))
+								return Effect.void;
+							return send(socket, {
+								version: PROTOCOL_VERSION,
+								requestId,
+								event: 'exit',
+								exitCode,
+							}).pipe(
+								Effect.andThen(subscription.unsubscribe),
+								Effect.tap(() =>
+									Effect.sync(() => {
+										state.subscriptions.delete(requestId);
+									}),
+								),
+							);
+						},
+						{ discard: true },
+					);
+				},
+				{ discard: true },
+			);
 		const reconcile = registry.list.pipe(
 			Effect.flatMap((runs) =>
 				Effect.forEach(runs, (run) => {
@@ -599,9 +638,15 @@ export const makeDaemon = (options: {
 						),
 					),
 					Effect.tap(() => Effect.sync(() => terminals.delete(key))),
+					Effect.andThen(
+						finishSubscriptions(message.address, message.exitCode),
+					),
 					Effect.asVoid,
 					Effect.catch((cause) =>
 						replaceService(message.address, 'orphaned').pipe(
+							Effect.andThen(
+								finishSubscriptions(message.address, message.exitCode),
+							),
 							Effect.andThen(Effect.logError(cause)),
 						),
 					),

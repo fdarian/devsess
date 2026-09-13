@@ -1,11 +1,6 @@
 import { createConnection } from 'node:net';
 import { Effect, Fiber, Queue, Schema } from 'effect';
-import {
-	type DaemonEvent,
-	type DaemonRequest,
-	DaemonResponse,
-	PROTOCOL_VERSION,
-} from './protocol';
+import { DaemonEvent, type DaemonRequest, DaemonResponse } from './protocol';
 
 export class TerminalTransportError extends Schema.TaggedErrorClass<TerminalTransportError>()(
 	'devsess/cli/TerminalTransportError',
@@ -25,18 +20,7 @@ export type DaemonStream = {
 };
 
 export const decodeDaemonStreamFrame = Schema.decodeUnknownEffect(
-	Schema.fromJsonString(
-		Schema.Union([
-			DaemonResponse,
-			Schema.Struct({
-				version: Schema.Literal(PROTOCOL_VERSION),
-				requestId: Schema.NonEmptyString,
-				event: Schema.Literal('output'),
-				data: Schema.String,
-				offset: Schema.Int,
-			}),
-		]),
-	),
+	Schema.fromJsonString(Schema.Union([DaemonResponse, DaemonEvent])),
 );
 
 /** Opens a daemon stream and preserves it until the caller's scope closes. */
