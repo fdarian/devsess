@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import { Deferred, Effect, Fiber, Queue, Schema } from 'effect';
 import type { Scope } from 'effect/Scope';
 import { callDaemon } from './client';
@@ -18,10 +19,12 @@ export type AttachAction =
 	| { readonly _tag: 'detach' };
 
 export type AttachInputState = { readonly awaitingEscape: boolean };
+export type AttachInputDecoder = (data: Buffer) => string;
 
 export const parseAttachInput = (
 	state: AttachInputState,
 	data: Buffer,
+	decode: AttachInputDecoder = (chunk) => chunk.toString(),
 ): {
 	readonly state: AttachInputState;
 	readonly actions: ReadonlyArray<AttachAction>;
@@ -65,8 +68,10 @@ export const parseAttachInput = (
 		index = data.length;
 	}
 	const actions: Array<AttachAction> = [];
-	if (pending.length > 0)
-		actions.push({ _tag: 'input', data: Buffer.from(pending).toString() });
+	if (pending.length > 0) {
+		const input = decode(Buffer.from(pending));
+		if (input.length > 0) actions.push({ _tag: 'input', data: input });
+	}
 	if (detaches) actions.push({ _tag: 'detach' });
 	return { state: { awaitingEscape }, actions };
 };
@@ -252,6 +257,7 @@ export const attachSession = <E>(options: {
 		const rawMode = process.stdin.isRaw === true;
 		const wasFlowing = process.stdin.readableFlowing;
 		let inputState: AttachInputState = { awaitingEscape: false };
+		const decoder = new StringDecoder('utf8');
 		let detachTimer: ReturnType<typeof setTimeout> | undefined;
 		const scheduleDetach = () => {
 			detachTimer = setTimeout(() => {
@@ -262,7 +268,9 @@ export const attachSession = <E>(options: {
 		const onInput = (data: Buffer) => {
 			if (detachTimer !== undefined) clearTimeout(detachTimer);
 			detachTimer = undefined;
-			const parsed = parseAttachInput(inputState, data);
+			const parsed = parseAttachInput(inputState, data, (chunk) =>
+				decoder.write(chunk),
+			);
 			inputState = parsed.state;
 			for (const action of parsed.actions) Queue.offerUnsafe(actions, action);
 			if (inputState.awaitingEscape) scheduleDetach();

@@ -1,4 +1,5 @@
 import { createConnection } from 'node:net';
+import { StringDecoder } from 'node:string_decoder';
 import { Effect, Fiber, Queue, Schema } from 'effect';
 import { DaemonEvent, type DaemonRequest, DaemonResponse } from './protocol';
 
@@ -32,6 +33,7 @@ export const openDaemonStream = (options: {
 		Effect.gen(function* () {
 			const frames = yield* Queue.unbounded<DaemonStreamFrame>();
 			const chunks = yield* Queue.unbounded<string>();
+			const decoder = new StringDecoder('utf8');
 			let buffer = '';
 			const parser = yield* Effect.forever(
 				Queue.take(chunks).pipe(
@@ -91,7 +93,7 @@ export const openDaemonStream = (options: {
 					}),
 			});
 			socket.on('data', (chunk) => {
-				Queue.offerUnsafe(chunks, chunk.toString());
+				Queue.offerUnsafe(chunks, decoder.write(chunk));
 			});
 			socket.once('close', () => Queue.offerUnsafe(frames, { _tag: 'closed' }));
 			socket.once('error', () => Queue.offerUnsafe(frames, { _tag: 'closed' }));
