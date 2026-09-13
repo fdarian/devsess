@@ -98,6 +98,7 @@ export class Logs extends Context.Service<
 			address: LogAddress,
 			after: number,
 			listener: (event: LogEvent) => Effect.Effect<void>,
+			onOverflow?: (flush: Effect.Effect<void>) => Effect.Effect<void, unknown>,
 		) => Effect.Effect<
 			{
 				readonly replay: ReadonlyArray<LogEvent>;
@@ -131,6 +132,10 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 				readonly fiber: Fiber.Fiber<void, unknown>;
 				readonly pending: Set<Deferred.Deferred<void>>;
 				readonly flush: Effect.Effect<void>;
+				readonly onOverflow:
+					| ((flush: Effect.Effect<void>) => Effect.Effect<void, unknown>)
+					| undefined;
+				overflowed: boolean;
 			}>
 		>();
 		const logPath = (address: LogAddress) =>
@@ -203,6 +208,12 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 																return;
 															subscription.pending.delete(completion);
 															yield* Deferred.succeed(completion, undefined);
+															if (subscription.overflowed) return;
+															subscription.overflowed = true;
+															if (subscription.onOverflow !== undefined)
+																yield* subscription
+																	.onOverflow(subscription.flush)
+																	.pipe(Effect.catch(() => Effect.void));
 														}),
 													{ discard: true },
 												),
@@ -218,6 +229,7 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 			address: LogAddress,
 			after: number,
 			listener: (event: LogEvent) => Effect.Effect<void>,
+			onOverflow?: (flush: Effect.Effect<void>) => Effect.Effect<void, unknown>,
 		) =>
 			semaphore.withPermit(
 				read(address).pipe(
@@ -238,9 +250,15 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 											readonly fiber: Fiber.Fiber<void, unknown>;
 											readonly pending: Set<Deferred.Deferred<void>>;
 											readonly flush: Effect.Effect<void>;
+											readonly onOverflow:
+												| ((
+														flush: Effect.Effect<void>,
+												  ) => Effect.Effect<void, unknown>)
+												| undefined;
+											overflowed: boolean;
 										}>()
 									: current;
-							const queue = yield* Queue.dropping<{
+							const queue = yield* Queue.bounded<{
 								readonly event: LogEvent;
 								readonly completion: Deferred.Deferred<void>;
 							}>(256);
@@ -276,6 +294,8 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 								fiber,
 								pending,
 								flush,
+								onOverflow,
+								overflowed: false,
 							};
 							subscribed.add(subscription);
 							listeners.set(key, subscribed);

@@ -1,4 +1,5 @@
 import { createServer, type Server, type Socket } from 'node:net';
+import { StringDecoder } from 'node:string_decoder';
 import {
 	Context,
 	Deferred,
@@ -22,6 +23,7 @@ import {
 	type DaemonResponse,
 	decodeRequest,
 	decodeRequestId,
+	MAX_FRAME_BYTES,
 	PROTOCOL_VERSION,
 	splitFrames,
 } from './protocol';
@@ -83,7 +85,11 @@ type Subscription = {
 	readonly flush: Effect.Effect<void>;
 	readonly unsubscribe: Effect.Effect<void>;
 };
-type SocketState = { readonly subscriptions: Map<string, Subscription> };
+type SocketState = {
+	readonly subscriptions: Map<string, Subscription>;
+	writes: Promise<void>;
+	closed: boolean;
+};
 type Message =
 	| {
 			readonly _tag: 'request';
@@ -172,16 +178,113 @@ export const makeDaemon = (options: {
 		const terminals = new Map<string, LiveService>();
 		const sockets = new Map<Socket, SocketState>();
 		const lifecycle = { closing: false };
-		const send = (socket: Socket, frame: DaemonResponse | DaemonEvent) =>
-			Effect.sync(() => {
-				if (socket.destroyed) return;
-				const encoded = `${JSON.stringify(frame)}\n`;
-				if (socket.writableLength + Buffer.byteLength(encoded) > 1024 * 1024) {
-					socket.destroy();
+		const waitForDrain = (socket: Socket) =>
+			new Promise<void>((resolve, reject) => {
+				const cleanup = () => {
+					socket.off('drain', onDrain);
+					socket.off('close', onClose);
+					socket.off('error', onError);
+				};
+				const onDrain = () => {
+					cleanup();
+					resolve();
+				};
+				const onClose = () => {
+					cleanup();
+					resolve();
+				};
+				const onError = (cause: Error) => {
+					cleanup();
+					reject(cause);
+				};
+				if (socket.destroyed) {
+					resolve();
 					return;
 				}
-				if (!socket.write(encoded)) socket.destroy();
+				socket.once('drain', onDrain);
+				socket.once('close', onClose);
+				socket.once('error', onError);
+				if (!socket.writableNeedDrain) {
+					cleanup();
+					resolve();
+				}
 			});
+		const overflowFrame = (
+			socket: Socket,
+			state: SocketState,
+			requestId: string,
+		) => {
+			state.closed = true;
+			if (socket.destroyed) return Promise.resolve();
+			const encoded = `${JSON.stringify({
+				version: PROTOCOL_VERSION,
+				requestId,
+				ok: false,
+				error: 'Daemon output buffer exceeded 1 MiB; disconnecting',
+			})}\n`;
+			try {
+				socket.write(encoded);
+				socket.end();
+			} catch {
+				socket.destroy();
+			}
+			return Promise.resolve();
+		};
+		const writeFrame = (
+			socket: Socket,
+			state: SocketState,
+			frame: DaemonResponse | DaemonEvent,
+		) => {
+			if (state.closed || socket.destroyed) return Promise.resolve();
+			const encoded = `${JSON.stringify(frame)}\n`;
+			if (socket.writableLength + Buffer.byteLength(encoded) > MAX_FRAME_BYTES)
+				return overflowFrame(socket, state, frame.requestId);
+			try {
+				if (socket.write(encoded)) return Promise.resolve();
+				return waitForDrain(socket);
+			} catch (cause) {
+				state.closed = true;
+				socket.destroy();
+				return Promise.reject(cause);
+			}
+		};
+		const send = (socket: Socket, frame: DaemonResponse | DaemonEvent) => {
+			const state = sockets.get(socket);
+			if (state === undefined) return Effect.void;
+			const operation = state.writes.then(() =>
+				writeFrame(socket, state, frame),
+			);
+			const tracked = operation.catch((cause) => {
+				state.closed = true;
+				if (!socket.destroyed) socket.destroy();
+				throw cause;
+			});
+			state.writes = tracked.catch(() => undefined);
+			return Effect.tryPromise({
+				try: () => tracked,
+				catch: (cause) =>
+					new DaemonError({
+						message: 'Could not write daemon response',
+						cause,
+					}),
+			});
+		};
+		const sendOverflow = (socket: Socket, requestId: string) => {
+			const state = sockets.get(socket);
+			if (state === undefined) return Effect.void;
+			const operation = state.writes.then(() =>
+				overflowFrame(socket, state, requestId),
+			);
+			state.writes = operation.catch(() => undefined);
+			return Effect.tryPromise({
+				try: () => operation,
+				catch: (cause) =>
+					new DaemonError({
+						message: 'Could not report daemon output overflow',
+						cause,
+					}),
+			});
+		};
 		const reply = (socket: Socket, requestId: string, result: unknown) =>
 			send(socket, {
 				version: PROTOCOL_VERSION,
@@ -257,6 +360,7 @@ export const makeDaemon = (options: {
 			Effect.gen(function* () {
 				const state = sockets.get(socket);
 				if (state !== undefined) {
+					state.closed = true;
 					for (const subscription of state.subscriptions.values())
 						yield* subscription.unsubscribe;
 					sockets.delete(socket);
@@ -313,7 +417,9 @@ export const makeDaemon = (options: {
 							event: 'output',
 							data: event.data,
 							offset: event.offset,
-						}),
+						}).pipe(Effect.catch(() => Effect.void)),
+					(flush) =>
+						flush.pipe(Effect.andThen(sendOverflow(socket, requestId))),
 				);
 				for (const event of subscription.replay)
 					yield* send(socket, {
@@ -859,10 +965,15 @@ export const makeDaemon = (options: {
 				socket.destroy();
 				return;
 			}
-			sockets.set(socket, { subscriptions: new Map() });
+			sockets.set(socket, {
+				subscriptions: new Map(),
+				writes: Promise.resolve(),
+				closed: false,
+			});
 			let remainder = '';
+			const decoder = new StringDecoder('utf8');
 			socket.on('data', (chunk) => {
-				const frames = splitFrames(remainder, chunk.toString());
+				const frames = splitFrames(remainder, decoder.write(chunk));
 				if (frames._tag === 'TooLarge') {
 					socket.destroy();
 					return;

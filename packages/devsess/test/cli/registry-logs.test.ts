@@ -53,7 +53,6 @@ describe('Registry', () => {
 						cwd: '/workspace',
 						state: 'failed',
 						exitCode: 7,
-						signal: undefined,
 					},
 				],
 			}),
@@ -155,6 +154,28 @@ describe('Logs', () => {
 					),
 				);
 				expect(Exit.isSuccess(result)).toBe(true);
+				yield* subscription.unsubscribe;
+			}),
+		),
+	);
+
+	it.effect('reports a bounded subscription overflow once', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const logs = yield* Logs.pipe(
+					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 4096 })),
+				);
+				const overflowCount = yield* Ref.make(0);
+				const subscription = yield* logs.replayAndSubscribe(
+					{ runId: 'run', serviceName: 'web' },
+					0,
+					() => Effect.never,
+					() => Ref.update(overflowCount, (count) => count + 1),
+				);
+				for (let index = 0; index < 257; index += 1)
+					yield* logs.append({ runId: 'run', serviceName: 'web' }, 'x');
+				expect(yield* Ref.get(overflowCount)).toBe(1);
 				yield* subscription.unsubscribe;
 			}),
 		),
