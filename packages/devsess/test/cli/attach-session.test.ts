@@ -75,23 +75,31 @@ describe('attach session', () => {
 		});
 	});
 
-	it('forwards a Ctrl-] that arrives with other bytes in one chunk', () => {
-		expect(
-			parseAttachInput({ awaitingEscape: false }, Buffer.from('\u001dx')),
-		).toEqual({
-			state: { awaitingEscape: false },
-			actions: [{ _tag: 'input', data: '\u001dx' }],
-		});
-	});
-
-	it('turns a lone Ctrl-] followed by another key into detach', () => {
+	it('keeps Ctrl-] handling consistent across chunk boundaries', () => {
+		const sameChunk = parseAttachInput(
+			{ awaitingEscape: false },
+			Buffer.from('\u001dx'),
+		);
 		const first = parseAttachInput(
 			{ awaitingEscape: false },
 			Buffer.from('\u001d'),
 		);
-		expect(parseAttachInput(first.state, Buffer.from('x'))).toEqual({
+		const splitChunk = parseAttachInput(first.state, Buffer.from('x'));
+		expect(splitChunk).toEqual(sameChunk);
+		expect(sameChunk).toEqual({
 			state: { awaitingEscape: false },
-			actions: [{ _tag: 'detach' }],
+			actions: [{ _tag: 'input', data: 'x' }, { _tag: 'detach' }],
+		});
+	});
+
+	it('forwards every byte before detaching after another key', () => {
+		const first = parseAttachInput(
+			{ awaitingEscape: false },
+			Buffer.from('\u001d'),
+		);
+		expect(parseAttachInput(first.state, Buffer.from('xyz'))).toEqual({
+			state: { awaitingEscape: false },
+			actions: [{ _tag: 'input', data: 'xyz' }, { _tag: 'detach' }],
 		});
 	});
 
