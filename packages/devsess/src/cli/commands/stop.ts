@@ -17,7 +17,10 @@ export const stop = (options: CommandOptions) =>
 						version: 1,
 						requestId: requestId(),
 						method: 'stopRun',
-						params: { runId: run.runId },
+						params: {
+							runId: run.runId,
+							...(options.force === true ? { force: true } : {}),
+						},
 					}).pipe(
 						Effect.andThen(
 							write(`Stopped ${run.projectName}/${run.presetName}`),
