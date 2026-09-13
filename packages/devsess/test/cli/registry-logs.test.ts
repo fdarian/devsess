@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest';
-import { Deferred, Duration, Effect, Exit, Ref } from 'effect';
-import { Logs } from '../../src/cli/logs';
+import { Deferred, Duration, Effect, Exit, Ref, Schema } from 'effect';
+import { LogAddressSchema, Logs } from '../../src/cli/logs';
 import { Registry, type RunRecord } from '../../src/cli/registry';
 import { runTest } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
@@ -46,6 +46,18 @@ describe('Registry', () => {
 });
 
 describe('Logs', () => {
+	it.effect('rejects path traversal in log addresses', () =>
+		Effect.gen(function* () {
+			const exit = yield* Effect.exit(
+				Schema.decodeUnknownEffect(LogAddressSchema)({
+					runId: '../../escape',
+					serviceName: 'web',
+				}),
+			);
+			expect(exit._tag).toBe('Failure');
+		}),
+	);
+
 	it.effect(
 		'bounds persisted events and has no replay-to-subscribe loss gap',
 		() =>

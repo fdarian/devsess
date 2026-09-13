@@ -2,6 +2,7 @@ import { Context, Effect, Layer, Schema, Semaphore } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { Path } from 'effect/Path';
 import type { PlatformError } from 'effect/PlatformError';
+import { Identifier } from './identifiers';
 
 const ServiceStateSchema = Schema.Union([
 	Schema.Literal('starting'),
@@ -15,7 +16,7 @@ const ServiceStateSchema = Schema.Union([
 export type ServiceState = typeof ServiceStateSchema.Type;
 
 export const ServiceRecordSchema = Schema.Struct({
-	name: Schema.NonEmptyString,
+	name: Identifier,
 	command: Schema.NonEmptyString,
 	cwd: Schema.NonEmptyString,
 	state: ServiceStateSchema,
@@ -31,9 +32,9 @@ export const ServiceRecordSchema = Schema.Struct({
 export type ServiceRecord = typeof ServiceRecordSchema.Type;
 
 export const RunRecordSchema = Schema.Struct({
-	runId: Schema.NonEmptyString,
-	projectName: Schema.NonEmptyString,
-	presetName: Schema.NonEmptyString,
+	runId: Identifier,
+	projectName: Identifier,
+	presetName: Identifier,
 	canonicalCwd: Schema.NonEmptyString,
 	invocationCwd: Schema.NonEmptyString,
 	configSnapshot: Schema.Json,
