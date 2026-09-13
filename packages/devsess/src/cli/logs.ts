@@ -10,10 +10,11 @@ import {
 import { FileSystem } from 'effect/FileSystem';
 import { Path } from 'effect/Path';
 import type { PlatformError } from 'effect/PlatformError';
+import { Identifier } from './identifiers';
 
 export const LogAddressSchema = Schema.Struct({
-	runId: Schema.NonEmptyString,
-	serviceName: Schema.NonEmptyString,
+	runId: Identifier,
+	serviceName: Identifier,
 });
 export type LogAddress = typeof LogAddressSchema.Type;
 
