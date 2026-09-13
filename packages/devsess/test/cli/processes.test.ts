@@ -65,7 +65,7 @@ describe('live process group ownership', () => {
 	);
 
 	it.live(
-		'does not grant persisted identities the live ownership capability',
+		'can terminate a surviving recovered process group after its leader exits',
 		() =>
 			Effect.gen(function* () {
 				const group = fakeGroup();
@@ -73,8 +73,9 @@ describe('live process group ownership', () => {
 				const saved = yield* processes.capture(98765);
 				group.state.leaderAlive = false;
 				yield* processes.terminate(saved);
-				expect(group.kill).not.toHaveBeenCalled();
-				expect(group.state.groupAlive).toBe(true);
+				expect(group.kill).toHaveBeenCalledWith(-98765, 0);
+				expect(group.kill).toHaveBeenCalledWith(-98765, 'SIGTERM');
+				expect(group.state.groupAlive).toBe(false);
 			}),
 	);
 });
