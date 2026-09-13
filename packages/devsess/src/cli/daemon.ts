@@ -214,8 +214,8 @@ export const makeDaemon = (options: {
 			state: SocketState,
 			requestId: string,
 		) => {
+			if (state.closed || socket.destroyed) return Promise.resolve();
 			state.closed = true;
-			if (socket.destroyed) return Promise.resolve();
 			const encoded = `${JSON.stringify({
 				version: PROTOCOL_VERSION,
 				requestId,
