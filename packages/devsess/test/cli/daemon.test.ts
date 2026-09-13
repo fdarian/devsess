@@ -332,6 +332,48 @@ describe('daemon lifetime and failure handling', () => {
 			),
 	);
 
+	it.live('completes every socket subscription when a PTY exits', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					yield* daemon.request(start());
+					const client = createConnection(join(root, 'daemon.sock'));
+					client.on('error', () => undefined);
+					const response = yield* Deferred.make<void>();
+					const completed = yield* Deferred.make<void>();
+					let received = '';
+					client.on('data', (chunk) => {
+						received += chunk.toString();
+						if (received.includes('"ok":true'))
+							Deferred.succeed(response, undefined).pipe(Effect.runFork);
+						if (received.includes('"event":"exit"'))
+							Deferred.succeed(completed, undefined).pipe(Effect.runFork);
+					});
+					yield* Effect.promise(
+						() =>
+							new Promise<void>((resolve) => client.once('connect', resolve)),
+					);
+					client.write(
+						`${JSON.stringify({ version: 1, requestId: 'tail', method: 'tail', params: { runId: 'run', serviceName: 'web' } })}\n`,
+					);
+					yield* Deferred.await(response).pipe(Effect.timeout('1 second'));
+					const onExit = state.terminal.onExit.mock.calls[0]?.[0];
+					if (onExit === undefined)
+						return yield* Effect.die('Missing PTY exit callback');
+					onExit({ exitCode: 7 });
+					yield* Deferred.await(completed).pipe(Effect.timeout('1 second'));
+					expect(received).toContain('"event":"exit"');
+					expect(received).toContain('"exitCode":7');
+					expect(state.unsubscribe).toHaveBeenCalledOnce();
+					client.destroy();
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
 	it.live(
 		'drops a backpressured socket without blocking subsequent requests',
 		() =>

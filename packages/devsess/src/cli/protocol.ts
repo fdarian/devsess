@@ -106,13 +106,20 @@ export const DaemonResponse = Schema.Struct({
 
 export type DaemonResponse = typeof DaemonResponse.Type;
 
-export const DaemonEvent = Schema.Struct({
+export const DaemonOutputEvent = Schema.Struct({
 	version: Schema.Literal(PROTOCOL_VERSION),
 	requestId: Identifier,
 	event: Schema.Literal('output'),
 	data: Schema.String,
 	offset: Schema.Int,
 });
+export const DaemonExitEvent = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	event: Schema.Literal('exit'),
+	exitCode: Schema.Int,
+});
+export const DaemonEvent = Schema.Union([DaemonOutputEvent, DaemonExitEvent]);
 export type DaemonEvent = typeof DaemonEvent.Type;
 export const decodeRequest = Schema.decodeUnknownEffect(
 	Schema.fromJsonString(DaemonRequest),
