@@ -40,6 +40,29 @@ describe('attach session', () => {
 		}),
 	);
 
+	it.effect(
+		'exits when the service completion frame arrives before the lease',
+		() =>
+			Effect.gen(function* () {
+				const frames = yield* Queue.unbounded<DaemonStreamFrame>();
+				yield* Queue.offer(frames, {
+					_tag: 'output',
+					value: {
+						version: 1,
+						requestId: 'request',
+						event: 'exit',
+						exitCode: 7,
+					},
+				});
+				const result = yield* Effect.exit(
+					awaitAttachLease({ frames }, (message) => new Error(message)).pipe(
+						Effect.timeout('1 second'),
+					),
+				);
+				expect(result._tag).toBe('Failure');
+			}),
+	);
+
 	it('treats a split double Ctrl-] sequence as a literal key', () => {
 		const first = parseAttachInput(
 			{ awaitingEscape: false },
