@@ -225,8 +225,10 @@ export const makeDaemon = (options: {
 			try {
 				socket.write(encoded);
 				socket.end();
-			} catch {
+			} catch (cause) {
+				state.closed = true;
 				socket.destroy();
+				return Promise.reject(cause);
 			}
 			return Promise.resolve();
 		};
@@ -248,34 +250,46 @@ export const makeDaemon = (options: {
 				return Promise.reject(cause);
 			}
 		};
-		const send = (socket: Socket, frame: DaemonResponse | DaemonEvent) => {
-			const state = sockets.get(socket);
-			if (state === undefined) return Effect.void;
+		const queueWrite = (
+			socket: Socket,
+			state: SocketState,
+			frame: DaemonResponse | DaemonEvent,
+		) => {
 			const operation = state.writes.then(() =>
 				writeFrame(socket, state, frame),
 			);
-			const tracked = operation.catch((cause) => {
+			const tracked = operation.catch(() => {
 				state.closed = true;
 				if (!socket.destroyed) socket.destroy();
-				throw cause;
 			});
-			state.writes = tracked.catch(() => undefined);
-			return Effect.tryPromise({
-				try: () => tracked,
+			state.writes = tracked;
+			return tracked;
+		};
+		const awaitWrites = (state: SocketState) =>
+			Effect.tryPromise({
+				try: () => state.writes,
 				catch: (cause) =>
 					new DaemonError({
 						message: 'Could not write daemon response',
 						cause,
 					}),
 			});
-		};
+		const send = (socket: Socket, frame: DaemonResponse | DaemonEvent) =>
+			Effect.sync(() => {
+				const state = sockets.get(socket);
+				if (state === undefined || state.closed || socket.destroyed) return;
+				queueWrite(socket, state, frame);
+			});
 		const sendOverflow = (socket: Socket, requestId: string) => {
 			const state = sockets.get(socket);
 			if (state === undefined) return Effect.void;
 			const operation = state.writes.then(() =>
 				overflowFrame(socket, state, requestId),
 			);
-			state.writes = operation.catch(() => undefined);
+			state.writes = operation.catch(() => {
+				state.closed = true;
+				if (!socket.destroyed) socket.destroy();
+			});
 			return Effect.tryPromise({
 				try: () => operation,
 				catch: (cause) =>
@@ -390,6 +404,7 @@ export const makeDaemon = (options: {
 						signal: exit.signal,
 					}),
 				),
+				Effect.andThen(awaitWrites(state)),
 				Effect.andThen(subscription.unsubscribe),
 				Effect.tap(() =>
 					Effect.sync(() => {
