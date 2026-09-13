@@ -2,14 +2,15 @@ import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { Config, Effect, Option, Schema } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
+import { IdentifierRecord } from './identifiers';
 
 const ServiceSchema = Schema.Struct({
-	command: Schema.String,
-	cwd: Schema.optionalKey(Schema.String),
+	command: Schema.NonEmptyString,
+	cwd: Schema.optionalKey(Schema.NonEmptyString),
 });
 
 const PresetSchema = Schema.Struct({
-	services: Schema.Record(Schema.String, ServiceSchema),
+	services: IdentifierRecord(ServiceSchema),
 });
 
 const ProjectPathSchema = Schema.String.check(
@@ -20,16 +21,16 @@ const ProjectPathSchema = Schema.String.check(
 
 const ProjectMatcherSchema = Schema.Union([
 	Schema.Struct({ type: Schema.Literal('path'), path: ProjectPathSchema }),
-	Schema.Struct({ type: Schema.Literal('git'), repo: Schema.String }),
+	Schema.Struct({ type: Schema.Literal('git'), repo: Schema.NonEmptyString }),
 ]);
 
 const ProjectSchema = Schema.Struct({
 	matcher: ProjectMatcherSchema,
-	presets: Schema.Record(Schema.String, PresetSchema),
+	presets: IdentifierRecord(PresetSchema),
 });
 
 export const DevsessConfigSchema = Schema.Struct({
-	projects: Schema.Record(Schema.String, ProjectSchema),
+	projects: IdentifierRecord(ProjectSchema),
 });
 
 export type DevsessConfig = typeof DevsessConfigSchema.Type;
@@ -65,7 +66,9 @@ export const resolveDefaultConfigPath = Effect.gen(function* () {
 
 /** Decodes the complete JSON document before any configured command is used. */
 export const decodeConfig = (content: string) =>
-	Schema.decodeUnknownEffect(ConfigJsonSchema)(content);
+	Schema.decodeUnknownEffect(ConfigJsonSchema, {
+		onExcessProperty: 'error',
+	})(content);
 
 /** Reads a caller-selected global configuration file; it never probes user paths. */
 export const readConfig = (configPath: string) =>

@@ -1,7 +1,8 @@
 import { Effect, Schema } from 'effect';
+import { Identifier } from './identifiers';
 
 export const PROTOCOL_VERSION = 1;
-const Identifier = Schema.NonEmptyString;
+export { Identifier } from './identifiers';
 export const ServiceSnapshot = Schema.Struct({
 	name: Identifier,
 	command: Schema.NonEmptyString,
@@ -123,6 +124,9 @@ export const DaemonEvent = Schema.Union([DaemonOutputEvent, DaemonExitEvent]);
 export type DaemonEvent = typeof DaemonEvent.Type;
 export const decodeRequest = Schema.decodeUnknownEffect(
 	Schema.fromJsonString(DaemonRequest),
+);
+export const decodeRequestId = Schema.decodeUnknownEffect(
+	Schema.fromJsonString(Schema.Struct({ requestId: Identifier })),
 );
 export const decodeResponse = Schema.decodeUnknownEffect(
 	Schema.fromJsonString(DaemonResponse),

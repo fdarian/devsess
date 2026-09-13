@@ -88,6 +88,90 @@ describe('CLI configuration', () => {
 		}),
 	);
 
+	it.effect('rejects empty and unsafe identifier keys', () =>
+		Effect.gen(function* () {
+			const invalidDocuments = [
+				{
+					projects: {
+						'../../escape': {
+							matcher: { type: 'path', path: '/work/project' },
+							presets: {},
+						},
+					},
+				},
+				{
+					projects: {
+						project: {
+							matcher: { type: 'path', path: '/work/project' },
+							presets: {
+								'../../escape': { services: {} },
+							},
+						},
+					},
+				},
+				{
+					projects: {
+						project: {
+							matcher: { type: 'path', path: '/work/project' },
+							presets: {
+								dev: {
+									services: {
+										'../../escape': { command: 'bun dev' },
+									},
+								},
+							},
+						},
+					},
+				},
+			];
+			for (const document of invalidDocuments) {
+				const exit = yield* Effect.exit(decodeConfig(JSON.stringify(document)));
+				expect(exit._tag).toBe('Failure');
+			}
+		}),
+	);
+
+	it.effect('rejects empty command and cwd values', () =>
+		Effect.gen(function* () {
+			const exit = yield* Effect.exit(
+				decodeConfig(
+					JSON.stringify({
+						projects: {
+							project: {
+								matcher: { type: 'path', path: '/work/project' },
+								presets: {
+									dev: {
+										services: { app: { command: '', cwd: '' } },
+									},
+								},
+							},
+						},
+					}),
+				),
+			);
+			expect(exit._tag).toBe('Failure');
+		}),
+	);
+
+	it.effect('rejects unknown configuration fields at every level', () =>
+		Effect.gen(function* () {
+			const exit = yield* Effect.exit(
+				decodeConfig(
+					JSON.stringify({
+						projects: {
+							project: {
+								matcher: { type: 'path', path: '/work/project' },
+								presets: { dev: { services: {} } },
+								extraProjectField: true,
+							},
+						},
+					}),
+				),
+			);
+			expect(exit._tag).toBe('Failure');
+		}),
+	);
+
 	it.effect('rejects relative project path matchers', () =>
 		Effect.gen(function* () {
 			const exit = yield* Effect.exit(
