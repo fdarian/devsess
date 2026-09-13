@@ -4,6 +4,7 @@ import { NodeRuntime, NodeServices, NodeTerminal } from '@effect/platform-node';
 import { Effect, Layer, Option } from 'effect';
 import { Terminal } from 'effect/Terminal';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
+import devsessPackageJson from '../package.json' with { type: 'json' };
 import { attach } from './cli/commands/attach';
 import { daemonCommand } from './cli/commands/daemon';
 import { list } from './cli/commands/list';
@@ -78,8 +79,7 @@ const services = Layer.mergeAll(
 );
 
 NodeRuntime.runMain(
-	Command.runWith(app, { version: '0.3.0' })(process.argv.slice(2)).pipe(
-		Effect.scoped,
-		Effect.provide(services),
-	),
+	Command.runWith(app, { version: devsessPackageJson.version })(
+		process.argv.slice(2),
+	).pipe(Effect.scoped, Effect.provide(services)),
 );
