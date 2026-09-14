@@ -985,6 +985,100 @@ describe('daemon lifetime and failure handling', () => {
 			),
 	);
 
+	it.live('keeps control RPCs responsive during a real log burst', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				const realLogs = yield* Logs.pipe(
+					Effect.provide(
+						Logs.layer({ dataDirectory: root, maxBytes: 1024 * 1024 }),
+					),
+				);
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					yield* daemon.request(start());
+					const onData = state.terminal.onData.mock.calls[0]?.[0];
+					if (typeof onData !== 'function')
+						return yield* Effect.die('Missing PTY output callback');
+					for (let index = 0; index < 32; index += 1)
+						onData('x'.repeat(64 * 1024));
+					const started = performance.now();
+					const results = yield* Effect.all(
+						[daemon.request(list), daemon.request(stop)],
+						{ concurrency: 'unbounded' },
+					).pipe(Effect.timeout('1 second'));
+					const latency = performance.now() - started;
+					expect(results[0]).toHaveLength(1);
+					expect(results[1]).toMatchObject({ runId: 'run' });
+					expect(latency).toBeLessThan(500);
+				}).pipe(
+					Effect.provide(
+						state.layerWithLogs(join(root, 'daemon.sock'), realLogs),
+					),
+					Effect.timeout('3 seconds'),
+				);
+			}),
+		),
+	);
+
+	it.live('keeps control RPCs responsive with a paused real-log tail', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				const realLogs = yield* Logs.pipe(
+					Effect.provide(
+						Logs.layer({ dataDirectory: root, maxBytes: 1024 * 1024 }),
+					),
+				);
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					yield* daemon.request(start());
+					const client = createConnection(join(root, 'daemon.sock'));
+					client.on('error', () => undefined);
+					const ready = yield* Deferred.make<void>();
+					let received = '';
+					client.on('data', (chunk) => {
+						received += chunk.toString();
+						if (received.includes('"requestId":"tail","ok":true')) {
+							client.pause();
+							Effect.runFork(Deferred.succeed(ready, undefined));
+						}
+					});
+					yield* Effect.promise(
+						() =>
+							new Promise<void>((resolve) => client.once('connect', resolve)),
+					);
+					client.write(
+						`${JSON.stringify({ version: 1, requestId: 'tail', method: 'tail', params: { runId: 'run', serviceName: 'web' } })}\n`,
+					);
+					yield* Deferred.await(ready).pipe(Effect.timeout('1 second'));
+					const onData = state.terminal.onData.mock.calls[0]?.[0];
+					if (typeof onData !== 'function')
+						return yield* Effect.die('Missing PTY output callback');
+					for (let index = 0; index < 128; index += 1)
+						onData('x'.repeat(64 * 1024));
+					const started = performance.now();
+					const results = yield* Effect.all(
+						[daemon.request(list), daemon.request(stop)],
+						{ concurrency: 'unbounded' },
+					).pipe(Effect.timeout('1 second'));
+					const latency = performance.now() - started;
+					expect(results[0]).toHaveLength(1);
+					expect(results[1]).toMatchObject({ runId: 'run' });
+					expect(latency).toBeLessThan(500);
+					client.destroy();
+				}).pipe(
+					Effect.provide(
+						state.layerWithLogs(join(root, 'daemon.sock'), realLogs),
+					),
+					Effect.timeout('3 seconds'),
+				);
+			}),
+		),
+	);
+
 	it.live('disconnects when the socket cannot accept an overflow frame', () =>
 		runTest(
 			Effect.gen(function* () {
