@@ -153,6 +153,8 @@ export const makeRunStart = (options: {
 					});
 					const address = { runId: run.runId, serviceName: service.name };
 					let observedExit: ServiceExit | undefined;
+					let registeredLive: LiveService | undefined;
+					let exitNotified = false;
 					yield* options.output.start(address, terminal);
 					terminal.onData((data) => {
 						options.output.enqueue(address, data);
@@ -163,8 +165,12 @@ export const makeRunStart = (options: {
 							signal: event.signal,
 						};
 						observedExit = exit;
-						const live = options.terminals.get(serviceKey(address));
-						if (live !== undefined) live.exit = exit;
+						const live =
+							registeredLive ?? options.terminals.get(serviceKey(address));
+						if (live === undefined) return;
+						live.exit = exit;
+						if (exitNotified) return;
+						exitNotified = true;
 						options.onExited(address, exit);
 					});
 					const captured = yield* Effect.exit(
@@ -207,7 +213,12 @@ export const makeRunStart = (options: {
 						exit: observedExit,
 						lease: undefined,
 					};
+					registeredLive = live;
 					options.terminals.set(serviceKey(address), live);
+					if (observedExit !== undefined && !exitNotified) {
+						exitNotified = true;
+						options.onExited(address, observedExit);
+					}
 					yield* Effect.gen(function* () {
 						const stored = yield* options.registry.get(run.runId);
 						const services = stored.services.map((candidate) =>
