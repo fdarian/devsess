@@ -102,6 +102,37 @@ describe('live process group ownership', () => {
 		}),
 	);
 
+	it.live('bounds ps fallback checks by elapsed time', () =>
+		Effect.gen(function* () {
+			vi.useFakeTimers();
+			const group = fakeGroup();
+			group.kill.mockImplementation((_pid, signal) => {
+				if (signal === 0)
+					throw Object.assign(new Error('operation not permitted'), {
+						code: 'EPERM',
+					});
+				if (!group.state.groupAlive) throw missing();
+				return true;
+			});
+			const processes = yield* Processes.make;
+			vi.clearAllMocks();
+			expect(yield* processes.groupAlive(98765)).toBe(true);
+			const groupPsCalls = () =>
+				vi
+					.mocked(execFile)
+					.mock.calls.filter(
+						(call) => Array.isArray(call[1]) && call[1][0] === '-g',
+					).length;
+			expect(groupPsCalls()).toBe(1);
+			vi.advanceTimersByTime(300);
+			expect(yield* processes.groupAlive(98765)).toBe(true);
+			expect(groupPsCalls()).toBe(1);
+			vi.advanceTimersByTime(250);
+			expect(yield* processes.groupAlive(98765)).toBe(true);
+			expect(groupPsCalls()).toBe(2);
+		}),
+	);
+
 	it.live('refuses to signal a recovered group after its leader exits', () =>
 		Effect.gen(function* () {
 			const group = fakeGroup();

@@ -1,12 +1,20 @@
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { Context, Effect, Layer, Schema, Semaphore } from 'effect';
+import {
+	Context,
+	Deferred,
+	Effect,
+	Exit,
+	Layer,
+	Schema,
+	Semaphore,
+} from 'effect';
 import {
 	GROUP_LIVENESS_BACKOFF_INITIAL_MS,
 	GROUP_LIVENESS_BACKOFF_MAX_MS,
 	PROCESS_INSPECTION_TIMEOUT_MS,
 	TERMINATION_KILL_SIGNAL,
-	TERMINATION_POLL_ATTEMPTS,
+	TERMINATION_PHASE_TIMEOUT_MS,
 	TERMINATION_POLL_INTERVAL_MS,
 	TERMINATION_TERM_SIGNAL,
 } from './termination';
@@ -177,9 +185,10 @@ const readGroupMembers = (processGroupId: number) =>
 	});
 
 type GroupLivenessFallback = {
-	readonly alive: boolean;
-	readonly expiresAt: number;
-	readonly delayMs: number;
+	alive: boolean | undefined;
+	nextCheckAt: number;
+	delayMs: number;
+	inFlight: Deferred.Deferred<boolean, ProcessError> | undefined;
 };
 
 const groupIsAlive = (
@@ -205,27 +214,41 @@ const groupIsAlive = (
 						const code = (error.cause as NodeJS.ErrnoException).code;
 						if (code !== 'EPERM') return yield* error;
 						const cached = fallbacks.get(processGroupId);
-						if (cached !== undefined && cached.expiresAt > Date.now())
+						if (cached?.inFlight !== undefined)
+							return yield* Deferred.await(cached.inFlight);
+						if (cached?.alive !== undefined && cached.nextCheckAt > Date.now())
 							return cached.alive;
-						return yield* readGroupMembers(processGroupId).pipe(
-							Effect.tap((alive) =>
-								Effect.sync(() => {
-									const previous = fallbacks.get(processGroupId);
-									const delayMs =
-										previous === undefined
-											? GROUP_LIVENESS_BACKOFF_INITIAL_MS
-											: Math.min(
-													previous.delayMs * 2,
-													GROUP_LIVENESS_BACKOFF_MAX_MS,
-												);
-									fallbacks.set(processGroupId, {
-										alive,
-										expiresAt: Date.now() + delayMs,
-										delayMs,
-									});
-								}),
-							),
-						);
+						const state: GroupLivenessFallback = cached ?? {
+							alive: undefined,
+							nextCheckAt: 0,
+							delayMs: GROUP_LIVENESS_BACKOFF_INITIAL_MS,
+							inFlight: undefined,
+						};
+						const pending = yield* Deferred.make<boolean, ProcessError>();
+						state.inFlight = pending;
+						fallbacks.set(processGroupId, state);
+						const result = yield* Effect.exit(readGroupMembers(processGroupId));
+						state.inFlight = undefined;
+						if (Exit.isSuccess(result)) {
+							const checkedAt = Date.now();
+							if (fallbacks.get(processGroupId) === state) {
+								state.delayMs = Math.min(
+									state.delayMs * 2,
+									GROUP_LIVENESS_BACKOFF_MAX_MS,
+								);
+								state.alive = result.value;
+								state.nextCheckAt =
+									checkedAt +
+									Math.max(state.delayMs, PROCESS_INSPECTION_TIMEOUT_MS);
+							}
+							yield* Deferred.succeed(pending, result.value);
+						} else {
+							if (fallbacks.get(processGroupId) === state)
+								state.nextCheckAt = Date.now() + PROCESS_INSPECTION_TIMEOUT_MS;
+							yield* Deferred.failCause(pending, result.cause);
+						}
+						if (Exit.isSuccess(result)) return result.value;
+						return yield* Effect.failCause(result.cause);
 					}),
 				),
 			);
@@ -241,19 +264,67 @@ const invalidIdentity = (identity: ProcessIdentity) =>
 const waitForGroupExit = (
 	groupAlive: (processGroupId: number) => Effect.Effect<boolean, ProcessError>,
 	processGroupId: number,
-	remaining: number,
+	deadline: number,
 ): Effect.Effect<boolean, ProcessError> =>
-	groupAlive(processGroupId).pipe(
-		Effect.flatMap((alive) => {
-			if (!alive) return Effect.succeed(true);
-			if (remaining <= 0) return Effect.succeed(false);
-			return Effect.sleep(`${TERMINATION_POLL_INTERVAL_MS} millis`).pipe(
-				Effect.andThen(
-					waitForGroupExit(groupAlive, processGroupId, remaining - 1),
-				),
-			);
-		}),
-	);
+	Effect.gen(function* () {
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) return false;
+		const alive = yield* groupAlive(processGroupId).pipe(
+			Effect.timeoutOrElse({
+				duration: `${remaining} millis`,
+				orElse: () => Effect.succeed(undefined),
+			}),
+		);
+		if (alive === undefined) return false;
+		if (!alive) return true;
+		const sleep = Math.min(TERMINATION_POLL_INTERVAL_MS, deadline - Date.now());
+		if (sleep <= 0) return false;
+		yield* Effect.sleep(`${sleep} millis`);
+		return yield* waitForGroupExit(groupAlive, processGroupId, deadline);
+	});
+
+type TerminationHooks = {
+	readonly processGroupId: number;
+	readonly groupAlive: (
+		processGroupId: number,
+	) => Effect.Effect<boolean, ProcessError>;
+	readonly signal: (
+		signal: NodeJS.Signals,
+	) => Effect.Effect<boolean, ProcessError>;
+	readonly canEscalate: Effect.Effect<boolean, ProcessError>;
+};
+
+const terminateWithEscalation = (
+	hooks: TerminationHooks,
+): Effect.Effect<number | undefined, ProcessError> =>
+	Effect.gen(function* () {
+		const termSent = yield* hooks.signal('SIGTERM');
+		if (!termSent) return undefined;
+		const termDeadline = Date.now() + TERMINATION_PHASE_TIMEOUT_MS;
+		if (
+			yield* waitForGroupExit(
+				hooks.groupAlive,
+				hooks.processGroupId,
+				termDeadline,
+			)
+		)
+			return TERMINATION_TERM_SIGNAL;
+		if (!(yield* hooks.canEscalate)) return undefined;
+		const killSent = yield* hooks.signal('SIGKILL');
+		if (!killSent) return undefined;
+		const killDeadline = Date.now() + TERMINATION_PHASE_TIMEOUT_MS;
+		if (
+			!(yield* waitForGroupExit(
+				hooks.groupAlive,
+				hooks.processGroupId,
+				killDeadline,
+			))
+		)
+			return yield* new ProcessError({
+				message: `Process group ${hooks.processGroupId} survived SIGKILL`,
+			});
+		return TERMINATION_KILL_SIGNAL;
+	});
 
 export class Processes extends Context.Service<Processes>()(
 	'devsess/cli/Processes',
@@ -310,49 +381,30 @@ export class Processes extends Context.Service<Processes>()(
 							});
 						return;
 					}
-					let termSent = true;
-					yield* signalGroup(identity.processGroupId, 'SIGTERM').pipe(
-						Effect.catchTag('ProcessError', (error) =>
-							isGoneCause(error.cause)
-								? Effect.sync(() => {
-										termSent = false;
-									})
-								: error,
-						),
-					);
-					if (
-						yield* waitForGroupExit(
-							groupAlive,
-							identity.processGroupId,
-							TERMINATION_POLL_ATTEMPTS,
-						)
-					)
-						return termSent ? TERMINATION_TERM_SIGNAL : undefined;
-					if (!force && !(yield* owns(identity)))
-						return yield* new ProcessError({
-							message: `Cannot safely escalate recovered process group ${identity.processGroupId} after its leader changed`,
-						});
-					let killSent = true;
-					yield* signalGroup(identity.processGroupId, 'SIGKILL').pipe(
-						Effect.catchTag('ProcessError', (error) =>
-							isGoneCause(error.cause)
-								? Effect.sync(() => {
-										killSent = false;
-									})
-								: error,
-						),
-					);
-					if (
-						!(yield* waitForGroupExit(
-							groupAlive,
-							identity.processGroupId,
-							TERMINATION_POLL_ATTEMPTS,
-						))
-					)
-						return yield* new ProcessError({
-							message: `Process group ${identity.processGroupId} survived SIGKILL`,
-						});
-					return killSent ? TERMINATION_KILL_SIGNAL : undefined;
+					const signal = (value: NodeJS.Signals) =>
+						signalGroup(identity.processGroupId, value).pipe(
+							Effect.as(true),
+							Effect.catchTag('ProcessError', (error) =>
+								isGoneCause(error.cause) ? Effect.succeed(false) : error,
+							),
+						);
+					const canEscalate = force
+						? Effect.succeed(true)
+						: owns(identity).pipe(
+								Effect.flatMap((owned) =>
+									owned
+										? Effect.succeed(true)
+										: new ProcessError({
+												message: `Cannot safely escalate recovered process group ${identity.processGroupId} after its leader changed`,
+											}),
+								),
+							);
+					return yield* terminateWithEscalation({
+						processGroupId: identity.processGroupId,
+						groupAlive,
+						signal,
+						canEscalate,
+					});
 				});
 			const captureLive = (
 				pid: number,
@@ -387,29 +439,23 @@ export class Processes extends Context.Service<Processes>()(
 								}),
 							);
 						});
-					const wait = (
-						attempts: number,
-					): Effect.Effect<boolean, ProcessError> =>
-						Effect.gen(function* () {
-							if (!(yield* signal(0))) return true;
-							if (attempts === 0) return false;
-							yield* Effect.sleep(`${TERMINATION_POLL_INTERVAL_MS} millis`);
-							return yield* wait(attempts - 1);
-						});
+					const liveGroupAlive = (processGroupId: number) =>
+						groupAlive(processGroupId).pipe(
+							Effect.tap((alive) =>
+								Effect.sync(() => {
+									if (!alive) valid = false;
+								}),
+							),
+						);
 					/** Only newly owned PTYs get this capability; never reconstruct it from saved PIDs.
 					 * Unix group IDs have a disappearance/reuse race between observations, so use it
 					 * immediately on leader exit and invalidate it permanently on observed disappearance. */
 					const terminate = permit.withPermit(
-						Effect.gen(function* () {
-							if (!(yield* signal('SIGTERM'))) return undefined;
-							if (yield* wait(TERMINATION_POLL_ATTEMPTS))
-								return TERMINATION_TERM_SIGNAL;
-							if (!(yield* signal('SIGKILL'))) return undefined;
-							if (yield* wait(TERMINATION_POLL_ATTEMPTS))
-								return TERMINATION_KILL_SIGNAL;
-							return yield* new ProcessError({
-								message: `Process group ${identity.processGroupId} survived SIGKILL`,
-							});
+						terminateWithEscalation({
+							processGroupId: identity.processGroupId,
+							groupAlive: liveGroupAlive,
+							signal,
+							canEscalate: Effect.succeed(true),
 						}),
 					);
 					return { identity, terminate } satisfies LiveProcessOwnership;
