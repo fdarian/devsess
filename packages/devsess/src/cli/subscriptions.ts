@@ -2,6 +2,7 @@ import type { Socket } from 'node:net';
 import { Effect, Stream } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
+import { DaemonError } from './daemon-errors';
 import type { ServiceExit } from './exit-status';
 import type { LogAddress, LogsService } from './logs';
 import {
@@ -67,6 +68,10 @@ export const makeSubscriptions = (options: {
 		Effect.gen(function* () {
 			const state = options.sockets.get(socket);
 			if (state === undefined) return;
+			if (state.subscriptions.has(requestId))
+				return yield* new DaemonError({
+					message: `Subscription request id ${requestId} is already in flight`,
+				});
 			const listener = (event: {
 				readonly data: string;
 				readonly offset: number;

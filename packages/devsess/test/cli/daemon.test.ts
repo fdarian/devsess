@@ -189,6 +189,31 @@ const streamingLogs = (
 		}).pipe(Effect.tap(() => Deferred.succeed(subscribed, undefined)));
 	return Logs.of({ append, replayAndSubscribe });
 };
+const trackedLogs = () => {
+	let activeSubscriptions = 0;
+	const logs = Logs.of({
+		append: (_address: LogAddress, data: string) =>
+			Effect.succeed({ data, offset: data.length }),
+		replayAndSubscribe: () =>
+			Effect.sync(() => {
+				activeSubscriptions += 1;
+				let released = false;
+				return {
+					replay: [] as Array<LogEvent>,
+					flush: Effect.void,
+					unsubscribe: Effect.sync(() => {
+						if (released) return;
+						released = true;
+						activeSubscriptions -= 1;
+					}),
+				};
+			}),
+	});
+	return {
+		logs,
+		activeSubscriptions: () => activeSubscriptions,
+	};
+};
 const fixture = () => {
 	const records = new Map<string, RunRecord>();
 	const get = (runId: string) =>
@@ -398,6 +423,61 @@ describe('daemon lifetime and failure handling', () => {
 				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
 			}),
 		),
+	);
+
+	it.live(
+		'rejects duplicate in-flight subscription ids without leaking listeners',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const tracked = trackedLogs();
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						yield* daemon.request(start());
+						const socket = new Socket();
+						const written: Array<string> = [];
+						vi.spyOn(socket, 'write').mockImplementation((chunk) => {
+							written.push(
+								typeof chunk === 'string' ? chunk : chunk.toString(),
+							);
+							return true;
+						});
+						lastServer().emit('connection', socket);
+						const tail = `${JSON.stringify({ version: 1, requestId: 'tail', method: 'tail', params: { runId: 'run', serviceName: 'web' } })}\n`;
+						socket.emit('data', Buffer.from(tail));
+						for (let attempt = 0; attempt < 100; attempt += 1) {
+							if (written.some((frame) => frame.includes('"ok":true'))) break;
+							yield* Effect.sleep('1 millis');
+						}
+						expect(written.some((frame) => frame.includes('"ok":true'))).toBe(
+							true,
+						);
+						expect(tracked.activeSubscriptions()).toBe(1);
+						socket.emit('data', Buffer.from(tail));
+						for (let attempt = 0; attempt < 100; attempt += 1) {
+							if (written.some((frame) => frame.includes('already in flight')))
+								break;
+							yield* Effect.sleep('1 millis');
+						}
+						expect(
+							written.some((frame) => frame.includes('already in flight')),
+						).toBe(true);
+						expect(tracked.activeSubscriptions()).toBe(1);
+						socket.emit('close');
+						for (let attempt = 0; attempt < 100; attempt += 1) {
+							if (tracked.activeSubscriptions() === 0) break;
+							yield* Effect.sleep('1 millis');
+						}
+						expect(tracked.activeSubscriptions()).toBe(0);
+					}).pipe(
+						Effect.provide(
+							state.layerWithLogs(join(root, 'daemon.sock'), tracked.logs),
+						),
+					);
+				}),
+			),
 	);
 
 	it.live('reports termination failures and keeps failed stops active', () =>
