@@ -1079,6 +1079,68 @@ describe('daemon lifetime and failure handling', () => {
 		),
 	);
 
+	it.live(
+		'replays a full retained window before completing a finished tail',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const realLogs = yield* Logs.pipe(
+						Effect.provide(
+							Logs.layer({ dataDirectory: root, maxBytes: 1024 * 1024 }),
+						),
+					);
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						yield* daemon.request(start());
+						const onData = state.terminal.onData.mock.calls[0]?.[0];
+						const onExit = state.terminal.onExit.mock.calls[0]?.[0];
+						if (typeof onData !== 'function' || typeof onExit !== 'function')
+							return yield* Effect.die('Missing PTY callbacks');
+						onData('x'.repeat(1024 * 1024));
+						onExit({ exitCode: 0 });
+						const listed = (yield* daemon.request(list)) as Array<RunRecord>;
+						expect(listed.find((run) => run.runId === 'run')?.state).toBe(
+							'exited',
+						);
+						const client = createConnection(join(root, 'daemon.sock'));
+						client.on('error', () => undefined);
+						const completed = yield* Deferred.make<void>();
+						let received = '';
+						client.on('data', (chunk) => {
+							received += chunk.toString();
+							if (received.includes('"event":"exit"'))
+								Effect.runFork(Deferred.succeed(completed, undefined));
+						});
+						yield* Effect.promise(
+							() =>
+								new Promise<void>((resolve) => client.once('connect', resolve)),
+						);
+						client.write(
+							`${JSON.stringify({ version: 1, requestId: 'tail', method: 'tail', params: { runId: 'run', serviceName: 'web' } })}\n`,
+						);
+						yield* Deferred.await(completed).pipe(Effect.timeout('2 seconds'));
+						const frames = received
+							.trim()
+							.split('\n')
+							.map(
+								(line) => JSON.parse(line) as { event?: string; data?: string },
+							);
+						const output = frames.find((frame) => frame.event === 'output');
+						expect(output?.data).toHaveLength(1024 * 1024);
+						expect(frames.some((frame) => frame.event === 'exit')).toBe(true);
+						client.destroy();
+					}).pipe(
+						Effect.provide(
+							state.layerWithLogs(join(root, 'daemon.sock'), realLogs),
+						),
+						Effect.timeout('4 seconds'),
+					);
+				}),
+			),
+	);
+
 	it.live('disconnects when the socket cannot accept an overflow frame', () =>
 		runTest(
 			Effect.gen(function* () {

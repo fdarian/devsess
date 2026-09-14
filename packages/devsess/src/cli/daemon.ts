@@ -472,14 +472,15 @@ export const makeDaemon = (options: {
 							offset: event.offset,
 						}).pipe(Effect.catch(() => Effect.void)),
 				);
-				for (const event of subscription.replay)
-					yield* send(socket, {
+				yield* state.writer.sendReplay(
+					subscription.replay.map((event) => ({
 						version: PROTOCOL_VERSION,
 						requestId,
-						event: 'output',
+						event: 'output' as const,
 						data: event.data,
 						offset: event.offset,
-					});
+					})),
+				);
 				state.subscriptions.set(requestId, {
 					address,
 					flush: subscription.flush,
