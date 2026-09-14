@@ -14,6 +14,12 @@ type QueuedFrame = {
 	readonly bytes: number;
 };
 
+type ReplayRequest = {
+	readonly frames: Array<QueuedFrame>;
+	index: number;
+	readonly resolve: () => void;
+};
+
 type SocketWriterOptions = {
 	readonly maxBytes?: number;
 	readonly onClose: () => void;
@@ -21,6 +27,9 @@ type SocketWriterOptions = {
 
 export type SocketWriter = {
 	readonly send: (frame: SocketWriterFrame) => Effect.Effect<void>;
+	readonly sendReplay: (
+		frames: ReadonlyArray<SocketWriterFrame>,
+	) => Effect.Effect<void>;
 	readonly overflow: (requestId: string) => Effect.Effect<void>;
 	readonly awaitIdle: Effect.Effect<void>;
 	readonly close: () => void;
@@ -36,6 +45,7 @@ export const makeSocketWriter = (
 	const maxBytes =
 		options.maxBytes === undefined ? MAX_FRAME_BYTES : options.maxBytes;
 	const queue: Array<QueuedFrame> = [];
+	const replayQueue: Array<ReplayRequest> = [];
 	const drainWaiters = new Set<() => void>();
 	const idleWaiters = new Set<() => void>();
 	let queuedBytes = 0;
@@ -49,6 +59,8 @@ export const makeSocketWriter = (
 		idleWaiters.clear();
 		for (const resolve of drains) resolve();
 		for (const resolve of idles) resolve();
+		for (const replay of replayQueue) replay.resolve();
+		replayQueue.length = 0;
 	};
 	const releaseIdleWaiters = () => {
 		const idles = Array.from(idleWaiters);
@@ -63,6 +75,7 @@ export const makeSocketWriter = (
 		socket.off('close', onClose);
 		socket.off('error', onError);
 		releaseWaiters();
+		replayQueue.length = 0;
 		if (notify) options.onClose();
 	};
 	const onClose = () => cleanup(true);
@@ -93,6 +106,40 @@ export const makeSocketWriter = (
 	};
 	const pump = () => {
 		if (pumping || closed) return;
+		const replay = replayQueue[0];
+		if (replay !== undefined) {
+			const item = replay.frames[replay.index];
+			if (item === undefined) {
+				replayQueue.shift();
+				replay.resolve();
+				pump();
+				return;
+			}
+			pumping = true;
+			try {
+				const accepted = socket.write(item.encoded);
+				if (accepted) {
+					replay.index += 1;
+					pumping = false;
+					pump();
+					return;
+				}
+				void waitForDrain().then(() => {
+					if (closed) {
+						pumping = false;
+						return;
+					}
+					replay.index += 1;
+					pumping = false;
+					pump();
+				});
+			} catch {
+				pumping = false;
+				cleanup(true);
+				if (!socket.destroyed) socket.destroy();
+			}
+			return;
+		}
 		const item = queue.shift();
 		if (item === undefined) {
 			if (queuedBytes === 0) releaseIdleWaiters();
@@ -166,12 +213,37 @@ export const makeSocketWriter = (
 			queuedBytes += bytes;
 			pump();
 		});
+	const sendReplay = (frames: ReadonlyArray<SocketWriterFrame>) =>
+		Effect.promise(
+			() =>
+				new Promise<void>((resolve) => {
+					if (closed) {
+						resolve();
+						return;
+					}
+					replayQueue.push({
+						frames: frames.map((frame) => ({
+							encoded: `${JSON.stringify(frame)}\n`,
+							bytes: Buffer.byteLength(`${JSON.stringify(frame)}\n`),
+						})),
+						index: 0,
+						resolve,
+					});
+					pump();
+				}),
+		);
 	const overflow = (requestId: string) =>
 		Effect.sync(() => writeOverflow(requestId));
 	const awaitIdle = Effect.promise(
 		() =>
 			new Promise<void>((resolve) => {
-				if (closed || (!pumping && queue.length === 0 && queuedBytes === 0)) {
+				if (
+					closed ||
+					(!pumping &&
+						queue.length === 0 &&
+						replayQueue.length === 0 &&
+						queuedBytes === 0)
+				) {
 					resolve();
 					return;
 				}
@@ -180,6 +252,7 @@ export const makeSocketWriter = (
 	);
 	return {
 		send,
+		sendReplay,
 		overflow,
 		awaitIdle,
 		close: () => cleanup(false),
