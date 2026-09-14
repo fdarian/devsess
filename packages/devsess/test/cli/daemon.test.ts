@@ -346,6 +346,60 @@ describe('daemon lifetime and failure handling', () => {
 			),
 	);
 
+	it.live('releases close churn without waiting for lifecycle work', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				const entered = yield* Deferred.make<void>();
+				const blocked = yield* Deferred.make<void>();
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					yield* daemon.request(start());
+					state.terminate.mockImplementationOnce(() =>
+						Deferred.succeed(entered, undefined).pipe(
+							Effect.andThen(Deferred.await(blocked)),
+							Effect.as(15),
+						),
+					);
+					const onExit = state.terminal.onExit.mock.calls[0]?.[0];
+					if (onExit === undefined)
+						return yield* Effect.die('Missing PTY exit callback');
+					onExit({ exitCode: 0 });
+					yield* Deferred.await(entered).pipe(Effect.timeout('1 second'));
+					const client = new Socket();
+					const write = vi.spyOn(client, 'write').mockReturnValue(true);
+					lastServer().emit('connection', client);
+					client.emit(
+						'data',
+						Buffer.from(
+							`${JSON.stringify({ version: 1, requestId: 'attach', method: 'attach', params: { runId: 'run', serviceName: 'web' } })}\n`,
+						),
+					);
+					for (let attempt = 0; attempt < 100; attempt += 1) {
+						if (write.mock.calls.length > 0) break;
+						yield* Effect.sleep('1 millis');
+					}
+					expect(write).toHaveBeenCalled();
+					client.emit('close');
+					for (let attempt = 0; attempt < 100; attempt += 1) {
+						if (state.unsubscribe.mock.calls.length > 0) break;
+						yield* Effect.sleep('1 millis');
+					}
+					expect(state.unsubscribe).toHaveBeenCalledOnce();
+					for (let index = 0; index < 1000; index += 1) {
+						const socket = new Socket();
+						vi.spyOn(socket, 'write').mockReturnValue(true);
+						lastServer().emit('connection', socket);
+						socket.emit('close');
+					}
+					yield* Deferred.succeed(blocked, undefined);
+					yield* daemon.request(list).pipe(Effect.timeout('1 second'));
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
 	it.live('reports termination failures and keeps failed stops active', () =>
 		runTest(
 			Effect.gen(function* () {

@@ -29,7 +29,6 @@ export type ClientRequestMessage = {
 };
 
 export type LifecycleMessage =
-	| { readonly _tag: 'closed'; readonly socket: Socket }
 	| {
 			readonly _tag: 'exited';
 			readonly address: {
@@ -159,8 +158,6 @@ export const makeRequestDispatcher = (options: {
 		).pipe(Effect.as({}));
 	};
 	const handleLifecycle = (message: LifecycleMessage) => {
-		if (message._tag === 'closed')
-			return options.subscriptions.releaseSocket(message.socket);
 		if (message._tag === 'persistenceFailure')
 			return options.runStop
 				.stopRun(message.address.runId, false, message.address)
