@@ -7,26 +7,26 @@ import { resizePty, spawnPty, writePty } from '../../src/cli/pty';
 import { runTest } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
 
-const waitForOutput = (terminal: IPty, marker: string) =>
-	Effect.promise(
-		() =>
-			new Promise<void>((resolve) => {
-				const subscription = terminal.onData((data) => {
-					if (data.includes(marker)) {
-						subscription.dispose();
-						resolve();
-					}
-				});
-			}),
-	);
+const waitForOutput = (terminal: IPty, marker: string) => {
+	const promise = new Promise<void>((resolve) => {
+		const subscription = terminal.onData((data) => {
+			if (data.includes(marker)) {
+				subscription.dispose();
+				resolve();
+			}
+		});
+	});
+	return Effect.promise(() => promise);
+};
 
-const waitForExit = (terminal: IPty) =>
-	Effect.promise(
-		() =>
-			new Promise<{ exitCode: number; signal?: number }>((resolve) => {
-				terminal.onExit((event) => resolve(event));
-			}),
+const waitForExit = (terminal: IPty) => {
+	const promise = new Promise<{ exitCode: number; signal?: number }>(
+		(resolve) => {
+			terminal.onExit((event) => resolve(event));
+		},
 	);
+	return Effect.promise(() => promise);
+};
 
 const within = <A, E, R>(effect: Effect.Effect<A, E, R>, message: string) =>
 	effect.pipe(Effect.timeout('5 seconds'), Effect.withSpan(message));
