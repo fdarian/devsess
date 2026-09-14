@@ -314,6 +314,39 @@ describe('Logs', () => {
 		),
 	);
 
+	it.effect('discards a valid partial record before the next append', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const fileSystem = yield* FileSystem;
+				const path = yield* Path;
+				const directory = path.join(dataDirectory, 'logs', 'run');
+				const target = path.join(directory, 'web.jsonl');
+				yield* fileSystem.makeDirectory(directory, { recursive: true });
+				yield* fileSystem.writeFileString(
+					target,
+					'{"data":"partial","offset":7}',
+					{ mode: 0o600 },
+				);
+				const logs = yield* Logs.pipe(
+					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 1024 })),
+				);
+				const address = { runId: 'run', serviceName: 'web' };
+				yield* logs.append(address, 'next');
+				const subscription = yield* logs.replayAndSubscribe(
+					address,
+					0,
+					() => Effect.void,
+				);
+				expect(subscription.replay.map((event) => event.data)).toEqual([
+					'next',
+				]);
+				expect(yield* fileSystem.readFileString(target)).toContain('\n');
+				yield* subscription.unsubscribe;
+			}),
+		),
+	);
+
 	it.effect('ignores legacy JSON logs instead of rewriting them', () =>
 		runTest(
 			Effect.gen(function* () {
