@@ -260,9 +260,6 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 				.makeDirectory(path.dirname(current), { recursive: true })
 				.pipe(
 					Effect.andThen(
-						fileSystem.remove(previous).pipe(Effect.catch(() => Effect.void)),
-					),
-					Effect.andThen(
 						state.currentExists
 							? fileSystem.rename(current, previous)
 							: Effect.void,

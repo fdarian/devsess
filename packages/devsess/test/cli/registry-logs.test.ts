@@ -2,6 +2,7 @@ import { describe, expect, it } from '@effect/vitest';
 import { Deferred, Duration, Effect, Exit, Ref, Schema } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { Path } from 'effect/Path';
+import { vi } from 'vitest';
 import { LogAddressSchema, Logs } from '../../src/cli/logs';
 import {
 	Registry,
@@ -255,6 +256,8 @@ describe('Logs', () => {
 		runTest(
 			Effect.gen(function* () {
 				const dataDirectory = yield* makeTempDir;
+				const fileSystem = yield* FileSystem;
+				const remove = vi.spyOn(fileSystem, 'remove');
 				const logs = yield* Logs.pipe(
 					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 80 })),
 				);
@@ -269,7 +272,6 @@ describe('Logs', () => {
 				const values = subscription.replay.map((event) => event.data);
 				expect(values.length).toBeGreaterThan(0);
 				expect(values).toEqual(['d', 'e', 'f', 'g']);
-				const fileSystem = yield* FileSystem;
 				const path = yield* Path;
 				const directory = path.join(dataDirectory, 'logs', 'run');
 				expect(
@@ -281,6 +283,7 @@ describe('Logs', () => {
 				expect(
 					yield* fileSystem.exists(path.join(directory, 'web.2.jsonl')),
 				).toBe(false);
+				expect(remove).not.toHaveBeenCalled();
 				yield* subscription.unsubscribe;
 			}),
 		),
