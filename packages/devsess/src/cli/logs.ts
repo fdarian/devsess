@@ -168,20 +168,10 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 		): Effect.Effect<LogEvent, Schema.SchemaError> =>
 			Schema.decodeUnknownEffect(LogLineSchema)(line);
 		const decodeLines = (content: string) => {
-			const hasTrailingNewline = content.endsWith('\n');
 			const lines = content.split('\n');
-			const trailing = hasTrailingNewline ? '' : lines.pop();
+			lines.pop();
 			const complete = lines.filter((line) => line.length > 0);
-			return Effect.forEach(complete, decodeLine, { discard: false }).pipe(
-				Effect.flatMap((events) =>
-					trailing === undefined || trailing.length === 0
-						? Effect.succeed(events)
-						: decodeLine(trailing).pipe(
-								Effect.map((event) => [...events, event]),
-								Effect.catch(() => Effect.succeed(events)),
-							),
-				),
-			);
+			return Effect.forEach(complete, decodeLine, { discard: false });
 		};
 		const readSegment = (
 			target: string,
