@@ -37,6 +37,14 @@ export type SocketState = {
 
 export type Subscriptions = ReturnType<typeof makeSubscriptions>;
 
+type CompletionRecord = {
+	readonly completed: true;
+	readonly exit: ServiceExit;
+};
+
+const addressKey = (address: LogAddress) =>
+	`${address.runId}:${address.serviceName}`;
+
 export const makeSubscriptions = (options: {
 	readonly logs: LogsService;
 	readonly sockets: Map<Socket, SocketState>;
@@ -46,6 +54,15 @@ export const makeSubscriptions = (options: {
 		frame: DaemonResponse | DaemonEvent,
 	) => Effect.Effect<void>;
 }) => {
+	const completions = new Map<string, CompletionRecord>();
+	const complete = (address: LogAddress, exit: ServiceExit) => {
+		const key = addressKey(address);
+		const current = completions.get(key);
+		if (current !== undefined) return current;
+		const record: CompletionRecord = { completed: true, exit };
+		completions.set(key, record);
+		return record;
+	};
 	const removeSubscription = (
 		state: SocketState,
 		requestId: string,
@@ -133,13 +150,18 @@ export const makeSubscriptions = (options: {
 				ready,
 				active: undefined,
 				setupFiber: undefined,
-				exit,
+				exit: undefined,
 				cancelled: false,
 				finishing: false,
 				unsubscribed: false,
 				unsubscribeRequested: false,
 			};
 			state.subscriptions.set(requestId, reservation);
+			const completion =
+				exit === undefined
+					? completions.get(addressKey(address))
+					: complete(address, exit);
+			if (completion !== undefined) reservation.exit = completion.exit;
 			const listener = (event: {
 				readonly data: string;
 				readonly offset: number;
@@ -238,7 +260,7 @@ export const makeSubscriptions = (options: {
 					}),
 				),
 			);
-			if (exit !== undefined) {
+			if (reservation.exit !== undefined) {
 				const current = state.subscriptions.get(requestId);
 				if (current === reservation)
 					yield* finishSubscription(
@@ -246,38 +268,39 @@ export const makeSubscriptions = (options: {
 						state,
 						requestId,
 						reservation,
-						exit,
+						reservation.exit,
 					).pipe(Effect.forkScoped);
 			}
 		});
 	const finishSubscriptions = (address: LogAddress, exit: ServiceExit) =>
-		Effect.forEach(
-			Array.from(options.sockets.entries()),
-			(entry) => {
-				const socket = entry[0];
-				const state = entry[1];
-				return Effect.forEach(
-					Array.from(state.subscriptions.entries()),
-					(subscriptionEntry) => {
-						const requestId = subscriptionEntry[0];
-						const subscription = subscriptionEntry[1];
-						if (
-							`${subscription.address.runId}:${subscription.address.serviceName}` !==
-							`${address.runId}:${address.serviceName}`
-						)
-							return Effect.void;
-						return finishSubscription(
-							socket,
-							state,
-							requestId,
-							subscription,
-							exit,
-						).pipe(Effect.forkScoped, Effect.asVoid);
+		Effect.sync(() => complete(address, exit)).pipe(
+			Effect.flatMap((completion) =>
+				Effect.forEach(
+					Array.from(options.sockets.entries()),
+					(entry) => {
+						const socket = entry[0];
+						const state = entry[1];
+						return Effect.forEach(
+							Array.from(state.subscriptions.entries()),
+							(subscriptionEntry) => {
+								const requestId = subscriptionEntry[0];
+								const subscription = subscriptionEntry[1];
+								if (addressKey(subscription.address) !== addressKey(address))
+									return Effect.void;
+								return finishSubscription(
+									socket,
+									state,
+									requestId,
+									subscription,
+									completion.exit,
+								).pipe(Effect.forkScoped, Effect.asVoid);
+							},
+							{ discard: true },
+						);
 					},
 					{ discard: true },
-				);
-			},
-			{ discard: true },
+				),
+			),
 		);
 	const releaseSocket = (socket: Socket) =>
 		Effect.gen(function* () {
