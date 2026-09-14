@@ -21,14 +21,18 @@ export type Subscription = {
 	readonly address: LogAddress;
 	readonly ready: Deferred.Deferred<void>;
 	active: ActiveSubscription | undefined;
+	setupFiber: Fiber.Fiber<void, unknown> | undefined;
 	exit: ServiceExit | undefined;
+	cancelled: boolean;
 	finishing: boolean;
 	unsubscribed: boolean;
+	unsubscribeRequested: boolean;
 };
 
 export type SocketState = {
 	readonly subscriptions: Map<string, Subscription>;
 	readonly writer: SocketWriter;
+	closed: boolean;
 };
 
 export type Subscriptions = ReturnType<typeof makeSubscriptions>;
@@ -54,9 +58,13 @@ export const makeSubscriptions = (options: {
 	const unsubscribeSubscription = (subscription: Subscription) =>
 		Effect.suspend(() => {
 			if (subscription.unsubscribed) return Effect.void;
-			subscription.unsubscribed = true;
 			const active = subscription.active;
-			return active === undefined ? Effect.void : active.unsubscribe;
+			if (active === undefined) {
+				subscription.unsubscribeRequested = true;
+				return Effect.void;
+			}
+			subscription.unsubscribed = true;
+			return active.unsubscribe;
 		});
 	const finishSubscription = (
 		socket: Socket,
@@ -72,6 +80,12 @@ export const makeSubscriptions = (options: {
 			return Deferred.await(subscription.ready).pipe(
 				Effect.andThen(
 					Effect.suspend(() => {
+						if (state.closed || subscription.cancelled)
+							return unsubscribeSubscription(subscription).pipe(
+								Effect.andThen(
+									removeSubscription(state, requestId, subscription),
+								),
+							);
 						const active = subscription.active;
 						if (active === undefined)
 							return removeSubscription(state, requestId, subscription);
@@ -107,6 +121,8 @@ export const makeSubscriptions = (options: {
 		Effect.gen(function* () {
 			const state = options.sockets.get(socket);
 			if (state === undefined) return;
+			if (state.closed)
+				return yield* new DaemonError({ message: 'Socket is closed' });
 			if (state.subscriptions.has(requestId))
 				return yield* new DaemonError({
 					message: `Subscription request id ${requestId} is already in flight`,
@@ -116,9 +132,12 @@ export const makeSubscriptions = (options: {
 				address,
 				ready,
 				active: undefined,
+				setupFiber: undefined,
 				exit,
+				cancelled: false,
 				finishing: false,
 				unsubscribed: false,
+				unsubscribeRequested: false,
 			};
 			state.subscriptions.set(requestId, reservation);
 			const listener = (event: {
@@ -135,6 +154,7 @@ export const makeSubscriptions = (options: {
 					})
 					.pipe(Effect.catch(() => Effect.void));
 			const setup = Effect.gen(function* () {
+				if (state.closed || reservation.cancelled) return;
 				const lazy = options.logs.replayAndSubscribeLazy;
 				const subscribed =
 					lazy === undefined
@@ -144,6 +164,14 @@ export const makeSubscriptions = (options: {
 					flush: subscribed.flush,
 					unsubscribe: subscribed.unsubscribe,
 				};
+				if (
+					state.closed ||
+					reservation.cancelled ||
+					reservation.unsubscribeRequested
+				) {
+					yield* unsubscribeSubscription(reservation);
+					return;
+				}
 				yield* Deferred.succeed(reservation.ready, undefined);
 				const replaySource = subscribed.replay;
 				const replay: Effect.Effect<void, unknown, FileSystem | Path> =
@@ -186,14 +214,28 @@ export const makeSubscriptions = (options: {
 					),
 					Effect.forkScoped,
 				);
-			}).pipe(Effect.ensuring(Deferred.succeed(reservation.ready, undefined)));
+			}).pipe(
+				Effect.onInterrupt(() => unsubscribeSubscription(reservation)),
+				Effect.ensuring(Deferred.succeed(reservation.ready, undefined)),
+			);
 			const setupFiber = yield* setup.pipe(Effect.forkScoped);
+			reservation.setupFiber = setupFiber;
 			yield* Fiber.join(setupFiber).pipe(
 				Effect.catchCause((cause) =>
-					unsubscribeSubscription(reservation).pipe(
-						Effect.andThen(removeSubscription(state, requestId, reservation)),
-						Effect.andThen(Effect.failCause(cause)),
-					),
+					state.closed || reservation.cancelled
+						? Effect.void
+						: unsubscribeSubscription(reservation).pipe(
+								Effect.andThen(
+									removeSubscription(state, requestId, reservation),
+								),
+								Effect.andThen(Effect.failCause(cause)),
+							),
+				),
+				Effect.ensuring(
+					Effect.sync(() => {
+						if (reservation.setupFiber === setupFiber)
+							reservation.setupFiber = undefined;
+					}),
 				),
 			);
 			if (exit !== undefined) {
@@ -241,11 +283,23 @@ export const makeSubscriptions = (options: {
 		Effect.gen(function* () {
 			const state = options.sockets.get(socket);
 			if (state !== undefined) {
+				state.closed = true;
 				state.writer.close();
-				for (const subscription of state.subscriptions.values())
-					yield* unsubscribeSubscription(subscription);
+				const subscriptions = Array.from(state.subscriptions.values());
 				state.subscriptions.clear();
 				options.sockets.delete(socket);
+				for (const subscription of subscriptions) {
+					subscription.cancelled = true;
+					yield* Deferred.succeed(subscription.ready, undefined);
+					const setupFiber = subscription.setupFiber;
+					if (setupFiber !== undefined)
+						Effect.runFork(
+							Fiber.interrupt(setupFiber).pipe(
+								Effect.catchCause(() => Effect.void),
+							),
+						);
+					yield* unsubscribeSubscription(subscription);
+				}
 			}
 			if (options.onRelease !== undefined) yield* options.onRelease(socket);
 		});
