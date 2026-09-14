@@ -220,6 +220,7 @@ export const makeDaemon = (options: {
 			sockets.set(socket, {
 				subscriptions: new Map(),
 				writer,
+				closed: false,
 			});
 			let remainder = '';
 			const decoder = new StringDecoder('utf8');

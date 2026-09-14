@@ -62,6 +62,7 @@ const makeSocket = () => {
 	const state: SocketState = {
 		subscriptions: new Map(),
 		writer,
+		closed: false,
 	};
 	return { socket, state, written };
 };
@@ -108,6 +109,45 @@ describe('subscription setup races', () => {
 						),
 					).toBe(true);
 					expect(sent).toContain('exit');
+				}),
+			),
+		),
+	);
+
+	it.live('cancels replay setup when the socket closes', () =>
+		runTest(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const setupStarted = yield* Deferred.make<void>();
+					const releaseSetup = yield* Deferred.make<void>();
+					const cleanupDone = yield* Deferred.make<void>();
+					const gated = makeGatedLogs(setupStarted, releaseSetup, cleanupDone);
+					const configured = makeSocket();
+					const sockets = new Map([[configured.socket, configured.state]]);
+					const subscriptions = makeSubscriptions({
+						logs: gated.logs,
+						sockets,
+						send: () => Effect.void,
+					});
+					const subscribeFiber = yield* subscriptions
+						.subscribe(configured.socket, 'tail', address, 0)
+						.pipe(Effect.forkScoped({ startImmediately: true }));
+					yield* Deferred.await(setupStarted).pipe(Effect.timeout('1 second'));
+					const releaseFiber = yield* subscriptions
+						.releaseSocket(configured.socket)
+						.pipe(Effect.forkScoped({ startImmediately: true }));
+					expect(configured.state.closed).toBe(true);
+					yield* Deferred.await(cleanupDone).pipe(Effect.timeout('1 second'));
+					yield* Fiber.join(subscribeFiber).pipe(
+						Effect.catchCause(() => Effect.void),
+					);
+					yield* Fiber.join(releaseFiber).pipe(
+						Effect.catchCause(() => Effect.void),
+					);
+					expect(gated.activeSubscriptions()).toBe(0);
+					expect(gated.unsubscribeCount()).toBe(1);
+					expect(sockets.has(configured.socket)).toBe(false);
+					expect(configured.state.subscriptions.size).toBe(0);
 				}),
 			),
 		),
