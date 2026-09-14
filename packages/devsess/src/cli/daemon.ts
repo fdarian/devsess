@@ -755,7 +755,11 @@ export const makeDaemon = (options: {
 					),
 				);
 			}).pipe(Effect.uninterruptible);
-		const stopRun = (runId: string, force: boolean) =>
+		const stopRun = (
+			runId: string,
+			force: boolean,
+			failedAddress?: LogAddress,
+		) =>
 			Effect.gen(function* () {
 				const run = yield* registry.get(runId);
 				const orphanedServices = new Set(
@@ -792,11 +796,16 @@ export const makeDaemon = (options: {
 							live === undefined ? service.process : live.ownership.identity;
 						if (identity === undefined) {
 							if (service.state !== 'stopping') return service;
-							const exit = stoppedExit(live);
+							const failed =
+								failedAddress !== undefined &&
+								serviceKey(failedAddress) === serviceKey(address);
+							const exit = failed
+								? { exitCode: 1, signal: undefined }
+								: stoppedExit(live);
 							yield* finishSubscriptions(address, exit);
 							return {
 								...service,
-								state: 'exited' as const,
+								state: failed ? ('failed' as const) : ('exited' as const),
 								exitCode: exit.exitCode,
 								signal: exit.signal,
 								exitStatus: undefined,
@@ -839,12 +848,17 @@ export const makeDaemon = (options: {
 						const terminationSignal = Exit.isSuccess(result)
 							? result.value
 							: undefined;
-						const exit = stoppedExit(live, terminationSignal);
+						const failed =
+							failedAddress !== undefined &&
+							serviceKey(failedAddress) === serviceKey(address);
+						const exit = failed
+							? { exitCode: 1, signal: terminationSignal }
+							: stoppedExit(live, terminationSignal);
 						yield* finishSubscriptions(address, exit);
 						return {
 							...service,
 							state:
-								service.state === 'failed'
+								failed || service.state === 'failed'
 									? ('failed' as const)
 									: ('exited' as const),
 							exitCode: exit.exitCode,
@@ -943,7 +957,10 @@ export const makeDaemon = (options: {
 		const handle = (message: RequestMessage) => {
 			if (message._tag === 'closed') return releaseSocket(message.socket);
 			if (message._tag === 'persistenceFailure')
-				return Effect.logError(message.cause).pipe(Effect.asVoid);
+				return stopRun(message.address.runId, false, message.address).pipe(
+					Effect.catch((cause) => Effect.logError(cause)),
+					Effect.asVoid,
+				);
 			if (message._tag === 'exited') {
 				const key = serviceKey(message.address);
 				const live = terminals.get(key);
