@@ -203,6 +203,31 @@ describe('Logs', () => {
 		),
 	);
 
+	it.effect('disconnects an overflowing listener without blocking append', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const logs = yield* Logs.pipe(
+					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 1024 * 1024 })),
+				);
+				const overflowed = yield* Deferred.make<void>();
+				const subscription = yield* logs.replayAndSubscribe(
+					{ runId: 'run', serviceName: 'web' },
+					0,
+					() => Effect.never,
+					() => Deferred.succeed(overflowed, undefined),
+				);
+				for (let index = 0; index < 3; index += 1)
+					yield* logs.append(
+						{ runId: 'run', serviceName: 'web' },
+						'x'.repeat(600 * 1024),
+					);
+				yield* Deferred.await(overflowed).pipe(Effect.timeout('1 second'));
+				yield* subscription.unsubscribe;
+			}),
+		),
+	);
+
 	it.effect('retains a burst while a subscription listener is paused', () =>
 		runTest(
 			Effect.gen(function* () {
