@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest';
-import { Deferred, Duration, Effect, Exit, Ref, Schema } from 'effect';
+import { Deferred, Duration, Effect, Exit, Ref, Schema, Stream } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { Path } from 'effect/Path';
 import { vi } from 'vitest';
@@ -374,6 +374,59 @@ describe('Logs', () => {
 					() => Effect.void,
 				);
 				expect(subscription.replay).toEqual([]);
+				yield* subscription.unsubscribe;
+			}),
+		),
+	);
+
+	it.effect('keeps lazy replay offsets ordered across rotation', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const fileSystem = yield* FileSystem;
+				const rename = vi.spyOn(fileSystem, 'rename');
+				const logs = yield* Logs.pipe(
+					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 64 })),
+				);
+				const address = { runId: 'run', serviceName: 'web' };
+				for (const value of ['a', 'b', 'c', 'd', 'e', 'f'])
+					yield* logs.append(address, value);
+				rename.mockClear();
+				const liveEvents: Array<{ data: string; offset: number }> = [];
+				const lazy = logs.replayAndSubscribeLazy;
+				if (lazy === undefined)
+					return yield* Effect.die('Missing lazy log replay support');
+				const subscription = yield* lazy(address, 0, (event) =>
+					Effect.sync(() => {
+						liveEvents.push(event);
+					}),
+				);
+				const replaySource = subscription.replay;
+				if (Array.isArray(replaySource))
+					return yield* Effect.die('Lazy replay returned an eager array');
+				yield* logs.append(address, 'live');
+				expect(rename).toHaveBeenCalled();
+				const replayChunk = yield* Stream.runCollect(replaySource);
+				const replay = Array.from(replayChunk);
+				if (subscription.completeReplay === undefined)
+					return yield* Effect.die('Replay completion signal is missing');
+				yield* subscription.completeReplay;
+				yield* subscription.flush;
+				const events = [...replay, ...liveEvents];
+				expect(liveEvents).toHaveLength(1);
+				expect(new Set(events.map((event) => event.offset)).size).toBe(
+					events.length,
+				);
+				for (let index = 1; index < events.length; index += 1) {
+					const previous = events[index - 1];
+					const current = events[index];
+					if (previous === undefined || current === undefined)
+						return yield* Effect.die('Replay event disappeared');
+					expect(current.offset).toBeGreaterThan(previous.offset);
+					expect(current.offset).toBe(
+						previous.offset + Buffer.byteLength(current.data),
+					);
+				}
 				yield* subscription.unsubscribe;
 			}),
 		),

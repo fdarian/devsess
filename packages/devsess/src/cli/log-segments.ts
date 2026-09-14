@@ -25,6 +25,7 @@ const textEncoder = new TextEncoder();
 
 type Segment = {
 	readonly events: Array<LogEvent>;
+	readonly content: string;
 	readonly bytes: number;
 	readonly exists: boolean;
 	readonly partial: boolean;
@@ -37,13 +38,20 @@ type LogState = {
 	currentPartial: boolean;
 };
 
-export type LogReplay =
-	| ReadonlyArray<LogEvent>
-	| Stream.Stream<
-			LogEvent,
-			PlatformError | Schema.SchemaError,
-			FileSystem | Path
-	  >;
+export type LogReplayStream = Stream.Stream<
+	LogEvent,
+	Schema.SchemaError,
+	never
+>;
+
+export type LogReplay = ReadonlyArray<LogEvent> | LogReplayStream;
+
+export type LogReplaySnapshot = {
+	readonly after: number;
+	readonly cutoff: number;
+	readonly previous: string;
+	readonly current: string;
+};
 
 export type LogAppendResult = {
 	readonly events: ReadonlyArray<LogEvent>;
@@ -60,14 +68,21 @@ export type LogSegments = {
 		FileSystem | Path
 	>;
 	readonly replay: (
-		address: LogAddress,
-		after: number,
+		snapshot: LogReplaySnapshot,
 	) => Effect.Effect<
 		ReadonlyArray<LogEvent>,
 		PlatformError | Schema.SchemaError,
 		FileSystem | Path
 	>;
-	readonly replayStream: (address: LogAddress, after: number) => LogReplay;
+	readonly captureReplay: (
+		address: LogAddress,
+		after: number,
+	) => Effect.Effect<
+		LogReplaySnapshot,
+		PlatformError | Schema.SchemaError,
+		FileSystem | Path
+	>;
+	readonly replayStream: (snapshot: LogReplaySnapshot) => LogReplayStream;
 };
 
 const isUtf8Continuation = (value: number) => (value & 0xc0) === 0x80;
@@ -138,6 +153,7 @@ export const makeLogSegments = (options: {
 									decodeLines(content).pipe(
 										Effect.map((events) => ({
 											events,
+											content,
 											bytes: textEncoder.encode(content).byteLength,
 											exists: true as boolean,
 											partial: !content.endsWith('\n'),
@@ -147,6 +163,7 @@ export const makeLogSegments = (options: {
 							)
 						: Effect.succeed({
 								events: [] as Array<LogEvent>,
+								content: '',
 								bytes: 0,
 								exists: false as boolean,
 								partial: false,
@@ -167,23 +184,9 @@ export const makeLogSegments = (options: {
 				start = index + 1;
 			}
 		};
-		const readSegmentStream = (target: string) =>
-			Stream.fromEffect(fileSystem.exists(target)).pipe(
-				Stream.flatMap((exists) =>
-					exists
-						? Stream.fromEffect(fileSystem.readFileString(target)).pipe(
-								Stream.flatMap((content) =>
-									Stream.fromIteratorSucceed(completeLines(content)),
-								),
-							)
-						: Stream.empty,
-				),
+		const readContentStream = (content: string) =>
+			Stream.fromIteratorSucceed(completeLines(content)).pipe(
 				Stream.mapEffect((line) => decodeLine(line)),
-			);
-		const replayStream = (address: LogAddress, after: number) =>
-			readSegmentStream(previousPath(address)).pipe(
-				Stream.concat(readSegmentStream(currentPath(address))),
-				Stream.filter((event) => event.offset > after),
 			);
 		const loadState = (address: LogAddress) => {
 			const key = `${address.runId}:${address.serviceName}`;
@@ -287,13 +290,38 @@ export const makeLogSegments = (options: {
 					);
 				}),
 			);
-		const replay = (address: LogAddress, after: number) =>
-			readSegments(address).pipe(
-				Effect.map((segments) =>
-					[...segments.previous.events, ...segments.current.events].filter(
-						(event) => event.offset > after,
+		const captureReplay = (address: LogAddress, after: number) =>
+			loadState(address).pipe(
+				Effect.flatMap((state) =>
+					readSegments(address).pipe(
+						Effect.map((segments) => ({
+							after,
+							cutoff: state.nextOffset + 1,
+							previous: segments.previous.content,
+							current: segments.current.content,
+						})),
 					),
 				),
 			);
-		return { append, replay, replayStream };
+		const replayStream = (snapshot: LogReplaySnapshot): LogReplayStream =>
+			readContentStream(snapshot.previous).pipe(
+				Stream.concat(readContentStream(snapshot.current)),
+				Stream.filter(
+					(event) =>
+						event.offset > snapshot.after && event.offset < snapshot.cutoff,
+				),
+			);
+		const replay = (snapshot: LogReplaySnapshot) =>
+			Effect.all([
+				decodeLines(snapshot.previous),
+				decodeLines(snapshot.current),
+			]).pipe(
+				Effect.map((segments) =>
+					[...segments[0], ...segments[1]].filter(
+						(event) =>
+							event.offset > snapshot.after && event.offset < snapshot.cutoff,
+					),
+				),
+			);
+		return { append, captureReplay, replay, replayStream };
 	});

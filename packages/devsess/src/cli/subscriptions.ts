@@ -1,5 +1,5 @@
 import type { Socket } from 'node:net';
-import { Deferred, Effect, Stream } from 'effect';
+import { Effect, Stream } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { ServiceExit } from './exit-status';
@@ -85,7 +85,6 @@ export const makeSubscriptions = (options: {
 				lazy === undefined
 					? yield* options.logs.replayAndSubscribe(address, after, listener)
 					: yield* lazy(address, after, listener);
-			const replayDone = yield* Deferred.make<void>();
 			const replaySource = subscribed.replay;
 			const replay: Effect.Effect<void, unknown, FileSystem | Path> =
 				Array.isArray(replaySource)
@@ -116,13 +115,15 @@ export const makeSubscriptions = (options: {
 						);
 			state.subscriptions.set(requestId, {
 				address,
-				flush: subscribed.flush.pipe(
-					Effect.andThen(Deferred.await(replayDone)),
-				),
+				flush: subscribed.flush,
 				unsubscribe: subscribed.unsubscribe,
 			});
 			yield* replay.pipe(
-				Effect.ensuring(Deferred.succeed(replayDone, undefined)),
+				Effect.ensuring(
+					subscribed.completeReplay === undefined
+						? Effect.void
+						: subscribed.completeReplay,
+				),
 				Effect.catch((cause) =>
 					subscribed.unsubscribe.pipe(Effect.tap(() => Effect.logError(cause))),
 				),
