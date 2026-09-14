@@ -158,7 +158,7 @@ export const makeRequestDispatcher = (options: {
 			incoming.params.rows,
 		).pipe(Effect.as({}));
 	};
-	const handle = (message: DaemonMessage) => {
+	const handleLifecycle = (message: LifecycleMessage) => {
 		if (message._tag === 'closed')
 			return options.subscriptions.releaseSocket(message.socket);
 		if (message._tag === 'persistenceFailure')
@@ -203,7 +203,9 @@ export const makeRequestDispatcher = (options: {
 				),
 			);
 		}
-
+		return Effect.void;
+	};
+	const handleClient = (message: ClientRequestMessage) => {
 		const decoded =
 			typeof message.incoming === 'string'
 				? decodeRequest(message.incoming)
@@ -258,5 +260,9 @@ export const makeRequestDispatcher = (options: {
 			}),
 		);
 	};
-	return { processRequest, handle };
+	const handle = (message: DaemonMessage) =>
+		message._tag === 'request'
+			? handleClient(message)
+			: handleLifecycle(message);
+	return { processRequest, handle, handleClient, handleLifecycle };
 };

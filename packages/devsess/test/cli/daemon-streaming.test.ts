@@ -221,4 +221,98 @@ describe('daemon streaming integration', () => {
 			}),
 		),
 	);
+
+	it.live(
+		'backpressures flooded RPCs without dropping lifecycle completion',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const socketPath = join(root, 'daemon.sock');
+					const dependencies = Layer.mergeAll(
+						Registry.layer({ dataDirectory: root }),
+						Logs.layer({ dataDirectory: root, maxBytes: 1024 * 1024 }),
+						Processes.layer,
+					);
+					const daemonLayer = Layer.effect(
+						Daemon,
+						makeDaemon({ socketPath }),
+					).pipe(Layer.provideMerge(dependencies));
+					yield* Effect.scoped(
+						Effect.gen(function* () {
+							const daemon = yield* Daemon;
+							yield* daemon.request(
+								startRequest(
+									'flood-lifecycle',
+									'sleep 0.2; printf DONE; sleep 0.2',
+								),
+							);
+							const tail = yield* Effect.acquireRelease(
+								Effect.sync(() => createConnection(socketPath)),
+								(socket) => Effect.sync(() => socket.destroy()),
+							);
+							yield* waitForConnection(tail);
+							const tailDone = yield* Deferred.make<void>();
+							let tailRemainder = '';
+							tail.on('data', (chunk) => {
+								const frames = `${tailRemainder}${chunk.toString()}`.split(
+									'\n',
+								);
+								const nextRemainder = frames.pop();
+								if (nextRemainder === undefined) return;
+								tailRemainder = nextRemainder;
+								for (const frame of frames) {
+									if (frame.length === 0) continue;
+									const value = JSON.parse(frame) as { event?: string };
+									if (value.event === 'exit')
+										Effect.runFork(Deferred.succeed(tailDone, undefined));
+								}
+							});
+							tail.write(`${JSON.stringify(tailRequest('flood-lifecycle'))}\n`);
+							const flood = yield* Effect.acquireRelease(
+								Effect.sync(() => createConnection(socketPath)),
+								(socket) => Effect.sync(() => socket.destroy()),
+							);
+							yield* waitForConnection(flood);
+							const floodDone = yield* Deferred.make<void>();
+							const responseIds = new Set<string>();
+							let floodRemainder = '';
+							flood.on('data', (chunk) => {
+								const frames = `${floodRemainder}${chunk.toString()}`.split(
+									'\n',
+								);
+								const nextRemainder = frames.pop();
+								if (nextRemainder === undefined) return;
+								floodRemainder = nextRemainder;
+								for (const frame of frames) {
+									if (frame.length === 0) continue;
+									const value = JSON.parse(frame) as {
+										requestId?: string;
+										ok?: boolean;
+										error?: string;
+									};
+									if (value.requestId === undefined) continue;
+									responseIds.add(value.requestId);
+									if (responseIds.size === 300)
+										Effect.runFork(Deferred.succeed(floodDone, undefined));
+									if (value.ok === false) expect(value.error).toBeDefined();
+								}
+							});
+							const requests = Array.from({ length: 300 }, (_value, index) => ({
+								...listRequest,
+								requestId: `flood-${index}`,
+							}));
+							flood.write(
+								`${requests.map((request) => JSON.stringify(request)).join('\n')}\n`,
+							);
+							yield* Deferred.await(floodDone).pipe(
+								Effect.timeout('3 seconds'),
+							);
+							yield* Deferred.await(tailDone).pipe(Effect.timeout('3 seconds'));
+							expect(responseIds.size).toBe(300);
+						}).pipe(Effect.provide(daemonLayer)),
+					);
+				}),
+			),
+	);
 });
