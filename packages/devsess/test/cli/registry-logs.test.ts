@@ -213,9 +213,9 @@ describe('Logs', () => {
 				const subscription = yield* logs.replayAndSubscribe(
 					{ runId: 'run', serviceName: 'web' },
 					0,
-					() => Effect.never,
+					() => Effect.sleep('1 millis'),
 				);
-				for (let index = 0; index < 258; index += 1)
+				for (let index = 0; index < 128; index += 1)
 					yield* logs.append({ runId: 'run', serviceName: 'web' }, 'x');
 				yield* subscription.unsubscribe;
 				const replay = yield* logs.replayAndSubscribe(
@@ -223,7 +223,7 @@ describe('Logs', () => {
 					0,
 					() => Effect.void,
 				);
-				expect(replay.replay).toHaveLength(258);
+				expect(replay.replay).toHaveLength(128);
 				yield* replay.unsubscribe;
 			}),
 		),

@@ -32,6 +32,8 @@ export type LogEvent = typeof LogEventSchema.Type;
 
 const LogLineSchema = Schema.fromJsonString(LogEventSchema);
 const textEncoder = new TextEncoder();
+const MAX_SUBSCRIPTION_BACKLOG_BYTES = 1024 * 1024;
+const MAX_SUBSCRIPTION_BACKLOG_EVENTS = 256;
 
 const isUtf8Continuation = (value: number) => (value & 0xc0) === 0x80;
 const utf8Width = (value: number) =>
@@ -322,7 +324,13 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 							continue;
 						}
 						const tail = subscription.runtime.tail;
-						if (tail !== undefined) {
+						if (
+							tail !== undefined &&
+							tail.completions.size < MAX_SUBSCRIPTION_BACKLOG_EVENTS &&
+							textEncoder.encode(tail.event.data).byteLength +
+								textEncoder.encode(event.data).byteLength <=
+								MAX_SUBSCRIPTION_BACKLOG_BYTES
+						) {
 							tail.event = {
 								data: tail.event.data + event.data,
 								offset: event.offset,
@@ -330,8 +338,18 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 							tail.completions.add(completion);
 							continue;
 						}
-						subscription.pending.delete(completion);
-						yield* Deferred.succeed(completion, undefined);
+						subscription.runtime.tail = item;
+						yield* Queue.offer(subscription.queue, item).pipe(
+							Effect.catch(() =>
+								Effect.sync(() => {
+									if (subscription.runtime.tail === item)
+										subscription.runtime.tail = undefined;
+									subscription.pending.delete(completion);
+								}).pipe(
+									Effect.andThen(Deferred.succeed(completion, undefined)),
+								),
+							),
+						);
 					}
 				}
 			});
@@ -423,13 +441,12 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 							};
 							subscribed.add(subscription);
 							listeners.set(key, subscribed);
-							const unsubscribe = semaphore.withPermit(
-								Effect.sync(() => {
-									subscribed.delete(subscription);
-									if (subscribed.size === 0) listeners.delete(key);
-								}).pipe(
-									Effect.andThen(Effect.forkDetach(Fiber.interrupt(fiber))),
-								),
+							const unsubscribe = Effect.sync(() => {
+								subscribed.delete(subscription);
+								if (subscribed.size === 0) listeners.delete(key);
+							}).pipe(
+								Effect.andThen(Queue.shutdown(queue)),
+								Effect.andThen(Effect.forkDetach(Fiber.interrupt(fiber))),
 							);
 							return {
 								replay: [
@@ -497,11 +514,12 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 					};
 					subscribed.add(subscription);
 					listeners.set(key, subscribed);
-					const unsubscribe = semaphore.withPermit(
-						Effect.sync(() => {
-							subscribed.delete(subscription);
-							if (subscribed.size === 0) listeners.delete(key);
-						}).pipe(Effect.andThen(Effect.forkDetach(Fiber.interrupt(fiber)))),
+					const unsubscribe = Effect.sync(() => {
+						subscribed.delete(subscription);
+						if (subscribed.size === 0) listeners.delete(key);
+					}).pipe(
+						Effect.andThen(Queue.shutdown(queue)),
+						Effect.andThen(Effect.forkDetach(Fiber.interrupt(fiber))),
 					);
 					return {
 						replay: replayStream(address, after),
