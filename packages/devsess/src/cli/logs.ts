@@ -6,7 +6,8 @@ import { makeLogFanout } from './log-fanout';
 import {
 	type LogAddress,
 	type LogEvent,
-	type LogReplay,
+	type LogReplaySnapshot,
+	type LogReplayStream,
 	makeLogSegments,
 } from './log-segments';
 
@@ -33,6 +34,7 @@ export class Logs extends Context.Service<
 				readonly replay: ReadonlyArray<LogEvent>;
 				readonly flush: Effect.Effect<void>;
 				readonly unsubscribe: Effect.Effect<void>;
+				readonly completeReplay?: Effect.Effect<void>;
 			},
 			PlatformError | Schema.SchemaError,
 			FileSystem | Path
@@ -43,9 +45,10 @@ export class Logs extends Context.Service<
 			listener: (event: LogEvent) => Effect.Effect<void>,
 		) => Effect.Effect<
 			{
-				readonly replay: LogReplay;
+				readonly replay: LogReplayStream;
 				readonly flush: Effect.Effect<void>;
 				readonly unsubscribe: Effect.Effect<void>;
+				readonly completeReplay?: Effect.Effect<void>;
 			},
 			PlatformError | Schema.SchemaError,
 			FileSystem | Path
@@ -77,10 +80,22 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 		) =>
 			semaphore.withPermit(
 				segments
-					.replay(address, after)
+					.captureReplay(address, after)
 					.pipe(
-						Effect.flatMap((replay) =>
-							fanout.subscribe(address, replay, listener),
+						Effect.flatMap((snapshot) =>
+							segments
+								.replay(snapshot)
+								.pipe(
+									Effect.flatMap((replay) =>
+										fanout
+											.subscribe(address, replay, snapshot.cutoff, listener)
+											.pipe(
+												Effect.tap(
+													(subscription) => subscription.completeReplay,
+												),
+											),
+									),
+								),
 						),
 					),
 			);
@@ -90,11 +105,18 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 			listener: (event: LogEvent) => Effect.Effect<void>,
 		) =>
 			semaphore.withPermit(
-				Effect.succeed(segments.replayStream(address, after)).pipe(
-					Effect.flatMap((replay) =>
-						fanout.subscribe(address, replay, listener),
+				segments
+					.captureReplay(address, after)
+					.pipe(
+						Effect.flatMap((snapshot: LogReplaySnapshot) =>
+							fanout.subscribe(
+								address,
+								segments.replayStream(snapshot),
+								snapshot.cutoff,
+								listener,
+							),
+						),
 					),
-				),
 			);
 		return { append, replayAndSubscribe, replayAndSubscribeLazy };
 	});
