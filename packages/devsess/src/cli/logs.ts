@@ -408,3 +408,5 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 			);
 		return Logs.of({ append, replayAndSubscribe });
 	});
+
+export type LogsService = Context.Service.Shape<typeof Logs>;
