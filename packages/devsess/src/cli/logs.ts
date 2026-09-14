@@ -32,6 +32,10 @@ export type LogEvent = typeof LogEventSchema.Type;
 const LogLineSchema = Schema.fromJsonString(LogEventSchema);
 const textEncoder = new TextEncoder();
 
+const isUtf8Continuation = (value: number) => (value & 0xc0) === 0x80;
+const utf8Width = (value: number) =>
+	value < 0x80 ? 1 : value < 0xe0 ? 2 : value < 0xf0 ? 3 : 4;
+
 type Segment = {
 	readonly events: Array<LogEvent>;
 	readonly bytes: number;
@@ -68,20 +72,27 @@ const logKey = (address: LogAddress) =>
 	`${address.runId}:${address.serviceName}`;
 
 const splitData = (data: string, maxBytes: number) => {
+	const encoded = textEncoder.encode(data);
 	const chunks: Array<string> = [];
-	let chunk = '';
-	let chunkBytes = 0;
-	for (const character of data) {
-		const characterBytes = textEncoder.encode(character).byteLength;
-		if (chunk !== '' && chunkBytes + characterBytes > maxBytes) {
-			chunks.push(chunk);
-			chunk = '';
-			chunkBytes = 0;
+	if (encoded.byteLength === 0) return [''];
+	let offset = 0;
+	while (offset < encoded.byteLength) {
+		let end = Math.min(offset + maxBytes, encoded.byteLength);
+		if (end < encoded.byteLength && isUtf8Continuation(encoded[end] ?? 0)) {
+			let codePointStart = end - 1;
+			while (
+				codePointStart > offset &&
+				isUtf8Continuation(encoded[codePointStart] ?? 0)
+			)
+				codePointStart -= 1;
+			end = Math.min(
+				codePointStart + utf8Width(encoded[codePointStart] ?? 0),
+				encoded.byteLength,
+			);
 		}
-		chunk += character;
-		chunkBytes += characterBytes;
+		chunks.push(Buffer.from(encoded.subarray(offset, end)).toString('utf8'));
+		offset = end;
 	}
-	if (chunk !== '' || data === '') chunks.push(chunk);
 	return chunks;
 };
 
@@ -265,39 +276,33 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 		const notify = (address: LogAddress, events: ReadonlyArray<LogEvent>) => {
 			const active = listeners.get(logKey(address));
 			if (active === undefined) return Effect.void;
-			return Effect.forEach(
-				active,
-				(subscription) =>
-					Effect.forEach(
-						events,
-						(event) =>
-							Effect.gen(function* () {
-								const completion = yield* Deferred.make<void>();
-								subscription.pending.add(completion);
-								const item: SubscriptionItem = {
-									event,
-									completions: new Set([completion]),
-								};
-								if (Queue.offerUnsafe(subscription.queue, item)) {
-									subscription.runtime.tail = item;
-									return;
-								}
-								const tail = subscription.runtime.tail;
-								if (tail !== undefined) {
-									tail.event = {
-										data: tail.event.data + event.data,
-										offset: event.offset,
-									};
-									tail.completions.add(completion);
-									return;
-								}
-								subscription.pending.delete(completion);
-								yield* Deferred.succeed(completion, undefined);
-							}),
-						{ discard: true },
-					),
-				{ discard: true },
-			);
+			return Effect.gen(function* () {
+				for (const subscription of active) {
+					for (const event of events) {
+						const completion = yield* Deferred.make<void>();
+						subscription.pending.add(completion);
+						const item: SubscriptionItem = {
+							event,
+							completions: new Set([completion]),
+						};
+						if (Queue.offerUnsafe(subscription.queue, item)) {
+							subscription.runtime.tail = item;
+							continue;
+						}
+						const tail = subscription.runtime.tail;
+						if (tail !== undefined) {
+							tail.event = {
+								data: tail.event.data + event.data,
+								offset: event.offset,
+							};
+							tail.completions.add(completion);
+							continue;
+						}
+						subscription.pending.delete(completion);
+						yield* Deferred.succeed(completion, undefined);
+					}
+				}
+			});
 		};
 		const append = (address: LogAddress, data: string) =>
 			semaphore.withPermit(
