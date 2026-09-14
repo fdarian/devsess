@@ -41,8 +41,9 @@ export const makeRunStop = (options: {
 }): RunStop => {
 	const finishService = (address: LogAddress, exit: ServiceExit) =>
 		options.output
-			.close(address)
+			.awaitIdle(address)
 			.pipe(
+				Effect.andThen(options.output.close(address)),
 				Effect.andThen(
 					options.subscriptions.finishSubscriptions(address, exit),
 				),

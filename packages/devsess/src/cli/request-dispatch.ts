@@ -176,8 +176,7 @@ export const makeRequestDispatcher = (options: {
 				exitCode: message.exitCode,
 				signal: message.signal,
 			};
-			return options.output.awaitIdle(message.address).pipe(
-				Effect.andThen(live.ownership.terminate),
+			return live.ownership.terminate.pipe(
 				Effect.andThen(
 					options.serviceState.replaceService(
 						message.address,
