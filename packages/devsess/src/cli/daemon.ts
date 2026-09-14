@@ -215,7 +215,7 @@ export const makeDaemon = (options: {
 				return;
 			}
 			const writer = makeSocketWriter(socket, {
-				onClose: () => enqueueLifecycle({ _tag: 'closed', socket }),
+				onClose: () => Effect.runFork(subscriptions.releaseSocket(socket)),
 			});
 			sockets.set(socket, {
 				subscriptions: new Map(),
