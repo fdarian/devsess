@@ -1,5 +1,7 @@
 import { describe, expect, it } from '@effect/vitest';
 import { Deferred, Duration, Effect, Exit, Ref, Schema } from 'effect';
+import { FileSystem } from 'effect/FileSystem';
+import { Path } from 'effect/Path';
 import { LogAddressSchema, Logs } from '../../src/cli/logs';
 import {
 	Registry,
@@ -167,7 +169,10 @@ describe('Logs', () => {
 						0,
 						() => Effect.void,
 					);
-					expect(retained.replay.map((event) => event.data)).toEqual(['cd']);
+					expect(retained.replay.map((event) => event.data)).toEqual([
+						'ab',
+						'cd',
+					]);
 					yield* retained.unsubscribe;
 				}),
 			),
@@ -237,7 +242,102 @@ describe('Logs', () => {
 					0,
 					() => Effect.void,
 				);
-				expect(subscription.replay.map((event) => event.data)).toEqual(['d']);
+				expect(subscription.replay.map((event) => event.data)).toEqual([
+					'abc',
+					'd',
+				]);
+				yield* subscription.unsubscribe;
+			}),
+		),
+	);
+
+	it.effect('rotates JSONL segments and replays the newest two in order', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const logs = yield* Logs.pipe(
+					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 80 })),
+				);
+				const address = { runId: 'run', serviceName: 'web' };
+				for (const value of ['a', 'b', 'c', 'd', 'e', 'f', 'g'])
+					yield* logs.append(address, value);
+				const subscription = yield* logs.replayAndSubscribe(
+					address,
+					0,
+					() => Effect.void,
+				);
+				const values = subscription.replay.map((event) => event.data);
+				expect(values.length).toBeGreaterThan(0);
+				expect(values).toEqual(['d', 'e', 'f', 'g']);
+				const fileSystem = yield* FileSystem;
+				const path = yield* Path;
+				const directory = path.join(dataDirectory, 'logs', 'run');
+				expect(
+					yield* fileSystem.exists(path.join(directory, 'web.jsonl')),
+				).toBe(true);
+				expect(
+					yield* fileSystem.exists(path.join(directory, 'web.1.jsonl')),
+				).toBe(true);
+				expect(
+					yield* fileSystem.exists(path.join(directory, 'web.2.jsonl')),
+				).toBe(false);
+				yield* subscription.unsubscribe;
+			}),
+		),
+	);
+
+	it.effect('ignores a partial trailing JSONL line after a crash', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const fileSystem = yield* FileSystem;
+				const path = yield* Path;
+				const directory = path.join(dataDirectory, 'logs', 'run');
+				const target = path.join(directory, 'web.jsonl');
+				yield* fileSystem.makeDirectory(directory, { recursive: true });
+				yield* fileSystem.writeFileString(
+					target,
+					'{"data":"ok","offset":2}\n{"data":"crashed"',
+					{ mode: 0o600 },
+				);
+				const logs = yield* Logs.pipe(
+					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 1024 })),
+				);
+				const subscription = yield* logs.replayAndSubscribe(
+					{ runId: 'run', serviceName: 'web' },
+					0,
+					() => Effect.void,
+				);
+				expect(subscription.replay.map((event) => event.data)).toEqual(['ok']);
+				yield* subscription.unsubscribe;
+			}),
+		),
+	);
+
+	it.effect('ignores legacy JSON logs instead of rewriting them', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const fileSystem = yield* FileSystem;
+				const path = yield* Path;
+				const directory = path.join(dataDirectory, 'logs', 'run');
+				yield* fileSystem.makeDirectory(directory, { recursive: true });
+				yield* fileSystem.writeFileString(
+					path.join(directory, 'web.json'),
+					JSON.stringify({
+						nextOffset: 4,
+						events: [{ data: 'old', offset: 4 }],
+					}),
+				);
+				const logs = yield* Logs.pipe(
+					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 1024 })),
+				);
+				const subscription = yield* logs.replayAndSubscribe(
+					{ runId: 'run', serviceName: 'web' },
+					0,
+					() => Effect.void,
+				);
+				expect(subscription.replay).toEqual([]);
 				yield* subscription.unsubscribe;
 			}),
 		),
