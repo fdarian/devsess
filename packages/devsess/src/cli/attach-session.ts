@@ -207,7 +207,7 @@ export const attachSession = <E>(options: {
 		const leaseId = yield* awaitAttachLease(options.stream, options.error);
 		if (leaseId === undefined) return;
 		yield* Effect.sync(() => process.stdout.write(attachHint));
-		const actions = yield* Queue.unbounded<AttachAction>();
+		const actions = yield* Queue.bounded<AttachAction>(64);
 		const detached = yield* Deferred.make<void, E>();
 		const send = (action: AttachAction) =>
 			callDaemon(
@@ -248,6 +248,20 @@ export const attachSession = <E>(options: {
 				),
 			),
 		).pipe(Effect.forkScoped);
+		const offerAction = (action: AttachAction) => {
+			if (Queue.offerUnsafe(actions, action)) return;
+			process.stdin.pause();
+			Effect.runFork(
+				Queue.offer(actions, action).pipe(
+					Effect.ensuring(
+						Effect.sync(() => {
+							if (!process.stdin.destroyed) process.stdin.resume();
+						}),
+					),
+					Effect.catch(() => Effect.void),
+				),
+			);
+		};
 		const initialSize = yield* terminalSize(options.error);
 		yield* send({
 			_tag: 'resize',
@@ -262,7 +276,7 @@ export const attachSession = <E>(options: {
 		const scheduleDetach = () => {
 			detachTimer = setTimeout(() => {
 				detachTimer = undefined;
-				Queue.offerUnsafe(actions, { _tag: 'detach' });
+				offerAction({ _tag: 'detach' });
 			}, 250);
 		};
 		const onInput = (data: Buffer) => {
@@ -272,7 +286,7 @@ export const attachSession = <E>(options: {
 				decoder.write(chunk),
 			);
 			inputState = parsed.state;
-			for (const action of parsed.actions) Queue.offerUnsafe(actions, action);
+			for (const action of parsed.actions) offerAction(action);
 			if (inputState.awaitingEscape) scheduleDetach();
 		};
 		const onResize = () => {
@@ -284,7 +298,7 @@ export const attachSession = <E>(options: {
 				cols > 0 &&
 				rows > 0
 			)
-				Queue.offerUnsafe(actions, { _tag: 'resize', cols, rows });
+				offerAction({ _tag: 'resize', cols, rows });
 		};
 		yield* Effect.acquireRelease(
 			Effect.sync(() => {
@@ -309,5 +323,6 @@ export const attachSession = <E>(options: {
 					Fiber.join(writer),
 				]),
 			),
+			Effect.ensuring(Queue.shutdown(actions)),
 		);
 	});

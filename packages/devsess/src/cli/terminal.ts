@@ -31,8 +31,8 @@ export const openDaemonStream = (options: {
 }) =>
 	Effect.acquireRelease(
 		Effect.gen(function* () {
-			const frames = yield* Queue.unbounded<DaemonStreamFrame>();
-			const chunks = yield* Queue.unbounded<string>();
+			const frames = yield* Queue.bounded<DaemonStreamFrame>(16);
+			const chunks = yield* Queue.bounded<string>(16);
 			const decoder = new StringDecoder('utf8');
 			let buffer = '';
 			const parser = yield* Effect.forever(
@@ -92,17 +92,36 @@ export const openDaemonStream = (options: {
 						cause,
 					}),
 			});
-			socket.on('data', (chunk) => {
-				Queue.offerUnsafe(chunks, decoder.write(chunk));
-			});
-			socket.once('close', () => Queue.offerUnsafe(frames, { _tag: 'closed' }));
-			socket.once('error', () => Queue.offerUnsafe(frames, { _tag: 'closed' }));
+			const offerChunk = (chunk: string) => {
+				if (Queue.offerUnsafe(chunks, chunk)) return;
+				socket.pause();
+				Effect.runFork(
+					Queue.offer(chunks, chunk).pipe(
+						Effect.ensuring(
+							Effect.sync(() => {
+								if (!socket.destroyed) socket.resume();
+							}),
+						),
+						Effect.catch(() => Effect.void),
+					),
+				);
+			};
+			socket.on('data', (chunk) => offerChunk(decoder.write(chunk)));
+			const offerClosed = () =>
+				Effect.runFork(
+					Queue.offer(frames, { _tag: 'closed' }).pipe(
+						Effect.catch(() => Effect.void),
+					),
+				);
+			socket.once('close', offerClosed);
+			socket.once('error', offerClosed);
 			return { frames, chunks, parser, socket };
 		}),
 		(stream) =>
 			Effect.gen(function* () {
 				stream.socket.destroy();
 				yield* Queue.shutdown(stream.chunks);
+				yield* Queue.shutdown(stream.frames);
 				yield* Fiber.interrupt(stream.parser);
 			}),
 	);
