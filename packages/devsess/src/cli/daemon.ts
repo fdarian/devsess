@@ -94,7 +94,7 @@ type SocketState = {
 	readonly subscriptions: Map<string, Subscription>;
 	readonly writer: SocketWriter;
 };
-type Message =
+type RequestMessage =
 	| {
 			readonly _tag: 'request';
 			readonly incoming: DaemonRequest | string;
@@ -103,16 +103,33 @@ type Message =
 	  }
 	| { readonly _tag: 'closed'; readonly socket: Socket }
 	| {
-			readonly _tag: 'ptyOutput';
-			readonly address: LogAddress;
-			readonly data: string;
-	  }
-	| {
 			readonly _tag: 'exited';
 			readonly address: LogAddress;
 			readonly exitCode: number;
 			readonly signal?: number;
+	  }
+	| {
+			readonly _tag: 'persistenceFailure';
+			readonly address: LogAddress;
+			readonly cause: unknown;
 	  };
+
+type OutputState = {
+	readonly address: LogAddress;
+	readonly terminal: IPty;
+	readonly queue: Queue.Queue<void>;
+	readonly pendingWaiters: Set<Deferred.Deferred<void>>;
+	pending: string;
+	pendingBytes: number;
+	processing: boolean;
+	paused: boolean;
+	closed: boolean;
+	failed: boolean;
+	failureQueued: boolean;
+	worker: Fiber.Fiber<void, unknown> | undefined;
+};
+
+const MAX_OUTPUT_BACKLOG_BYTES = 256 * 1024;
 
 const serviceKey = (address: LogAddress) =>
 	`${address.runId}:${address.serviceName}`;
@@ -178,8 +195,9 @@ export const makeDaemon = (options: {
 		const logs = yield* Logs;
 		const processes = yield* Processes;
 		const daemonIdentity = yield* processes.capture(process.pid);
-		const queue = yield* Queue.unbounded<Message>();
+		const requestQueue = yield* Queue.bounded<RequestMessage>(256);
 		const terminals = new Map<string, LiveService>();
+		const outputs = new Map<string, OutputState>();
 		const sockets = new Map<Socket, SocketState>();
 		const lifecycle = { closing: false };
 		const send = (socket: Socket, frame: DaemonResponse | DaemonEvent) =>
@@ -200,6 +218,130 @@ export const makeDaemon = (options: {
 				requestId,
 				ok: false,
 				error: errorMessage(cause),
+			});
+		const settleOutputWaiters = (output: OutputState) => {
+			if (output.processing || output.pendingBytes > 0) return Effect.void;
+			const waiters = Array.from(output.pendingWaiters);
+			output.pendingWaiters.clear();
+			return Effect.forEach(
+				waiters,
+				(waiter) => Deferred.succeed(waiter, undefined),
+				{ discard: true },
+			);
+		};
+		const awaitOutputIdle = (address: LogAddress) =>
+			Effect.suspend(() => {
+				const output = outputs.get(serviceKey(address));
+				if (
+					output === undefined ||
+					(!output.processing && output.pendingBytes === 0)
+				)
+					return Effect.void;
+				return Effect.gen(function* () {
+					const waiter = yield* Deferred.make<void>();
+					output.pendingWaiters.add(waiter);
+					yield* settleOutputWaiters(output);
+					yield* Deferred.await(waiter);
+				});
+			});
+		const closeOutput = (address: LogAddress) =>
+			Effect.suspend(() => {
+				const key = serviceKey(address);
+				const output = outputs.get(key);
+				if (output === undefined) return Effect.void;
+				output.closed = true;
+				output.pending = '';
+				output.pendingBytes = 0;
+				return settleOutputWaiters(output).pipe(
+					Effect.andThen(
+						output.worker === undefined
+							? Effect.void
+							: Fiber.interrupt(output.worker),
+					),
+					Effect.tap(() =>
+						Effect.sync(() => {
+							outputs.delete(key);
+						}),
+					),
+				);
+			});
+		const enqueueOutput = (address: LogAddress, data: string) => {
+			const output = outputs.get(serviceKey(address));
+			if (output === undefined || output.closed || output.failed) return;
+			output.pending += data;
+			output.pendingBytes += Buffer.byteLength(data);
+			if (output.pendingBytes > MAX_OUTPUT_BACKLOG_BYTES && !output.paused) {
+				output.paused = true;
+				output.terminal.pause();
+			}
+			Queue.offerUnsafe(output.queue, undefined);
+		};
+		const startOutput = (address: LogAddress, terminal: IPty) =>
+			Effect.gen(function* () {
+				const queue = yield* Queue.bounded<void>(1);
+				const output: OutputState = {
+					address,
+					terminal,
+					queue,
+					pendingWaiters: new Set(),
+					pending: '',
+					pendingBytes: 0,
+					processing: false,
+					paused: false,
+					closed: false,
+					failed: false,
+					failureQueued: false,
+					worker: undefined,
+				};
+				outputs.set(serviceKey(address), output);
+				const worker = yield* Effect.forever(
+					Queue.take(queue).pipe(
+						Effect.flatMap(() => {
+							if (output.closed || output.failed) return Effect.void;
+							const data = output.pending;
+							output.pending = '';
+							output.pendingBytes = 0;
+							if (data === '') return settleOutputWaiters(output);
+							output.processing = true;
+							return logs.append(address, data).pipe(
+								Effect.asVoid,
+								Effect.catch((cause) =>
+									Effect.sync(() => {
+										output.failed = true;
+										output.pending = '';
+										output.pendingBytes = 0;
+										if (!output.failureQueued) {
+											output.failureQueued = true;
+											Queue.offerUnsafe(requestQueue, {
+												_tag: 'persistenceFailure',
+												address,
+												cause,
+											});
+										}
+									}),
+								),
+								Effect.ensuring(
+									Effect.sync(() => {
+										output.processing = false;
+										if (
+											output.paused &&
+											output.pendingBytes <= MAX_OUTPUT_BACKLOG_BYTES / 2
+										) {
+											output.paused = false;
+											output.terminal.resume();
+										}
+									}).pipe(
+										Effect.andThen(
+											Effect.suspend(() => settleOutputWaiters(output)),
+										),
+									),
+								),
+							);
+						}),
+					),
+				).pipe(Effect.forkScoped);
+				output.worker = worker;
+				return output;
 			});
 		const replaceService = (
 			address: LogAddress,
@@ -518,8 +660,9 @@ export const makeDaemon = (options: {
 						});
 						const address = { runId: run.runId, serviceName: service.name };
 						let observedExit: ServiceExit | undefined;
+						yield* startOutput(address, terminal);
 						terminal.onData((data) => {
-							Queue.offerUnsafe(queue, { _tag: 'ptyOutput', address, data });
+							enqueueOutput(address, data);
 						});
 						terminal.onExit((event) => {
 							const exit: ServiceExit = {
@@ -529,7 +672,7 @@ export const makeDaemon = (options: {
 							observedExit = exit;
 							const live = terminals.get(serviceKey(address));
 							if (live !== undefined) live.exit = exit;
-							Queue.offerUnsafe(queue, {
+							Queue.offerUnsafe(requestQueue, {
 								_tag: 'exited',
 								address,
 								exitCode: exit.exitCode,
@@ -541,6 +684,8 @@ export const makeDaemon = (options: {
 						);
 						if (Exit.isFailure(captured)) {
 							if (observedExit !== undefined) {
+								yield* awaitOutputIdle(address);
+								yield* closeOutput(address);
 								yield* replaceService(
 									address,
 									serviceExitCode(observedExit) === 0 ? 'exited' : 'failed',
@@ -563,6 +708,7 @@ export const makeDaemon = (options: {
 										: error,
 								),
 							);
+							yield* closeOutput(address);
 							return yield* Effect.failCause(captured.cause);
 						}
 						const ownership = captured.value;
@@ -688,6 +834,7 @@ export const makeDaemon = (options: {
 							};
 						}
 						terminals.delete(serviceKey(address));
+						yield* closeOutput(address);
 						const terminationSignal = Exit.isSuccess(result)
 							? result.value
 							: undefined;
@@ -725,7 +872,7 @@ export const makeDaemon = (options: {
 		const processRequest = (
 			incoming: DaemonRequest,
 			socket: Socket | undefined,
-		): Effect.Effect<unknown, unknown, FileSystem | Path> => {
+		): Effect.Effect<unknown, unknown, FileSystem | Path | Scope> => {
 			if (incoming.method === 'listRuns') return registry.list;
 			if (incoming.method === 'startRun') return startRun(incoming);
 			if (incoming.method === 'stopRun')
@@ -792,15 +939,10 @@ export const makeDaemon = (options: {
 				incoming.params.rows,
 			).pipe(Effect.as({}));
 		};
-		const handle = (message: Message) => {
+		const handle = (message: RequestMessage) => {
 			if (message._tag === 'closed') return releaseSocket(message.socket);
-			if (message._tag === 'ptyOutput')
-				return logs.append(message.address, message.data).pipe(
-					Effect.asVoid,
-					Effect.catch(() =>
-						replaceService(message.address, 'failed').pipe(Effect.asVoid),
-					),
-				);
+			if (message._tag === 'persistenceFailure')
+				return Effect.logError(message.cause).pipe(Effect.asVoid);
 			if (message._tag === 'exited') {
 				const key = serviceKey(message.address);
 				const live = terminals.get(key);
@@ -809,7 +951,8 @@ export const makeDaemon = (options: {
 					exitCode: message.exitCode,
 					signal: message.signal,
 				};
-				return live.ownership.terminate.pipe(
+				return awaitOutputIdle(message.address).pipe(
+					Effect.andThen(live.ownership.terminate),
 					Effect.andThen(
 						replaceService(
 							message.address,
@@ -819,10 +962,12 @@ export const makeDaemon = (options: {
 					),
 					Effect.tap(() => Effect.sync(() => terminals.delete(key))),
 					Effect.andThen(finishSubscriptions(message.address, exit)),
+					Effect.andThen(closeOutput(message.address)),
 					Effect.asVoid,
 					Effect.catch((cause) =>
 						replaceService(message.address, 'orphaned', exit).pipe(
 							Effect.andThen(finishSubscriptions(message.address, exit)),
+							Effect.andThen(closeOutput(message.address)),
 							Effect.andThen(Effect.logError(cause)),
 						),
 					),
@@ -881,7 +1026,7 @@ export const makeDaemon = (options: {
 			);
 		};
 		const worker = yield* Effect.forever(
-			Queue.take(queue).pipe(Effect.flatMap(handle)),
+			Queue.take(requestQueue).pipe(Effect.flatMap(handle)),
 		).pipe(Effect.forkScoped);
 		const server = createServer((socket) => {
 			if (lifecycle.closing) {
@@ -889,7 +1034,8 @@ export const makeDaemon = (options: {
 				return;
 			}
 			const writer = makeSocketWriter(socket, {
-				onClose: () => Queue.offerUnsafe(queue, { _tag: 'closed', socket }),
+				onClose: () =>
+					Queue.offerUnsafe(requestQueue, { _tag: 'closed', socket }),
 			});
 			sockets.set(socket, {
 				subscriptions: new Map(),
@@ -905,7 +1051,7 @@ export const makeDaemon = (options: {
 				}
 				remainder = frames.remainder;
 				for (const frame of frames.frames)
-					Queue.offerUnsafe(queue, {
+					Queue.offerUnsafe(requestQueue, {
 						_tag: 'request',
 						incoming: frame,
 						socket,
@@ -917,7 +1063,7 @@ export const makeDaemon = (options: {
 			Effect.gen(function* () {
 				lifecycle.closing = true;
 				yield* Fiber.interrupt(worker);
-				yield* Queue.shutdown(queue);
+				yield* Queue.shutdown(requestQueue);
 				for (const socket of sockets.keys()) {
 					socket.destroy();
 					yield* releaseSocket(socket);
@@ -951,7 +1097,7 @@ export const makeDaemon = (options: {
 			request: (incoming: DaemonRequest) =>
 				Effect.gen(function* () {
 					const response = yield* Deferred.make<unknown, DaemonError>();
-					yield* Queue.offer(queue, {
+					yield* Queue.offer(requestQueue, {
 						_tag: 'request',
 						incoming,
 						socket: undefined,

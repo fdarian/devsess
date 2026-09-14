@@ -30,6 +30,7 @@ export const LogEventSchema = Schema.Struct({
 export type LogEvent = typeof LogEventSchema.Type;
 
 const LogLineSchema = Schema.fromJsonString(LogEventSchema);
+const textEncoder = new TextEncoder();
 
 type Segment = {
 	readonly events: Array<LogEvent>;
@@ -45,7 +46,23 @@ type LogState = {
 	currentPartial: boolean;
 };
 
-const textEncoder = new TextEncoder();
+type SubscriptionItem = {
+	event: LogEvent;
+	readonly completions: Set<Deferred.Deferred<void>>;
+};
+
+type SubscriptionRuntime = {
+	tail: SubscriptionItem | undefined;
+};
+
+type ListenerSubscription = {
+	readonly listener: (event: LogEvent) => Effect.Effect<void>;
+	readonly queue: Queue.Queue<SubscriptionItem>;
+	readonly fiber: Fiber.Fiber<void, unknown>;
+	readonly pending: Set<Deferred.Deferred<void>>;
+	readonly flush: Effect.Effect<void>;
+	readonly runtime: SubscriptionRuntime;
+};
 
 const logKey = (address: LogAddress) =>
 	`${address.runId}:${address.serviceName}`;
@@ -106,19 +123,7 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 		const path = yield* Path;
 		const semaphore = yield* Semaphore.make(1);
 		const states = new Map<string, LogState>();
-		const listeners = new Map<
-			string,
-			Set<{
-				readonly listener: (event: LogEvent) => Effect.Effect<void>;
-				readonly queue: Queue.Queue<{
-					readonly event: LogEvent;
-					readonly completion: Deferred.Deferred<void>;
-				}>;
-				readonly fiber: Fiber.Fiber<void, unknown>;
-				readonly pending: Set<Deferred.Deferred<void>>;
-				readonly flush: Effect.Effect<void>;
-			}>
-		>();
+		const listeners = new Map<string, Set<ListenerSubscription>>();
 		const logBase = (address: LogAddress) =>
 			path.join(
 				options.dataDirectory,
@@ -269,13 +274,23 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 							Effect.gen(function* () {
 								const completion = yield* Deferred.make<void>();
 								subscription.pending.add(completion);
-								if (
-									Queue.offerUnsafe(subscription.queue, {
-										event,
-										completion,
-									})
-								)
+								const item: SubscriptionItem = {
+									event,
+									completions: new Set([completion]),
+								};
+								if (Queue.offerUnsafe(subscription.queue, item)) {
+									subscription.runtime.tail = item;
 									return;
+								}
+								const tail = subscription.runtime.tail;
+								if (tail !== undefined) {
+									tail.event = {
+										data: tail.event.data + event.data,
+										offset: event.offset,
+									};
+									tail.completions.add(completion);
+									return;
+								}
 								subscription.pending.delete(completion);
 								yield* Deferred.succeed(completion, undefined);
 							}),
@@ -326,38 +341,28 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 						Effect.gen(function* () {
 							const key = logKey(address);
 							const current = listeners.get(key);
-							const subscribed =
-								current === undefined
-									? new Set<{
-											readonly listener: (
-												event: LogEvent,
-											) => Effect.Effect<void>;
-											readonly queue: Queue.Queue<{
-												readonly event: LogEvent;
-												readonly completion: Deferred.Deferred<void>;
-											}>;
-											readonly fiber: Fiber.Fiber<void, unknown>;
-											readonly pending: Set<Deferred.Deferred<void>>;
-											readonly flush: Effect.Effect<void>;
-										}>()
-									: current;
-							const queue = yield* Queue.unbounded<{
-								readonly event: LogEvent;
-								readonly completion: Deferred.Deferred<void>;
-							}>();
+							const subscribed = current ?? new Set<ListenerSubscription>();
+							const queue = yield* Queue.bounded<SubscriptionItem>(1);
 							const pending = new Set<Deferred.Deferred<void>>();
+							const runtime: SubscriptionRuntime = { tail: undefined };
 							const fiber = yield* Effect.gen(function* () {
 								yield* Effect.forever(
 									Effect.gen(function* () {
 										const item = yield* Queue.take(queue);
+										runtime.tail = undefined;
 										yield* listener(item.event).pipe(
 											Effect.ensuring(
-												Effect.sync(() => {
-													pending.delete(item.completion);
-												}).pipe(
-													Effect.andThen(
-														Deferred.succeed(item.completion, undefined),
-													),
+												Effect.forEach(
+													Array.from(item.completions),
+													(completion) =>
+														Effect.sync(() => {
+															pending.delete(completion);
+														}).pipe(
+															Effect.andThen(
+																Deferred.succeed(completion, undefined),
+															),
+														),
+													{ discard: true },
 												),
 											),
 										);
@@ -371,12 +376,13 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 									{ discard: true },
 								),
 							);
-							const subscription = {
+							const subscription: ListenerSubscription = {
 								listener,
 								queue,
 								fiber,
 								pending,
 								flush,
+								runtime,
 							};
 							subscribed.add(subscription);
 							listeners.set(key, subscribed);
