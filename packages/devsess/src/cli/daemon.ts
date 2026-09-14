@@ -16,7 +16,11 @@ import {
 	splitFrames,
 } from './protocol';
 import { Registry } from './registry';
-import { type DaemonMessage, makeRequestDispatcher } from './request-dispatch';
+import {
+	type ClientRequestMessage,
+	type LifecycleMessage,
+	makeRequestDispatcher,
+} from './request-dispatch';
 import { makeRunStart } from './run-start';
 import { makeRunStop } from './run-stop';
 import { type LiveService, makeServiceState } from './service-state';
@@ -89,12 +93,38 @@ export const makeDaemon = (options: {
 		const logs = yield* Logs;
 		const processes = yield* Processes;
 		const daemonIdentity = yield* processes.capture(process.pid);
-		const requestQueue = yield* Queue.bounded<DaemonMessage>(256);
+		const requestQueue = yield* Queue.bounded<ClientRequestMessage>(256);
+		const lifecycleQueue = yield* Queue.unbounded<LifecycleMessage>();
 		const terminals = new Map<string, LiveService>();
 		const sockets = new Map<Socket, SocketState>();
 		const lifecycle = { closing: false };
-		const enqueueLifecycle = (message: DaemonMessage) => {
-			Queue.offerUnsafe(requestQueue, message);
+		const enqueueLifecycle = (message: LifecycleMessage) => {
+			Queue.offerUnsafe(lifecycleQueue, message);
+		};
+		const enqueueRequest = (message: ClientRequestMessage) => {
+			if (Queue.offerUnsafe(requestQueue, message)) return;
+			if (message.socket === undefined) {
+				if (message.reply !== undefined)
+					Effect.runFork(
+						Deferred.fail(
+							message.reply,
+							new DaemonError({ message: 'Daemon request queue is closed' }),
+						),
+					);
+				return;
+			}
+			const socket = message.socket;
+			socket.pause();
+			Effect.runFork(
+				Queue.offer(requestQueue, message).pipe(
+					Effect.ensuring(
+						Effect.sync(() => {
+							if (!socket.destroyed) socket.resume();
+						}),
+					),
+					Effect.catch(() => Effect.void),
+				),
+			);
 		};
 		const send = (socket: Socket, frame: DaemonResponse | DaemonEvent) =>
 			Effect.suspend(() => {
@@ -171,8 +201,13 @@ export const makeDaemon = (options: {
 			fail,
 		});
 		yield* serviceState.reconcile;
-		const worker = yield* Effect.forever(
-			Queue.take(requestQueue).pipe(Effect.flatMap(dispatcher.handle)),
+		const requestWorker = yield* Effect.forever(
+			Queue.take(requestQueue).pipe(Effect.flatMap(dispatcher.handleClient)),
+		).pipe(Effect.forkScoped);
+		const lifecycleWorker = yield* Effect.forever(
+			Queue.take(lifecycleQueue).pipe(
+				Effect.flatMap(dispatcher.handleLifecycle),
+			),
 		).pipe(Effect.forkScoped);
 		const server = createServer((socket) => {
 			if (lifecycle.closing) {
@@ -196,7 +231,7 @@ export const makeDaemon = (options: {
 				}
 				remainder = frames.remainder;
 				for (const frame of frames.frames)
-					enqueueLifecycle({
+					enqueueRequest({
 						_tag: 'request',
 						incoming: frame,
 						socket,
@@ -207,8 +242,10 @@ export const makeDaemon = (options: {
 		yield* Effect.addFinalizer(() =>
 			Effect.gen(function* () {
 				lifecycle.closing = true;
-				yield* Fiber.interrupt(worker);
+				yield* Fiber.interrupt(requestWorker);
+				yield* Fiber.interrupt(lifecycleWorker);
 				yield* Queue.shutdown(requestQueue);
+				yield* Queue.shutdown(lifecycleQueue);
 				for (const socket of sockets.keys()) {
 					socket.destroy();
 					yield* subscriptions.releaseSocket(socket);
@@ -235,12 +272,16 @@ export const makeDaemon = (options: {
 			request: (incoming: DaemonRequest) =>
 				Effect.gen(function* () {
 					const response = yield* Deferred.make<unknown, DaemonError>();
-					yield* Queue.offer(requestQueue, {
+					const offered = yield* Queue.offer(requestQueue, {
 						_tag: 'request',
 						incoming,
 						socket: undefined,
 						reply: response,
 					});
+					if (!offered)
+						return yield* new DaemonError({
+							message: 'Daemon request queue is closed',
+						});
 					return yield* Deferred.await(response);
 				}),
 		});
