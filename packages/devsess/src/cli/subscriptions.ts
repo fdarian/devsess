@@ -1,5 +1,7 @@
 import type { Socket } from 'node:net';
-import { Effect } from 'effect';
+import { Deferred, Effect, Stream } from 'effect';
+import type { FileSystem } from 'effect/FileSystem';
+import type { Path } from 'effect/Path';
 import type { ServiceExit } from './exit-status';
 import type { LogAddress, LogsService } from './logs';
 import {
@@ -65,38 +67,77 @@ export const makeSubscriptions = (options: {
 		Effect.gen(function* () {
 			const state = options.sockets.get(socket);
 			if (state === undefined) return;
-			const subscription = yield* options.logs.replayAndSubscribe(
-				address,
-				after,
-				(event) =>
-					options
-						.send(socket, {
-							version: PROTOCOL_VERSION,
-							requestId,
-							event: 'output',
-							data: event.data,
-							offset: event.offset,
-						})
-						.pipe(Effect.catch(() => Effect.void)),
-			);
-			yield* state.writer.sendReplay(
-				subscription.replay.map((event) => ({
-					version: PROTOCOL_VERSION,
-					requestId,
-					event: 'output' as const,
-					data: event.data,
-					offset: event.offset,
-				})),
-			);
+			const listener = (event: {
+				readonly data: string;
+				readonly offset: number;
+			}) =>
+				options
+					.send(socket, {
+						version: PROTOCOL_VERSION,
+						requestId,
+						event: 'output',
+						data: event.data,
+						offset: event.offset,
+					})
+					.pipe(Effect.catch(() => Effect.void));
+			const lazy = options.logs.replayAndSubscribeLazy;
+			const subscribed =
+				lazy === undefined
+					? yield* options.logs.replayAndSubscribe(address, after, listener)
+					: yield* lazy(address, after, listener);
+			const replayDone = yield* Deferred.make<void>();
+			const replaySource = subscribed.replay;
+			const replay: Effect.Effect<void, unknown, FileSystem | Path> =
+				Array.isArray(replaySource)
+					? state.writer.sendReplay(
+							replaySource.map((event) => ({
+								version: PROTOCOL_VERSION as 1,
+								requestId,
+								event: 'output' as const,
+								data: event.data,
+								offset: event.offset,
+							})),
+						)
+					: state.writer.sendReplay(
+							Stream.map(
+								replaySource as Stream.Stream<
+									{ readonly data: string; readonly offset: number },
+									unknown,
+									FileSystem | Path
+								>,
+								(event) => ({
+									version: PROTOCOL_VERSION as 1,
+									requestId,
+									event: 'output' as const,
+									data: event.data,
+									offset: event.offset,
+								}),
+							),
+						);
 			state.subscriptions.set(requestId, {
 				address,
-				flush: subscription.flush,
-				unsubscribe: subscription.unsubscribe,
+				flush: subscribed.flush.pipe(
+					Effect.andThen(Deferred.await(replayDone)),
+				),
+				unsubscribe: subscribed.unsubscribe,
 			});
+			yield* replay.pipe(
+				Effect.ensuring(Deferred.succeed(replayDone, undefined)),
+				Effect.catch((cause) =>
+					subscribed.unsubscribe.pipe(Effect.tap(() => Effect.logError(cause))),
+				),
+				Effect.forkScoped,
+			);
 			if (exit !== undefined) {
 				const current = state.subscriptions.get(requestId);
 				if (current !== undefined)
-					yield* finishSubscription(socket, state, requestId, current, exit);
+					yield* finishSubscription(
+						socket,
+						state,
+						requestId,
+						current,
+						exit,
+					).pipe(Effect.forkScoped);
 			}
 		});
 	const finishSubscriptions = (address: LogAddress, exit: ServiceExit) =>
@@ -121,7 +162,7 @@ export const makeSubscriptions = (options: {
 							requestId,
 							subscription,
 							exit,
-						);
+						).pipe(Effect.forkScoped, Effect.asVoid);
 					},
 					{ discard: true },
 				);

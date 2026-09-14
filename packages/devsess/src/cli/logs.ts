@@ -7,6 +7,7 @@ import {
 	Queue,
 	Schema,
 	Semaphore,
+	Stream,
 } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { Path } from 'effect/Path';
@@ -120,6 +121,23 @@ export class Logs extends Context.Service<
 			PlatformError | Schema.SchemaError,
 			FileSystem | Path
 		>;
+		readonly replayAndSubscribeLazy?: (
+			address: LogAddress,
+			after: number,
+			listener: (event: LogEvent) => Effect.Effect<void>,
+		) => Effect.Effect<
+			{
+				readonly replay: Stream.Stream<
+					LogEvent,
+					PlatformError | Schema.SchemaError,
+					FileSystem | Path
+				>;
+				readonly flush: Effect.Effect<void>;
+				readonly unsubscribe: Effect.Effect<void>;
+			},
+			PlatformError | Schema.SchemaError,
+			FileSystem | Path
+		>;
 	}
 >()('devsess/cli/Logs') {
 	static readonly layer = (options: {
@@ -196,6 +214,33 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 				previous: readSegment(previousPath(address)),
 				current: readSegment(currentPath(address)),
 			});
+		const completeLines = function* (content: string) {
+			let start = 0;
+			for (let index = 0; index < content.length; index += 1) {
+				if (content[index] !== '\n') continue;
+				const line = content.slice(start, index);
+				if (line.length > 0) yield line;
+				start = index + 1;
+			}
+		};
+		const readSegmentStream = (target: string) =>
+			Stream.fromEffect(fileSystem.exists(target)).pipe(
+				Stream.flatMap((exists) =>
+					exists
+						? Stream.fromEffect(fileSystem.readFileString(target)).pipe(
+								Stream.flatMap((content) =>
+									Stream.fromIteratorSucceed(completeLines(content)),
+								),
+							)
+						: Stream.empty,
+				),
+				Stream.mapEffect((line) => decodeLine(line)),
+			);
+		const replayStream = (address: LogAddress, after: number) =>
+			readSegmentStream(previousPath(address)).pipe(
+				Stream.concat(readSegmentStream(currentPath(address))),
+				Stream.filter((event) => event.offset > after),
+			);
 		const loadState = (address: LogAddress) => {
 			const key = logKey(address);
 			const existing = states.get(key);
@@ -411,7 +456,78 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 					),
 				),
 			);
-		return Logs.of({ append, replayAndSubscribe });
+		const replayAndSubscribeLazy = (
+			address: LogAddress,
+			after: number,
+			listener: (event: LogEvent) => Effect.Effect<void>,
+		) =>
+			semaphore.withPermit(
+				Effect.gen(function* () {
+					const key = logKey(address);
+					const current = listeners.get(key);
+					const subscribed = current ?? new Set<ListenerSubscription>();
+					const queue = yield* Queue.bounded<SubscriptionItem>(1);
+					const pending = new Set<Deferred.Deferred<void>>();
+					const runtime: SubscriptionRuntime = { tail: undefined };
+					const fiber = yield* Effect.gen(function* () {
+						yield* Effect.forever(
+							Effect.gen(function* () {
+								const item = yield* Queue.take(queue);
+								runtime.tail = undefined;
+								yield* listener(item.event).pipe(
+									Effect.ensuring(
+										Effect.forEach(
+											Array.from(item.completions),
+											(completion) =>
+												Effect.sync(() => {
+													pending.delete(completion);
+												}).pipe(
+													Effect.andThen(
+														Deferred.succeed(completion, undefined),
+													),
+												),
+											{ discard: true },
+										),
+									),
+								);
+							}),
+						);
+					}).pipe(Effect.forkDetach);
+					const flush = Effect.suspend(() =>
+						Effect.forEach(
+							Array.from(pending),
+							(completion) => Deferred.await(completion),
+							{ discard: true },
+						),
+					);
+					const subscription: ListenerSubscription = {
+						listener,
+						queue,
+						fiber,
+						pending,
+						flush,
+						runtime,
+					};
+					subscribed.add(subscription);
+					listeners.set(key, subscribed);
+					const unsubscribe = semaphore.withPermit(
+						Effect.sync(() => {
+							subscribed.delete(subscription);
+							if (subscribed.size === 0) listeners.delete(key);
+						}).pipe(Effect.andThen(Effect.forkDetach(Fiber.interrupt(fiber)))),
+					);
+					return {
+						replay: replayStream(address, after),
+						flush,
+						unsubscribe,
+					};
+				}),
+			);
+		return Logs.of({
+			append,
+			replayAndSubscribe,
+			replayAndSubscribeLazy,
+		});
 	});
 
 export type LogsService = Context.Service.Shape<typeof Logs>;

@@ -1,6 +1,7 @@
 import { Effect, Exit } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
+import type { Scope } from 'effect/Scope';
 import { DaemonError } from './daemon-errors';
 import { type ServiceExit, serviceExitCode } from './exit-status';
 import type { OutputWorker } from './output-worker';
@@ -32,7 +33,7 @@ export const makeRunStart = (options: {
 		runId: string,
 		force: boolean,
 		failedAddress?: { readonly runId: string; readonly serviceName: string },
-	) => Effect.Effect<RunRecord, unknown, FileSystem | Path>;
+	) => Effect.Effect<RunRecord, unknown, FileSystem | Path | Scope>;
 	readonly onExited: (
 		address: {
 			readonly runId: string;
