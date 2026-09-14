@@ -1,5 +1,5 @@
 import type { Socket } from 'node:net';
-import { Effect } from 'effect';
+import { Effect, Stream } from 'effect';
 import {
 	type DaemonEvent,
 	type DaemonResponse,
@@ -14,11 +14,9 @@ type QueuedFrame = {
 	readonly bytes: number;
 };
 
-type ReplayRequest = {
-	readonly frames: Array<QueuedFrame>;
-	index: number;
-	readonly resolve: () => void;
-};
+export type SocketWriterReplay =
+	| ReadonlyArray<SocketWriterFrame>
+	| Stream.Stream<SocketWriterFrame, unknown, unknown>;
 
 type SocketWriterOptions = {
 	readonly maxBytes?: number;
@@ -27,9 +25,12 @@ type SocketWriterOptions = {
 
 export type SocketWriter = {
 	readonly send: (frame: SocketWriterFrame) => Effect.Effect<void>;
-	readonly sendReplay: (
-		frames: ReadonlyArray<SocketWriterFrame>,
-	) => Effect.Effect<void>;
+	readonly sendReplay: {
+		(source: ReadonlyArray<SocketWriterFrame>): Effect.Effect<void>;
+		<E, R>(
+			source: Stream.Stream<SocketWriterFrame, E, R>,
+		): Effect.Effect<void, E, R>;
+	};
 	readonly overflow: (requestId: string) => Effect.Effect<void>;
 	readonly awaitIdle: Effect.Effect<void>;
 	readonly close: () => void;
@@ -45,37 +46,36 @@ export const makeSocketWriter = (
 	const maxBytes =
 		options.maxBytes === undefined ? MAX_FRAME_BYTES : options.maxBytes;
 	const queue: Array<QueuedFrame> = [];
-	const replayQueue: Array<ReplayRequest> = [];
 	const drainWaiters = new Set<() => void>();
 	const idleWaiters = new Set<() => void>();
+	const replayWaiters: Array<() => void> = [];
 	let queuedBytes = 0;
 	let pumping = false;
+	let replayActive = false;
 	let closed = false;
 
-	const releaseWaiters = () => {
-		const drains = Array.from(drainWaiters);
-		const idles = Array.from(idleWaiters);
-		drainWaiters.clear();
-		idleWaiters.clear();
-		for (const resolve of drains) resolve();
-		for (const resolve of idles) resolve();
-		for (const replay of replayQueue) replay.resolve();
-		replayQueue.length = 0;
-	};
 	const releaseIdleWaiters = () => {
 		const idles = Array.from(idleWaiters);
 		idleWaiters.clear();
 		for (const resolve of idles) resolve();
+	};
+	const releaseWaiters = () => {
+		const drains = Array.from(drainWaiters);
+		drainWaiters.clear();
+		for (const resolve of drains) resolve();
+		releaseIdleWaiters();
+		const replay = replayWaiters.splice(0);
+		for (const resolve of replay) resolve();
 	};
 	const cleanup = (notify: boolean) => {
 		if (closed) return;
 		closed = true;
 		queue.length = 0;
 		queuedBytes = 0;
+		replayActive = false;
 		socket.off('close', onClose);
 		socket.off('error', onError);
 		releaseWaiters();
-		replayQueue.length = 0;
 		if (notify) options.onClose();
 	};
 	const onClose = () => cleanup(true);
@@ -105,41 +105,7 @@ export const makeSocketWriter = (
 		});
 	};
 	const pump = () => {
-		if (pumping || closed) return;
-		const replay = replayQueue[0];
-		if (replay !== undefined) {
-			const item = replay.frames[replay.index];
-			if (item === undefined) {
-				replayQueue.shift();
-				replay.resolve();
-				pump();
-				return;
-			}
-			pumping = true;
-			try {
-				const accepted = socket.write(item.encoded);
-				if (accepted) {
-					replay.index += 1;
-					pumping = false;
-					pump();
-					return;
-				}
-				void waitForDrain().then(() => {
-					if (closed) {
-						pumping = false;
-						return;
-					}
-					replay.index += 1;
-					pumping = false;
-					pump();
-				});
-			} catch {
-				pumping = false;
-				cleanup(true);
-				if (!socket.destroyed) socket.destroy();
-			}
-			return;
-		}
+		if (pumping || replayActive || closed) return;
 		const item = queue.shift();
 		if (item === undefined) {
 			if (queuedBytes === 0) releaseIdleWaiters();
@@ -213,25 +179,62 @@ export const makeSocketWriter = (
 			queuedBytes += bytes;
 			pump();
 		});
-	const sendReplay = (frames: ReadonlyArray<SocketWriterFrame>) =>
+	const acquireReplay = () =>
 		Effect.promise(
 			() =>
 				new Promise<void>((resolve) => {
-					if (closed) {
+					if (closed || !replayActive) {
+						replayActive = !closed;
 						resolve();
 						return;
 					}
-					replayQueue.push({
-						frames: frames.map((frame) => ({
-							encoded: `${JSON.stringify(frame)}\n`,
-							bytes: Buffer.byteLength(`${JSON.stringify(frame)}\n`),
-						})),
-						index: 0,
-						resolve,
+					replayWaiters.push(() => {
+						replayActive = !closed;
+						resolve();
 					});
-					pump();
 				}),
 		);
+	const releaseReplay = () =>
+		Effect.sync(() => {
+			if (!replayActive) return;
+			replayActive = false;
+			const next = replayWaiters.shift();
+			if (next !== undefined) next();
+			pump();
+			if (queue.length === 0 && queuedBytes === 0) releaseIdleWaiters();
+		});
+	const writeReplayFrame = (frame: SocketWriterFrame) =>
+		Effect.promise(
+			() =>
+				new Promise<void>((resolve) => {
+					if (closed || socket.destroyed || !socket.writable) {
+						resolve();
+						return;
+					}
+					const encoded = `${JSON.stringify(frame)}\n`;
+					try {
+						const accepted = socket.write(encoded);
+						if (accepted) {
+							resolve();
+							return;
+						}
+						void waitForDrain().then(resolve);
+					} catch {
+						cleanup(true);
+						if (!socket.destroyed) socket.destroy();
+						resolve();
+					}
+				}),
+		);
+	const sendReplay = ((source: SocketWriterReplay) =>
+		Effect.gen(function* () {
+			yield* acquireReplay();
+			const replay: Stream.Stream<SocketWriterFrame, unknown, unknown> =
+				Array.isArray(source)
+					? Stream.fromIterable(source)
+					: (source as Stream.Stream<SocketWriterFrame, unknown, unknown>);
+			yield* Stream.runForEach(replay, (frame) => writeReplayFrame(frame));
+		}).pipe(Effect.ensuring(releaseReplay()))) as SocketWriter['sendReplay'];
 	const overflow = (requestId: string) =>
 		Effect.sync(() => writeOverflow(requestId));
 	const awaitIdle = Effect.promise(
@@ -239,10 +242,7 @@ export const makeSocketWriter = (
 			new Promise<void>((resolve) => {
 				if (
 					closed ||
-					(!pumping &&
-						queue.length === 0 &&
-						replayQueue.length === 0 &&
-						queuedBytes === 0)
+					(!pumping && !replayActive && queue.length === 0 && queuedBytes === 0)
 				) {
 					resolve();
 					return;

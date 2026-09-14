@@ -7,7 +7,7 @@ import { Daemon, makeDaemon } from '../../src/cli/daemon';
 import { Logs } from '../../src/cli/logs';
 import { Processes } from '../../src/cli/processes';
 import type { DaemonRequest } from '../../src/cli/protocol';
-import { Registry } from '../../src/cli/registry';
+import { Registry, type RunRecord } from '../../src/cli/registry';
 import { runTest } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
 
@@ -42,6 +42,13 @@ const tailRequest = (runId: string): DaemonRequest => ({
 	method: 'tail',
 	params: { runId, serviceName: 'web' },
 });
+
+const listRequest: DaemonRequest = {
+	version: 1,
+	requestId: 'list',
+	method: 'listRuns',
+	params: {},
+};
 
 const waitForConnection = (socket: ReturnType<typeof createConnection>) =>
 	Effect.tryPromise({
@@ -149,6 +156,68 @@ describe('daemon streaming integration', () => {
 						'FINAL',
 					);
 				}).pipe(Effect.provide(daemonLayer));
+			}),
+		),
+	);
+
+	it.live('keeps list responsive while a completed replay is paused', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const socketPath = join(root, 'daemon.sock');
+				const dependencies = Layer.mergeAll(
+					Registry.layer({ dataDirectory: root }),
+					Logs.layer({ dataDirectory: root, maxBytes: 1024 * 1024 }),
+					Processes.layer,
+				);
+				const daemonLayer = Layer.effect(
+					Daemon,
+					makeDaemon({ socketPath }),
+				).pipe(Layer.provideMerge(dependencies));
+				yield* Effect.scoped(
+					Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						yield* daemon.request(
+							startRequest(
+								'completed-replay',
+								`${process.execPath} -e 'process.stdout.write("x".repeat(1024 * 1024))'`,
+							),
+						);
+						let completed = false;
+						for (let attempt = 0; attempt < 100; attempt += 1) {
+							const runs = (yield* daemon.request(
+								listRequest,
+							)) as Array<RunRecord>;
+							if (
+								runs.some(
+									(run) =>
+										run.runId === 'completed-replay' && run.state === 'exited',
+								)
+							) {
+								completed = true;
+								break;
+							}
+							yield* Effect.sleep('20 millis');
+						}
+						expect(completed).toBe(true);
+						const socket = yield* Effect.acquireRelease(
+							Effect.sync(() => createConnection(socketPath)),
+							(socket) => Effect.sync(() => socket.destroy()),
+						);
+						yield* waitForConnection(socket);
+						socket.write(
+							`${JSON.stringify(tailRequest('completed-replay'))}\n`,
+						);
+						socket.pause();
+						const started = performance.now();
+						const runs = yield* daemon
+							.request(listRequest)
+							.pipe(Effect.timeout('1 second'));
+						const latency = performance.now() - started;
+						expect(runs).toHaveLength(1);
+						expect(latency).toBeLessThan(500);
+					}).pipe(Effect.provide(daemonLayer)),
+				);
 			}),
 		),
 	);
