@@ -2,6 +2,7 @@ import { createConnection, createServer, Socket } from 'node:net';
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 import { Cause, Deferred, Effect, Exit, Layer, Schema } from 'effect';
+import { PlatformError, SystemError } from 'effect/PlatformError';
 import { vi } from 'vitest';
 import { callDaemon } from '../../src/cli/client';
 import { Daemon, makeDaemon } from '../../src/cli/daemon';
@@ -730,6 +731,76 @@ describe('daemon lifetime and failure handling', () => {
 				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
 			}),
 		),
+	);
+
+	it.live(
+		'terminates and completes subscriptions after log persistence fails',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const failedLogs = Logs.of({
+						append: () =>
+							Effect.fail(
+								new PlatformError(
+									new SystemError({
+										_tag: 'Unknown',
+										module: 'test',
+										method: 'append',
+										description: 'disk full',
+									}),
+								),
+							),
+						replayAndSubscribe: () =>
+							Effect.succeed({
+								replay: [] as Array<LogEvent>,
+								flush: Effect.void,
+								unsubscribe: Effect.sync(state.unsubscribe),
+							}),
+					});
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						yield* daemon.request(start());
+						const client = createConnection(join(root, 'daemon.sock'));
+						client.on('error', () => undefined);
+						const completed = yield* Deferred.make<void>();
+						let received = '';
+						client.on('data', (chunk) => {
+							received += chunk.toString();
+							if (received.includes('"event":"exit"'))
+								Effect.runFork(Deferred.succeed(completed, undefined));
+						});
+						yield* Effect.promise(
+							() =>
+								new Promise<void>((resolve) => client.once('connect', resolve)),
+						);
+						client.write(
+							`${JSON.stringify({ version: 1, requestId: 'tail', method: 'tail', params: { runId: 'run', serviceName: 'web' } })}\n`,
+						);
+						const onData = state.terminal.onData.mock.calls[0]?.[0];
+						if (typeof onData !== 'function')
+							return yield* Effect.die('Missing PTY output callback');
+						onData('output before failure');
+						yield* Deferred.await(completed).pipe(Effect.timeout('1 second'));
+						expect(state.terminate).toHaveBeenCalledWith(identity(98765));
+						expect(received).toContain('"event":"exit"');
+						expect(received).toContain('"exitCode":1');
+						expect(
+							(yield* state.registry.get('run')).services[0],
+						).toMatchObject({
+							state: 'failed',
+							exitCode: 1,
+						});
+						client.destroy();
+					}).pipe(
+						Effect.provide(
+							state.layerWithLogs(join(root, 'daemon.sock'), failedLogs),
+						),
+						Effect.timeout('3 seconds'),
+					);
+				}),
+			),
 	);
 
 	it.live(
