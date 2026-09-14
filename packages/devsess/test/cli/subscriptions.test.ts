@@ -315,4 +315,93 @@ describe('subscription setup races', () => {
 			),
 		),
 	);
+
+	it.effect(
+		'prunes persisted completion records after reservations release',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const logs = Logs.of({
+						append: (_address: LogAddress, data: string) =>
+							Effect.succeed({ data, offset: 0 }),
+						replayAndSubscribe: () =>
+							Effect.succeed({
+								replay: [] as Array<LogEvent>,
+								flush: Effect.void,
+								unsubscribe: Effect.void,
+							}),
+					});
+					const subscriptions = makeSubscriptions({
+						logs,
+						sockets: new Map<Socket, SocketState>(),
+						send: () => Effect.void,
+					});
+					for (let index = 0; index < 10_000; index += 1) {
+						const completedAddress = {
+							runId: `run-${index}`,
+							serviceName: 'web',
+						};
+						yield* subscriptions.finishSubscriptions(completedAddress, {
+							exitCode: 0,
+						});
+						yield* subscriptions.markPersisted(completedAddress);
+					}
+					expect(subscriptions.completionCount()).toBe(0);
+				}),
+			),
+	);
+
+	it.live('replays a late tail after completion pruning with one exit', () =>
+		runTest(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const configured = makeSocket();
+					const sockets = new Map([[configured.socket, configured.state]]);
+					const sent: Array<string> = [];
+					const exitSent = yield* Deferred.make<void>();
+					const logs = Logs.of({
+						append: (_address: LogAddress, data: string) =>
+							Effect.succeed({ data, offset: 0 }),
+						replayAndSubscribe: () =>
+							Effect.succeed({
+								replay: [{ data: 'persisted', offset: 0 }] as Array<LogEvent>,
+								flush: Effect.void,
+								unsubscribe: Effect.void,
+							}),
+					});
+					const subscriptions = makeSubscriptions({
+						logs,
+						sockets,
+						send: (_socket, frame) =>
+							Effect.sync(() => {
+								if ('event' in frame) sent.push(frame.event);
+								if ('event' in frame && frame.event === 'exit')
+									Effect.runFork(Deferred.succeed(exitSent, undefined));
+							}),
+					});
+					yield* subscriptions.finishSubscriptions(address, { exitCode: 0 });
+					yield* subscriptions.markPersisted(address);
+					expect(subscriptions.completionCount()).toBe(0);
+					yield* subscriptions.subscribe(
+						configured.socket,
+						'tail',
+						address,
+						0,
+						{
+							exitCode: 0,
+						},
+					);
+					yield* Deferred.await(exitSent).pipe(Effect.timeout('1 second'));
+					expect(sent.filter((event) => event === 'exit')).toHaveLength(1);
+					for (let attempt = 0; attempt < 100; attempt += 1) {
+						if (subscriptions.completionCount() === 0) break;
+						yield* Effect.sleep('1 millis');
+					}
+					expect(subscriptions.completionCount()).toBe(0);
+					configured.state.writer.close();
+					configured.socket.destroy();
+				}),
+			),
+		),
+	);
 });

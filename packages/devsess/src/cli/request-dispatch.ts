@@ -104,25 +104,32 @@ export const makeRequestDispatcher = (options: {
 		if (incoming.method === 'tail')
 			return socket === undefined
 				? options.registry.get(address.runId)
-				: Effect.gen(function* () {
-						const run = yield* options.registry.get(address.runId);
-						const service = run.services.find(
-							(candidate) => candidate.name === address.serviceName,
-						);
-						if (service === undefined)
-							return yield* new DaemonError({
-								message: `Service ${address.serviceName} was not found in run ${address.runId}`,
-							});
-						return yield* options.subscriptions
-							.subscribe(
-								socket,
-								incoming.requestId,
-								address,
-								incoming.params.after ?? 0,
-								completedExit(service),
-							)
-							.pipe(Effect.as({}));
-					});
+				: Effect.sync(() => options.subscriptions.retain(address)).pipe(
+						Effect.andThen(
+							Effect.gen(function* () {
+								const run = yield* options.registry.get(address.runId);
+								const service = run.services.find(
+									(candidate) => candidate.name === address.serviceName,
+								);
+								if (service === undefined)
+									return yield* new DaemonError({
+										message: `Service ${address.serviceName} was not found in run ${address.runId}`,
+									});
+								return yield* options.subscriptions
+									.subscribe(
+										socket,
+										incoming.requestId,
+										address,
+										incoming.params.after ?? 0,
+										completedExit(service),
+									)
+									.pipe(Effect.as({}));
+							}),
+						),
+						Effect.ensuring(
+							Effect.sync(() => options.subscriptions.release(address)),
+						),
+					);
 		const live = options.terminals.get(serviceKey(address));
 		if (incoming.method === 'attach') {
 			if (live === undefined)
@@ -187,6 +194,7 @@ export const makeRequestDispatcher = (options: {
 					}),
 				),
 				Effect.andThen(options.runStop.finishService(message.address, exit)),
+				Effect.andThen(options.subscriptions.markPersisted(message.address)),
 				Effect.asVoid,
 				Effect.catch((cause) =>
 					options.serviceState

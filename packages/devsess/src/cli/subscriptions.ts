@@ -27,6 +27,7 @@ export type Subscription = {
 	finishing: boolean;
 	unsubscribed: boolean;
 	unsubscribeRequested: boolean;
+	released: boolean;
 };
 
 export type SocketState = {
@@ -40,6 +41,7 @@ export type Subscriptions = ReturnType<typeof makeSubscriptions>;
 type CompletionRecord = {
 	readonly completed: true;
 	readonly exit: ServiceExit;
+	persisted: boolean;
 };
 
 const addressKey = (address: LogAddress) =>
@@ -55,14 +57,57 @@ export const makeSubscriptions = (options: {
 	) => Effect.Effect<void>;
 }) => {
 	const completions = new Map<string, CompletionRecord>();
-	const complete = (address: LogAddress, exit: ServiceExit) => {
+	const reservationCounts = new Map<string, number>();
+	const maybePrune = (key: string) => {
+		const completion = completions.get(key);
+		if (
+			completion?.persisted === true &&
+			(reservationCounts.get(key) ?? 0) === 0
+		)
+			completions.delete(key);
+	};
+	const retain = (address: LogAddress) => {
+		const key = addressKey(address);
+		reservationCounts.set(key, (reservationCounts.get(key) ?? 0) + 1);
+	};
+	const release = (address: LogAddress) => {
+		const key = addressKey(address);
+		const count = reservationCounts.get(key);
+		if (count === undefined) return;
+		if (count <= 1) reservationCounts.delete(key);
+		else reservationCounts.set(key, count - 1);
+		maybePrune(key);
+	};
+	const complete = (
+		address: LogAddress,
+		exit: ServiceExit,
+		persisted: boolean,
+	) => {
 		const key = addressKey(address);
 		const current = completions.get(key);
-		if (current !== undefined) return current;
-		const record: CompletionRecord = { completed: true, exit };
+		if (current !== undefined) {
+			if (persisted) current.persisted = true;
+			maybePrune(key);
+			return current;
+		}
+		const record: CompletionRecord = { completed: true, exit, persisted };
 		completions.set(key, record);
+		maybePrune(key);
 		return record;
 	};
+	const markPersisted = (address: LogAddress) =>
+		Effect.sync(() => {
+			const completion = completions.get(addressKey(address));
+			if (completion === undefined) return;
+			completion.persisted = true;
+			maybePrune(addressKey(address));
+		});
+	const releaseReservation = (subscription: Subscription) =>
+		Effect.sync(() => {
+			if (subscription.released) return;
+			subscription.released = true;
+			release(subscription.address);
+		});
 	const removeSubscription = (
 		state: SocketState,
 		requestId: string,
@@ -71,7 +116,7 @@ export const makeSubscriptions = (options: {
 		Effect.sync(() => {
 			if (state.subscriptions.get(requestId) === subscription)
 				state.subscriptions.delete(requestId);
-		});
+		}).pipe(Effect.andThen(releaseReservation(subscription)));
 	const unsubscribeSubscription = (subscription: Subscription) =>
 		Effect.suspend(() => {
 			if (subscription.unsubscribed) return Effect.void;
@@ -155,12 +200,14 @@ export const makeSubscriptions = (options: {
 				finishing: false,
 				unsubscribed: false,
 				unsubscribeRequested: false,
+				released: false,
 			};
 			state.subscriptions.set(requestId, reservation);
+			retain(address);
 			const completion =
 				exit === undefined
 					? completions.get(addressKey(address))
-					: complete(address, exit);
+					: complete(address, exit, true);
 			if (completion !== undefined) reservation.exit = completion.exit;
 			const listener = (event: {
 				readonly data: string;
@@ -178,9 +225,20 @@ export const makeSubscriptions = (options: {
 			const onOverflow = () =>
 				state.writer
 					.overflow(requestId)
-					.pipe(Effect.ensuring(unsubscribeSubscription(reservation)));
+					.pipe(
+						Effect.ensuring(
+							unsubscribeSubscription(reservation).pipe(
+								Effect.andThen(
+									removeSubscription(state, requestId, reservation),
+								),
+							),
+						),
+					);
 			const setup = Effect.gen(function* () {
-				if (state.closed || reservation.cancelled) return;
+				if (state.closed || reservation.cancelled) {
+					yield* removeSubscription(state, requestId, reservation);
+					return;
+				}
 				const lazy = options.logs.replayAndSubscribeLazy;
 				const subscribed =
 					lazy === undefined
@@ -201,6 +259,7 @@ export const makeSubscriptions = (options: {
 					reservation.unsubscribeRequested
 				) {
 					yield* unsubscribeSubscription(reservation);
+					yield* removeSubscription(state, requestId, reservation);
 					return;
 				}
 				yield* Deferred.succeed(reservation.ready, undefined);
@@ -240,6 +299,7 @@ export const makeSubscriptions = (options: {
 					),
 					Effect.catch((cause) =>
 						unsubscribeSubscription(reservation).pipe(
+							Effect.andThen(removeSubscription(state, requestId, reservation)),
 							Effect.tap(() => Effect.logError(cause)),
 						),
 					),
@@ -282,7 +342,7 @@ export const makeSubscriptions = (options: {
 			}
 		});
 	const finishSubscriptions = (address: LogAddress, exit: ServiceExit) =>
-		Effect.sync(() => complete(address, exit)).pipe(
+		Effect.sync(() => complete(address, exit, false)).pipe(
 			Effect.flatMap((completion) =>
 				Effect.forEach(
 					Array.from(options.sockets.entries()),
@@ -331,6 +391,7 @@ export const makeSubscriptions = (options: {
 							),
 						);
 					yield* unsubscribeSubscription(subscription);
+					yield* releaseReservation(subscription);
 				}
 			}
 			if (options.onRelease !== undefined) yield* options.onRelease(socket);
@@ -340,5 +401,9 @@ export const makeSubscriptions = (options: {
 		subscribe,
 		finishSubscriptions,
 		releaseSocket,
+		retain: (address: LogAddress) => retain(address),
+		release: (address: LogAddress) => release(address),
+		markPersisted,
+		completionCount: () => completions.size,
 	};
 };

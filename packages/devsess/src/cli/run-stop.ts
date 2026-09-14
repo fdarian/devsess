@@ -160,6 +160,13 @@ export const makeRunStop = (options: {
 				services,
 				state: aggregateState(services),
 			});
+			for (const service of services) {
+				if (service.state !== 'exited' && service.state !== 'failed') continue;
+				yield* options.subscriptions.markPersisted({
+					runId,
+					serviceName: service.name,
+				});
+			}
 			if (failures.length > 0) {
 				const message =
 					failureMessages.length > 0
@@ -190,11 +197,13 @@ export const makeRunStop = (options: {
 						}
 					: service,
 			);
-			return yield* options.registry.replace({
+			const stored = yield* options.registry.replace({
 				...run,
 				services,
 				state: aggregateState(services),
 			});
+			yield* options.subscriptions.markPersisted(live.address);
+			return stored;
 		});
 	return { stopRun, terminateRemaining, finishService };
 };
