@@ -160,6 +160,120 @@ describe('daemon streaming integration', () => {
 		),
 	);
 
+	it.live('stops a burst with a paused tail without blocking persistence', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const socketPath = join(root, 'daemon.sock');
+				const gatePath = join(root, 'emit.ready');
+				const outputReadyPath = join(root, 'output.ready');
+				const dependencies = Layer.mergeAll(
+					Registry.layer({ dataDirectory: root }),
+					Logs.layer({ dataDirectory: root, maxBytes: 1024 * 1024 }),
+					Processes.layer,
+				);
+				const daemonLayer = Layer.effect(
+					Daemon,
+					makeDaemon({ socketPath }),
+				).pipe(Layer.provideMerge(dependencies));
+				yield* Effect.scoped(
+					Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						const command = `${process.execPath} -e 'const fs=require("node:fs"); const gate=${JSON.stringify(gatePath)}; const outputReady=${JSON.stringify(outputReadyPath)}; const timer=setInterval(() => { if (fs.existsSync(gate)) { clearInterval(timer); process.stdout.write("x".repeat(8 * 1024 * 1024)); process.stdout.write("FINAL"); fs.writeFileSync(outputReady, "ready"); setTimeout(() => {}, 30000); } }, 5)'`;
+						yield* daemon.request(startRequest('paused-stop', command));
+						const tail = yield* Effect.acquireRelease(
+							Effect.sync(() => createConnection(socketPath)),
+							(socket) => Effect.sync(() => socket.destroy()),
+						);
+						yield* waitForConnection(tail);
+						let remainder = '';
+						let tailReady = false;
+						let tailClosed = false;
+						let tailExit = false;
+						let overflowFrame = false;
+						const tailRequestValue = tailRequest('paused-stop');
+						tail.on('error', () => undefined);
+						tail.once('close', () => {
+							tailClosed = true;
+						});
+						tail.on('data', (chunk) => {
+							const frames = `${remainder}${chunk.toString()}`.split('\n');
+							const nextRemainder = frames.pop();
+							if (nextRemainder === undefined) return;
+							remainder = nextRemainder;
+							for (const frame of frames) {
+								if (frame.length === 0) continue;
+								const value = JSON.parse(frame) as {
+									requestId?: string;
+									ok?: boolean;
+									error?: string;
+									event?: string;
+								};
+								if (value.requestId !== tailRequestValue.requestId) continue;
+								if (value.ok === true) {
+									tailReady = true;
+									tail.pause();
+								}
+								if (value.event === 'exit') tailExit = true;
+								if (
+									value.ok === false &&
+									value.error?.includes('buffer') === true
+								)
+									overflowFrame = true;
+							}
+						});
+						tail.write(`${JSON.stringify(tailRequestValue)}\n`);
+						for (let attempt = 0; attempt < 100; attempt += 1) {
+							if (tailReady) break;
+							yield* Effect.sleep('10 millis');
+						}
+						expect(tailReady).toBe(true);
+						const fileSystem = yield* FileSystem;
+						yield* fileSystem.writeFileString(gatePath, 'go');
+						let outputReady = false;
+						for (let attempt = 0; attempt < 500; attempt += 1) {
+							if (yield* fileSystem.exists(outputReadyPath)) {
+								outputReady = true;
+								break;
+							}
+							yield* Effect.sleep('10 millis');
+						}
+						expect(outputReady).toBe(true);
+						const started = performance.now();
+						const stopped = (yield* daemon
+							.request({
+								version: 1,
+								requestId: 'stop-paused',
+								method: 'stopRun',
+								params: { runId: 'paused-stop' },
+							} as DaemonRequest)
+							.pipe(Effect.timeout('10 seconds'))) as RunRecord;
+						const latency = performance.now() - started;
+						console.info(`paused tail stop latency: ${Math.round(latency)}ms`);
+						expect(stopped.state).toBe('exited');
+						expect(stopped.services[0]?.state).toBe('exited');
+						const logs = yield* Logs;
+						const replay = yield* logs.replayAndSubscribe(
+							{ runId: 'paused-stop', serviceName: 'web' },
+							0,
+							() => Effect.void,
+						);
+						expect(replay.replay.map((event) => event.data).join('')).toContain(
+							'FINAL',
+						);
+						yield* replay.unsubscribe;
+						tail.resume();
+						for (let attempt = 0; attempt < 150; attempt += 1) {
+							if (tailClosed || tailExit || overflowFrame) break;
+							yield* Effect.sleep('20 millis');
+						}
+						expect(tailClosed || tailExit || overflowFrame).toBe(true);
+					}).pipe(Effect.provide(daemonLayer)),
+				);
+			}),
+		),
+	);
+
 	it.live('keeps list responsive while a completed replay is paused', () =>
 		runTest(
 			Effect.gen(function* () {

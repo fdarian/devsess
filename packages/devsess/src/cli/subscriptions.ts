@@ -175,13 +175,22 @@ export const makeSubscriptions = (options: {
 						offset: event.offset,
 					})
 					.pipe(Effect.catch(() => Effect.void));
+			const onOverflow = () =>
+				state.writer
+					.overflow(requestId)
+					.pipe(Effect.ensuring(unsubscribeSubscription(reservation)));
 			const setup = Effect.gen(function* () {
 				if (state.closed || reservation.cancelled) return;
 				const lazy = options.logs.replayAndSubscribeLazy;
 				const subscribed =
 					lazy === undefined
-						? yield* options.logs.replayAndSubscribe(address, after, listener)
-						: yield* lazy(address, after, listener);
+						? yield* options.logs.replayAndSubscribe(
+								address,
+								after,
+								listener,
+								onOverflow,
+							)
+						: yield* lazy(address, after, listener, onOverflow);
 				reservation.active = {
 					flush: subscribed.flush,
 					unsubscribe: subscribed.unsubscribe,

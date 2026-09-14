@@ -17,11 +17,14 @@ type SubscriptionRuntime = {
 
 type ListenerSubscription = {
 	readonly listener: (event: LogEvent) => Effect.Effect<void>;
+	readonly onOverflow: () => Effect.Effect<void>;
 	readonly queue: Queue.Queue<SubscriptionItem>;
 	readonly fiber: Fiber.Fiber<void, unknown>;
 	readonly pending: Set<Deferred.Deferred<void>>;
 	readonly flush: Effect.Effect<void>;
 	readonly runtime: SubscriptionRuntime;
+	unsubscribe: Effect.Effect<void>;
+	overflowed: boolean;
 };
 
 export type LogSubscription<Replay extends LogReplay = LogReplay> = {
@@ -37,6 +40,7 @@ export type LogFanout = {
 		replay: Replay,
 		cutoff: number,
 		listener: (event: LogEvent) => Effect.Effect<void>,
+		onOverflow: () => Effect.Effect<void>,
 	) => Effect.Effect<LogSubscription<Replay>>;
 	readonly notify: (
 		address: LogAddress,
@@ -54,6 +58,7 @@ export const makeLogFanout = (): LogFanout => {
 		replay: Replay,
 		cutoff: number,
 		listener: (event: LogEvent) => Effect.Effect<void>,
+		onOverflow: () => Effect.Effect<void>,
 	) =>
 		Effect.gen(function* () {
 			const key = logKey(address);
@@ -102,11 +107,14 @@ export const makeLogFanout = (): LogFanout => {
 			);
 			const subscription: ListenerSubscription = {
 				listener,
+				onOverflow,
 				queue,
 				fiber,
 				pending,
 				flush,
 				runtime,
+				unsubscribe: Effect.void,
+				overflowed: false,
 			};
 			subscribed.add(subscription);
 			listeners.set(key, subscribed);
@@ -117,6 +125,7 @@ export const makeLogFanout = (): LogFanout => {
 				Effect.andThen(Queue.shutdown(queue)),
 				Effect.andThen(Effect.forkDetach(Fiber.interrupt(fiber))),
 			);
+			subscription.unsubscribe = unsubscribe;
 			return {
 				replay,
 				flush,
@@ -125,11 +134,14 @@ export const makeLogFanout = (): LogFanout => {
 			};
 		});
 	const notify = (address: LogAddress, events: ReadonlyArray<LogEvent>) => {
-		const active = listeners.get(logKey(address));
+		const key = logKey(address);
+		const active = listeners.get(key);
 		if (active === undefined) return Effect.void;
 		return Effect.gen(function* () {
 			for (const subscription of active) {
+				if (subscription.overflowed) continue;
 				for (const event of events) {
+					if (subscription.overflowed) break;
 					if (event.offset < subscription.runtime.cutoff) continue;
 					const completion = yield* Deferred.make<void>();
 					subscription.pending.add(completion);
@@ -156,14 +168,18 @@ export const makeLogFanout = (): LogFanout => {
 						tail.completions.add(completion);
 						continue;
 					}
-					subscription.runtime.tail = item;
-					yield* Queue.offer(subscription.queue, item).pipe(
-						Effect.catch(() =>
-							Effect.sync(() => {
-								if (subscription.runtime.tail === item)
-									subscription.runtime.tail = undefined;
-								subscription.pending.delete(completion);
-							}).pipe(Effect.andThen(Deferred.succeed(completion, undefined))),
+					subscription.overflowed = true;
+					active.delete(subscription);
+					if (active.size === 0) listeners.delete(key);
+					subscription.runtime.tail = undefined;
+					const pending = Array.from(subscription.pending);
+					subscription.pending.clear();
+					for (const pendingCompletion of pending)
+						yield* Deferred.succeed(pendingCompletion, undefined);
+					Effect.runFork(
+						subscription.unsubscribe.pipe(
+							Effect.andThen(subscription.onOverflow()),
+							Effect.catchCause(() => Effect.void),
 						),
 					);
 				}

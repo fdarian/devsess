@@ -14,6 +14,8 @@ import {
 export type { LogAddress, LogEvent } from './log-segments';
 export { LogAddressSchema, LogEventSchema } from './log-segments';
 
+export type LogOverflowHandler = () => Effect.Effect<void>;
+
 export class Logs extends Context.Service<
 	Logs,
 	{
@@ -29,6 +31,7 @@ export class Logs extends Context.Service<
 			address: LogAddress,
 			after: number,
 			listener: (event: LogEvent) => Effect.Effect<void>,
+			onOverflow?: LogOverflowHandler,
 		) => Effect.Effect<
 			{
 				readonly replay: ReadonlyArray<LogEvent>;
@@ -43,6 +46,7 @@ export class Logs extends Context.Service<
 			address: LogAddress,
 			after: number,
 			listener: (event: LogEvent) => Effect.Effect<void>,
+			onOverflow?: LogOverflowHandler,
 		) => Effect.Effect<
 			{
 				readonly replay: LogReplayStream;
@@ -77,6 +81,7 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 			address: LogAddress,
 			after: number,
 			listener: (event: LogEvent) => Effect.Effect<void>,
+			onOverflow?: LogOverflowHandler,
 		) =>
 			semaphore.withPermit(
 				segments
@@ -88,7 +93,13 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 								.pipe(
 									Effect.flatMap((replay) =>
 										fanout
-											.subscribe(address, replay, snapshot.cutoff, listener)
+											.subscribe(
+												address,
+												replay,
+												snapshot.cutoff,
+												listener,
+												onOverflow ?? (() => Effect.void),
+											)
 											.pipe(
 												Effect.tap(
 													(subscription) => subscription.completeReplay,
@@ -103,6 +114,7 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 			address: LogAddress,
 			after: number,
 			listener: (event: LogEvent) => Effect.Effect<void>,
+			onOverflow?: LogOverflowHandler,
 		) =>
 			semaphore.withPermit(
 				segments
@@ -114,6 +126,7 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 								segments.replayStream(snapshot),
 								snapshot.cutoff,
 								listener,
+								onOverflow ?? (() => Effect.void),
 							),
 						),
 					),
