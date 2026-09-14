@@ -79,4 +79,31 @@ describe('socket writer', () => {
 			expect(writer.isClosed()).toBe(false);
 		}),
 	);
+
+	it.effect(
+		'streams replay frames without applying the live backlog bound',
+		() =>
+			Effect.gen(function* () {
+				const socket = new Socket();
+				const writer = makeSocketWriter(socket, {
+					onClose: () => undefined,
+					maxBytes: 128,
+				});
+				const written: Array<string> = [];
+				vi.spyOn(socket, 'write').mockImplementation((chunk) => {
+					written.push(typeof chunk === 'string' ? chunk : chunk.toString());
+					return true;
+				});
+				const frames = Array.from({ length: 256 }, (_value, index) => ({
+					version: 1 as const,
+					requestId: 'tail',
+					event: 'output' as const,
+					data: 'x'.repeat(64),
+					offset: index + 1,
+				}));
+				yield* writer.sendReplay(frames);
+				expect(written).toHaveLength(frames.length);
+				expect(writer.isClosed()).toBe(false);
+			}),
+	);
 });
