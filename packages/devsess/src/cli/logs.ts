@@ -29,38 +29,33 @@ export const LogEventSchema = Schema.Struct({
 });
 export type LogEvent = typeof LogEventSchema.Type;
 
-const StoredLogSchema = Schema.fromJsonString(
-	Schema.Struct({
-		nextOffset: NonNegativeInt,
-		events: Schema.Array(LogEventSchema),
-	}),
-);
+const LogLineSchema = Schema.fromJsonString(LogEventSchema);
+
+type Segment = {
+	readonly events: Array<LogEvent>;
+	readonly bytes: number;
+	readonly exists: boolean;
+	readonly partial: boolean;
+};
+
+type LogState = {
+	nextOffset: number;
+	currentBytes: number;
+	currentExists: boolean;
+	currentPartial: boolean;
+};
+
+const textEncoder = new TextEncoder();
 
 const logKey = (address: LogAddress) =>
 	`${address.runId}:${address.serviceName}`;
 
-const retain = (events: Array<LogEvent>, maxBytes: number) => {
-	const encoder = new TextEncoder();
-	const kept = [...events];
-	while (
-		kept.length > 1 &&
-		kept.reduce(
-			(total, event) => total + encoder.encode(event.data).byteLength,
-			0,
-		) > maxBytes
-	) {
-		kept.shift();
-	}
-	return kept;
-};
-
 const splitData = (data: string, maxBytes: number) => {
-	const encoder = new TextEncoder();
 	const chunks: Array<string> = [];
 	let chunk = '';
 	let chunkBytes = 0;
 	for (const character of data) {
-		const characterBytes = encoder.encode(character).byteLength;
+		const characterBytes = textEncoder.encode(character).byteLength;
 		if (chunk !== '' && chunkBytes + characterBytes > maxBytes) {
 			chunks.push(chunk);
 			chunk = '';
@@ -72,16 +67,6 @@ const splitData = (data: string, maxBytes: number) => {
 	if (chunk !== '' || data === '') chunks.push(chunk);
 	return chunks;
 };
-
-const writeAtomically = (target: string, content: string) =>
-	Effect.gen(function* () {
-		const fileSystem = yield* FileSystem;
-		const path = yield* Path;
-		const temporary = `${target}.${crypto.randomUUID()}.tmp`;
-		yield* fileSystem.makeDirectory(path.dirname(target), { recursive: true });
-		yield* fileSystem.writeFileString(temporary, content, { mode: 0o600 });
-		yield* fileSystem.rename(temporary, target);
-	});
 
 export class Logs extends Context.Service<
 	Logs,
@@ -120,6 +105,7 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 		const fileSystem = yield* FileSystem;
 		const path = yield* Path;
 		const semaphore = yield* Semaphore.make(1);
+		const states = new Map<string, LogState>();
 		const listeners = new Map<
 			string,
 			Set<{
@@ -133,82 +119,197 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 				readonly flush: Effect.Effect<void>;
 			}>
 		>();
-		const logPath = (address: LogAddress) =>
+		const logBase = (address: LogAddress) =>
 			path.join(
 				options.dataDirectory,
 				'logs',
 				address.runId,
-				`${address.serviceName}.json`,
+				address.serviceName,
 			);
-		const read = (address: LogAddress) => {
-			const target = logPath(address);
-			return fileSystem.exists(target).pipe(
+		const currentPath = (address: LogAddress) => `${logBase(address)}.jsonl`;
+		const previousPath = (address: LogAddress) => `${logBase(address)}.1.jsonl`;
+
+		const decodeLine = (
+			line: string,
+		): Effect.Effect<LogEvent, Schema.SchemaError> =>
+			Schema.decodeUnknownEffect(LogLineSchema)(line);
+		const decodeLines = (content: string) => {
+			const hasTrailingNewline = content.endsWith('\n');
+			const lines = content.split('\n');
+			const trailing = hasTrailingNewline ? '' : lines.pop();
+			const complete = lines.filter((line) => line.length > 0);
+			return Effect.forEach(complete, decodeLine, { discard: false }).pipe(
+				Effect.flatMap((events) =>
+					trailing === undefined || trailing.length === 0
+						? Effect.succeed(events)
+						: decodeLine(trailing).pipe(
+								Effect.map((event) => [...events, event]),
+								Effect.catch(() => Effect.succeed(events)),
+							),
+				),
+			);
+		};
+		const readSegment = (
+			target: string,
+		): Effect.Effect<Segment, PlatformError | Schema.SchemaError> =>
+			fileSystem.exists(target).pipe(
 				Effect.flatMap((exists) =>
 					exists
-						? fileSystem
-								.readFileString(target)
-								.pipe(
-									Effect.flatMap(Schema.decodeUnknownEffect(StoredLogSchema)),
-								)
+						? fileSystem.readFileString(target).pipe(
+								Effect.flatMap((content) =>
+									decodeLines(content).pipe(
+										Effect.map((events) => ({
+											events,
+											bytes: textEncoder.encode(content).byteLength,
+											exists: true as boolean,
+											partial: !content.endsWith('\n'),
+										})),
+									),
+								),
+							)
 						: Effect.succeed({
-								nextOffset: 0,
 								events: [] as Array<LogEvent>,
+								bytes: 0,
+								exists: false as boolean,
+								partial: false,
 							}),
 				),
+			);
+		const readSegments = (address: LogAddress) =>
+			Effect.all({
+				previous: readSegment(previousPath(address)),
+				current: readSegment(currentPath(address)),
+			});
+		const loadState = (address: LogAddress) => {
+			const key = logKey(address);
+			const existing = states.get(key);
+			if (existing !== undefined) return Effect.succeed(existing);
+			return readSegments(address).pipe(
+				Effect.map((segments) => {
+					const allEvents = [
+						...segments.previous.events,
+						...segments.current.events,
+					];
+					const last = allEvents[allEvents.length - 1];
+					const state: LogState = {
+						nextOffset: last === undefined ? 0 : last.offset,
+						currentBytes: segments.current.bytes,
+						currentExists: segments.current.exists,
+						currentPartial: segments.current.partial,
+					};
+					states.set(key, state);
+					return state;
+				}),
+			);
+		};
+		const rotate = (address: LogAddress, state: LogState) => {
+			const current = currentPath(address);
+			const previous = previousPath(address);
+			return fileSystem
+				.makeDirectory(path.dirname(current), { recursive: true })
+				.pipe(
+					Effect.andThen(
+						fileSystem.remove(previous).pipe(Effect.catch(() => Effect.void)),
+					),
+					Effect.andThen(
+						state.currentExists
+							? fileSystem.rename(current, previous)
+							: Effect.void,
+					),
+					Effect.tap(() =>
+						Effect.sync(() => {
+							state.currentBytes = 0;
+							state.currentExists = false;
+							state.currentPartial = false;
+						}),
+					),
+				);
+		};
+		const appendLine = (
+			address: LogAddress,
+			state: LogState,
+			event: LogEvent,
+		) => {
+			const target = currentPath(address);
+			const line = `${JSON.stringify(event)}\n`;
+			const lineBytes = textEncoder.encode(line).byteLength;
+			const needsRotation =
+				state.currentPartial ||
+				(state.currentExists &&
+					state.currentBytes + lineBytes > options.maxBytes);
+			const beforeWrite = needsRotation ? rotate(address, state) : Effect.void;
+			return beforeWrite.pipe(
+				Effect.andThen(
+					fileSystem.makeDirectory(path.dirname(target), { recursive: true }),
+				),
+				Effect.andThen(
+					fileSystem.writeFileString(target, line, {
+						flag: 'a',
+						mode: 0o600,
+					}),
+				),
+				Effect.tap(() =>
+					Effect.sync(() => {
+						state.currentBytes += lineBytes;
+						state.currentExists = true;
+						state.currentPartial = false;
+					}),
+				),
+			);
+		};
+		const notify = (address: LogAddress, events: ReadonlyArray<LogEvent>) => {
+			const active = listeners.get(logKey(address));
+			if (active === undefined) return Effect.void;
+			return Effect.forEach(
+				active,
+				(subscription) =>
+					Effect.forEach(
+						events,
+						(event) =>
+							Effect.gen(function* () {
+								const completion = yield* Deferred.make<void>();
+								subscription.pending.add(completion);
+								if (
+									Queue.offerUnsafe(subscription.queue, {
+										event,
+										completion,
+									})
+								)
+									return;
+								subscription.pending.delete(completion);
+								yield* Deferred.succeed(completion, undefined);
+							}),
+						{ discard: true },
+					),
+				{ discard: true },
 			);
 		};
 		const append = (address: LogAddress, data: string) =>
 			semaphore.withPermit(
-				read(address).pipe(
-					Effect.flatMap((stored) => {
+				loadState(address).pipe(
+					Effect.flatMap((state) => {
 						const chunks = splitData(data, options.maxBytes);
-						const events = chunks.map((chunk, index) => ({
-							data: chunk,
-							offset:
-								stored.nextOffset +
-								chunks
-									.slice(0, index + 1)
-									.reduce(
-										(total, value) =>
-											total + new TextEncoder().encode(value).byteLength,
-										0,
-									),
-						}));
+						const events: Array<LogEvent> = [];
+						let nextOffset = state.nextOffset;
+						for (const chunk of chunks) {
+							nextOffset += textEncoder.encode(chunk).byteLength;
+							events.push({ data: chunk, offset: nextOffset });
+						}
 						const finalEvent = events[events.length - 1];
 						if (finalEvent === undefined) return Effect.die('empty log event');
-						const next = {
-							nextOffset: finalEvent.offset,
-							events: retain([...stored.events, ...events], options.maxBytes),
-						};
-						const active = listeners.get(logKey(address));
-						return writeAtomically(logPath(address), JSON.stringify(next)).pipe(
-							Effect.andThen(
-								active === undefined
-									? Effect.void
-									: Effect.forEach(
-											active,
-											(subscription) =>
-												Effect.forEach(
-													events,
-													(event) =>
-														Effect.gen(function* () {
-															const completion = yield* Deferred.make<void>();
-															subscription.pending.add(completion);
-															if (
-																Queue.offerUnsafe(subscription.queue, {
-																	event,
-																	completion,
-																})
-															)
-																return;
-															subscription.pending.delete(completion);
-															yield* Deferred.succeed(completion, undefined);
-														}),
-													{ discard: true },
-												),
-											{ discard: true },
-										),
+						return Effect.forEach(
+							events,
+							(event) => appendLine(address, state, event),
+							{
+								discard: true,
+							},
+						).pipe(
+							Effect.tap(() =>
+								Effect.sync(() => {
+									state.nextOffset = finalEvent.offset;
+								}),
 							),
+							Effect.andThen(notify(address, events)),
 							Effect.as(finalEvent),
 						);
 					}),
@@ -220,8 +321,8 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 			listener: (event: LogEvent) => Effect.Effect<void>,
 		) =>
 			semaphore.withPermit(
-				read(address).pipe(
-					Effect.flatMap((stored) =>
+				readSegments(address).pipe(
+					Effect.flatMap((segments) =>
 						Effect.gen(function* () {
 							const key = logKey(address);
 							const current = listeners.get(key);
@@ -288,7 +389,10 @@ const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
 								),
 							);
 							return {
-								replay: stored.events.filter((event) => event.offset > after),
+								replay: [
+									...segments.previous.events,
+									...segments.current.events,
+								].filter((event) => event.offset > after),
 								flush,
 								unsubscribe,
 							};
