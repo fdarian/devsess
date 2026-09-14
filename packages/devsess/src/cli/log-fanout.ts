@@ -12,10 +12,10 @@ type SubscriptionItem = {
 
 type SubscriptionRuntime = {
 	tail: SubscriptionItem | undefined;
+	readonly cutoff: number;
 };
 
 type ListenerSubscription = {
-	readonly address: LogAddress;
 	readonly listener: (event: LogEvent) => Effect.Effect<void>;
 	readonly queue: Queue.Queue<SubscriptionItem>;
 	readonly fiber: Fiber.Fiber<void, unknown>;
@@ -28,12 +28,14 @@ export type LogSubscription<Replay extends LogReplay = LogReplay> = {
 	readonly replay: Replay;
 	readonly flush: Effect.Effect<void>;
 	readonly unsubscribe: Effect.Effect<void>;
+	readonly completeReplay: Effect.Effect<void>;
 };
 
 export type LogFanout = {
 	readonly subscribe: <Replay extends LogReplay>(
 		address: LogAddress,
 		replay: Replay,
+		cutoff: number,
 		listener: (event: LogEvent) => Effect.Effect<void>,
 	) => Effect.Effect<LogSubscription<Replay>>;
 	readonly notify: (
@@ -50,6 +52,7 @@ export const makeLogFanout = (): LogFanout => {
 	const subscribe = <Replay extends LogReplay>(
 		address: LogAddress,
 		replay: Replay,
+		cutoff: number,
 		listener: (event: LogEvent) => Effect.Effect<void>,
 	) =>
 		Effect.gen(function* () {
@@ -58,8 +61,13 @@ export const makeLogFanout = (): LogFanout => {
 			const subscribed = current ?? new Set<ListenerSubscription>();
 			const queue = yield* Queue.bounded<SubscriptionItem>(1);
 			const pending = new Set<Deferred.Deferred<void>>();
-			const runtime: SubscriptionRuntime = { tail: undefined };
+			const replayDone = yield* Deferred.make<void>();
+			const runtime: SubscriptionRuntime = {
+				tail: undefined,
+				cutoff,
+			};
 			const fiber = yield* Effect.gen(function* () {
+				yield* Deferred.await(replayDone);
 				yield* Effect.forever(
 					Effect.gen(function* () {
 						const item = yield* Queue.take(queue);
@@ -82,14 +90,17 @@ export const makeLogFanout = (): LogFanout => {
 				);
 			}).pipe(Effect.forkDetach);
 			const flush = Effect.suspend(() =>
-				Effect.forEach(
-					Array.from(pending),
-					(completion) => Deferred.await(completion),
-					{ discard: true },
+				Deferred.await(replayDone).pipe(
+					Effect.andThen(
+						Effect.forEach(
+							Array.from(pending),
+							(completion) => Deferred.await(completion),
+							{ discard: true },
+						),
+					),
 				),
 			);
 			const subscription: ListenerSubscription = {
-				address,
 				listener,
 				queue,
 				fiber,
@@ -106,7 +117,12 @@ export const makeLogFanout = (): LogFanout => {
 				Effect.andThen(Queue.shutdown(queue)),
 				Effect.andThen(Effect.forkDetach(Fiber.interrupt(fiber))),
 			);
-			return { replay, flush, unsubscribe };
+			return {
+				replay,
+				flush,
+				unsubscribe,
+				completeReplay: Deferred.succeed(replayDone, undefined),
+			};
 		});
 	const notify = (address: LogAddress, events: ReadonlyArray<LogEvent>) => {
 		const active = listeners.get(logKey(address));
@@ -114,6 +130,7 @@ export const makeLogFanout = (): LogFanout => {
 		return Effect.gen(function* () {
 			for (const subscription of active) {
 				for (const event of events) {
+					if (event.offset < subscription.runtime.cutoff) continue;
 					const completion = yield* Deferred.make<void>();
 					subscription.pending.add(completion);
 					const item: SubscriptionItem = {
