@@ -235,3 +235,5 @@ const makeRegistry = (options: { dataDirectory: string }) =>
 			list: serialize(read),
 		});
 	});
+
+export type RegistryService = Context.Service.Shape<typeof Registry>;

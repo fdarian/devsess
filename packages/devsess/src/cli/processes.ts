@@ -466,3 +466,5 @@ export class Processes extends Context.Service<Processes>()(
 ) {
 	static readonly layer = Layer.effect(Processes, Processes.make);
 }
+
+export type ProcessesService = Context.Service.Shape<typeof Processes>;
