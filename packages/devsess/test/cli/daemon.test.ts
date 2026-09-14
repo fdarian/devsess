@@ -1,7 +1,7 @@
 import { createConnection, createServer, Socket } from 'node:net';
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
-import { Cause, Deferred, Effect, Exit, Layer, Schema } from 'effect';
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Schema } from 'effect';
 import { PlatformError, SystemError } from 'effect/PlatformError';
 import { vi } from 'vitest';
 import { callDaemon } from '../../src/cli/client';
@@ -252,15 +252,17 @@ const fixture = () => {
 	);
 	const owns = vi.fn(() => Effect.succeed(true));
 	const unsubscribe = vi.fn(() => undefined);
+	const captureLive = vi.fn((pid: number) =>
+		capture(pid).pipe(
+			Effect.map((captured) => ({
+				identity: captured,
+				terminate: Effect.suspend(() => terminate(captured)),
+			})),
+		),
+	);
 	const processes = Processes.of({
 		capture,
-		captureLive: (pid) =>
-			capture(pid).pipe(
-				Effect.map((identity) => ({
-					identity,
-					terminate: Effect.suspend(() => terminate(identity)),
-				})),
-			),
+		captureLive,
 		terminate,
 		groupAlive,
 		owns,
@@ -311,6 +313,7 @@ const fixture = () => {
 		terminate,
 		groupAlive,
 		capture,
+		captureLive,
 		owns,
 		unsubscribe,
 		terminal,
@@ -369,6 +372,53 @@ describe('daemon lifetime and failure handling', () => {
 					expect(state.terminate).toHaveBeenCalledWith(identity(98765));
 				}),
 			),
+	);
+
+	it.live('buffers a PTY exit until its live entry is registered', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				const captureStarted = yield* Deferred.make<void>();
+				const captured = yield* Deferred.make<{
+					identity: ReturnType<typeof identity>;
+					terminate: Effect.Effect<number | undefined, ProcessError>;
+				}>();
+				state.captureLive.mockImplementationOnce(() =>
+					Deferred.succeed(captureStarted, undefined).pipe(
+						Effect.andThen(Deferred.await(captured)),
+					),
+				);
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					const startFiber = yield* daemon
+						.request(start())
+						.pipe(Effect.forkScoped);
+					yield* Deferred.await(captureStarted).pipe(
+						Effect.timeout('1 second'),
+					);
+					const onExit = state.terminal.onExit.mock.calls[0]?.[0];
+					if (onExit === undefined)
+						return yield* Effect.die('Missing PTY exit callback');
+					onExit({ exitCode: 7, signal: 9 });
+					yield* Deferred.succeed(captured, {
+						identity: identity(98765),
+						terminate: Effect.succeed(0),
+					});
+					yield* Fiber.join(startFiber);
+					for (let attempt = 0; attempt < 100; attempt += 1) {
+						const serviceState = state.records.get('run')?.services[0]?.state;
+						if (serviceState === 'exited' || serviceState === 'failed') break;
+						yield* Effect.sleep('1 millis');
+					}
+					expect(state.records.get('run')?.services[0]).toMatchObject({
+						state: 'failed',
+						exitCode: 7,
+						signal: 9,
+					});
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
 	);
 
 	it.live('releases close churn without waiting for lifecycle work', () =>
