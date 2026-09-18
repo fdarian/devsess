@@ -22,6 +22,7 @@ export type SocketWriterReplay =
 type SocketWriterOptions = {
 	readonly maxBytes?: number;
 	readonly onClose: () => void;
+	readonly onOverflow: () => Effect.Effect<void>;
 };
 
 export type SocketWriter = {
@@ -165,7 +166,7 @@ export const makeSocketWriter = (
 		queue.length = 0;
 	};
 	const writeOverflow = (requestId: string, message: string) => {
-		if (closed || overflowing) return;
+		if (closed || overflowing) return false;
 		overflowing = true;
 		discardQueuedFrames();
 		replayActive = false;
@@ -199,7 +200,7 @@ export const makeSocketWriter = (
 			if (accepted) {
 				drained = true;
 				closeAfterDrain();
-				return;
+				return true;
 			}
 			void waitForDrain().then(() => {
 				drained = true;
@@ -209,24 +210,26 @@ export const makeSocketWriter = (
 			cleanup(true);
 			destroySocket();
 		}
+		return true;
 	};
 	const send = (frame: SocketWriterFrame) =>
-		Effect.sync(() => {
-			if (closed || overflowing) return;
+		Effect.suspend(() => {
+			if (closed || overflowing) return Effect.void;
 			const encoded = `${JSON.stringify(frame)}\n`;
 			const bytes = Buffer.byteLength(encoded);
 			if (bytes > maxBytes || queuedBytes + bytes > maxBytes) {
-				writeOverflow(
+				const overflowed = writeOverflow(
 					frame.requestId,
 					'event' in frame && frame.event === 'output'
 						? LIVE_OUTPUT_OVERFLOW_MESSAGE
 						: overflowMessage,
 				);
-				return;
+				return overflowed ? options.onOverflow() : Effect.void;
 			}
 			queue.push({ encoded, bytes });
 			queuedBytes += bytes;
 			pump();
+			return Effect.void;
 		});
 	const acquireReplay = () =>
 		Effect.promise(
@@ -286,7 +289,11 @@ export const makeSocketWriter = (
 			yield* Stream.runForEach(replay, (frame) => writeReplayFrame(frame));
 		}).pipe(Effect.ensuring(releaseReplay()))) as SocketWriter['sendReplay'];
 	const overflow = (requestId: string) =>
-		Effect.sync(() => writeOverflow(requestId, LIVE_OUTPUT_OVERFLOW_MESSAGE));
+		Effect.suspend(() =>
+			writeOverflow(requestId, LIVE_OUTPUT_OVERFLOW_MESSAGE)
+				? options.onOverflow()
+				: Effect.void,
+		);
 	const awaitIdle = Effect.promise(
 		() =>
 			new Promise<void>((resolve) => {

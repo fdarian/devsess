@@ -19,7 +19,11 @@ describe('socket writer', () => {
 			Effect.gen(function* () {
 				const socket = new Socket();
 				const onClose = vi.fn();
-				const writer = makeSocketWriter(socket, { onClose, maxBytes: 1024 });
+				const writer = makeSocketWriter(socket, {
+					onClose,
+					onOverflow: () => Effect.void,
+					maxBytes: 1024,
+				});
 				vi.spyOn(socket, 'write').mockReturnValue(false);
 				yield* writer.send(response);
 				const idle = Effect.runPromise(writer.awaitIdle);
@@ -38,6 +42,7 @@ describe('socket writer', () => {
 				const written: Array<string> = [];
 				const writer = makeSocketWriter(socket, {
 					onClose: () => undefined,
+					onOverflow: () => Effect.void,
 					maxBytes: 256,
 				});
 				const write = vi.spyOn(socket, 'write').mockImplementation((chunk) => {
@@ -73,8 +78,10 @@ describe('socket writer', () => {
 		Effect.gen(function* () {
 			const socket = new Socket();
 			const written: Array<string> = [];
+			const onOverflow = vi.fn(() => Effect.void);
 			const writer = makeSocketWriter(socket, {
 				onClose: () => undefined,
+				onOverflow,
 				maxBytes: 256,
 			});
 			let needDrain = true;
@@ -98,6 +105,7 @@ describe('socket writer', () => {
 			const callback = call?.find((argument) => typeof argument === 'function');
 			if (typeof callback !== 'function')
 				return yield* Effect.die('Overflow write did not receive a callback');
+			expect(onOverflow).toHaveBeenCalledOnce();
 			callback();
 			expect(written).toHaveLength(1);
 			expect(JSON.parse(written[0] as string)).toMatchObject({
@@ -117,7 +125,10 @@ describe('socket writer', () => {
 	it.effect('retires a backpressured frame when drain arrives', () =>
 		Effect.gen(function* () {
 			const socket = new Socket();
-			const writer = makeSocketWriter(socket, { onClose: () => undefined });
+			const writer = makeSocketWriter(socket, {
+				onClose: () => undefined,
+				onOverflow: () => Effect.void,
+			});
 			let needDrain = true;
 			Object.defineProperty(socket, 'writableNeedDrain', {
 				configurable: true,
@@ -140,6 +151,7 @@ describe('socket writer', () => {
 				const socket = new Socket();
 				const writer = makeSocketWriter(socket, {
 					onClose: () => undefined,
+					onOverflow: () => Effect.void,
 					maxBytes: 128,
 				});
 				const written: Array<string> = [];

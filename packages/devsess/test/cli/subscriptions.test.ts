@@ -65,7 +65,10 @@ const makeSocket = () => {
 		written.push(typeof chunk === 'string' ? chunk : chunk.toString());
 		return true;
 	});
-	const writer = makeSocketWriter(socket, { onClose: () => undefined });
+	const writer = makeSocketWriter(socket, {
+		onClose: () => undefined,
+		onOverflow: () => Effect.void,
+	});
 	const state: SocketState = {
 		subscriptions: new Map(),
 		writer,
