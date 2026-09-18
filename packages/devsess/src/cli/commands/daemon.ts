@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
-import { Config, Effect, Option, Schema } from 'effect';
+import { Config, Effect, Option, Runtime, Schema } from 'effect';
 import { Command, Flag } from 'effect/unstable/cli';
 import {
 	ensureDaemon as ensureDaemonBootstrap,
@@ -14,7 +14,9 @@ import { isActive, type RunRecord, RunRecordSchema } from '../registry';
 export class CommandError extends Schema.TaggedErrorClass<CommandError>()(
 	'devsess/cli/CommandError',
 	{ message: Schema.String, cause: Schema.optional(Schema.Defect()) },
-) {}
+) {
+	override readonly [Runtime.errorExitCode] = 1;
+}
 
 export type CommandOptions = {
 	configPath?: string;
