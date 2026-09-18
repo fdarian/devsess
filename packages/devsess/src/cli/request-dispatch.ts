@@ -89,6 +89,11 @@ export const makeRequestDispatcher = (options: {
 		incoming: DaemonRequest,
 		socket: Socket | undefined,
 	) => {
+		if (socket !== undefined) {
+			const state = options.sockets.get(socket);
+			if (state === undefined || state.closed)
+				return Effect.fail(new DaemonError({ message: 'Socket is closed' }));
+		}
 		if (incoming.method === 'listRuns') return options.registry.list;
 		if (incoming.method === 'startRun')
 			return options.runStart.startRun(incoming);

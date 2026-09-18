@@ -50,7 +50,7 @@ const addressKey = (address: LogAddress) =>
 export const makeSubscriptions = (options: {
 	readonly logs: LogsService;
 	readonly sockets: Map<Socket, SocketState>;
-	readonly onRelease?: (socket: Socket) => Effect.Effect<void>;
+	readonly onRelease?: (socket: Socket) => void;
 	readonly send: (
 		socket: Socket,
 		frame: DaemonResponse | DaemonEvent,
@@ -371,35 +371,54 @@ export const makeSubscriptions = (options: {
 				),
 			),
 		);
-	const releaseSocket = (socket: Socket) =>
-		Effect.gen(function* () {
+	const releaseSocketOwnership = (socket: Socket) =>
+		Effect.suspend(() => {
 			const state = options.sockets.get(socket);
-			if (state !== undefined) {
-				state.closed = true;
-				state.writer.close();
-				const subscriptions = Array.from(state.subscriptions.values());
-				state.subscriptions.clear();
-				options.sockets.delete(socket);
-				for (const subscription of subscriptions) {
-					subscription.cancelled = true;
-					yield* Deferred.succeed(subscription.ready, undefined);
-					const setupFiber = subscription.setupFiber;
-					if (setupFiber !== undefined)
-						Effect.runFork(
-							Fiber.interrupt(setupFiber).pipe(
-								Effect.catchCause(() => Effect.void),
-							),
-						);
-					yield* unsubscribeSubscription(subscription);
-					yield* releaseReservation(subscription);
-				}
-			}
-			if (options.onRelease !== undefined) yield* options.onRelease(socket);
+			if (state === undefined || state.closed) return Effect.void;
+			state.closed = true;
+			const subscriptions = Array.from(state.subscriptions.values());
+			state.subscriptions.clear();
+			for (const subscription of subscriptions) subscription.cancelled = true;
+			if (options.onRelease !== undefined) options.onRelease(socket);
+			return Effect.forEach(
+				subscriptions,
+				(subscription) =>
+					Deferred.succeed(subscription.ready, undefined).pipe(
+						Effect.andThen(
+							Effect.sync(() => {
+								const setupFiber = subscription.setupFiber;
+								if (setupFiber === undefined) return;
+								Effect.runFork(
+									Fiber.interrupt(setupFiber).pipe(
+										Effect.catchCause(() => Effect.void),
+									),
+								);
+							}),
+						),
+						Effect.andThen(unsubscribeSubscription(subscription)),
+						Effect.andThen(releaseReservation(subscription)),
+					),
+				{ discard: true },
+			);
+		});
+	const releaseSocket = (socket: Socket) =>
+		Effect.suspend(() => {
+			const state = options.sockets.get(socket);
+			if (state === undefined) return Effect.void;
+			state.writer.close();
+			return releaseSocketOwnership(socket).pipe(
+				Effect.ensuring(
+					Effect.sync(() => {
+						options.sockets.delete(socket);
+					}),
+				),
+			);
 		});
 	return {
 		finishSubscription,
 		subscribe,
 		finishSubscriptions,
+		releaseSocketOwnership,
 		releaseSocket,
 		retain: (address: LogAddress) => retain(address),
 		release: (address: LogAddress) => release(address),
