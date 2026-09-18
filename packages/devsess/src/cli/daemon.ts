@@ -129,7 +129,9 @@ export const makeDaemon = (options: {
 		const send = (socket: Socket, frame: DaemonResponse | DaemonEvent) =>
 			Effect.suspend(() => {
 				const state = sockets.get(socket);
-				return state === undefined ? Effect.void : state.writer.send(frame);
+				return state === undefined || state.closed
+					? Effect.void
+					: state.writer.send(frame);
 			});
 		const reply = (socket: Socket, requestId: string, result: unknown) =>
 			send(socket, {
@@ -158,11 +160,10 @@ export const makeDaemon = (options: {
 		const subscriptions = makeSubscriptions({
 			logs,
 			sockets,
-			onRelease: (socket) =>
-				Effect.sync(() => {
-					for (const live of terminals.values())
-						if (live.lease?.socket === socket) live.lease = undefined;
-				}),
+			onRelease: (socket) => {
+				for (const live of terminals.values())
+					if (live.lease?.socket === socket) live.lease = undefined;
+			},
 			send,
 		});
 		const runStop = makeRunStop({
@@ -215,6 +216,7 @@ export const makeDaemon = (options: {
 				return;
 			}
 			const writer = makeSocketWriter(socket, {
+				onOverflow: () => subscriptions.releaseSocketOwnership(socket),
 				onClose: () => Effect.runFork(subscriptions.releaseSocket(socket)),
 			});
 			sockets.set(socket, {
@@ -225,6 +227,8 @@ export const makeDaemon = (options: {
 			let remainder = '';
 			const decoder = new StringDecoder('utf8');
 			socket.on('data', (chunk) => {
+				const state = sockets.get(socket);
+				if (state === undefined || state.closed) return;
 				const frames = splitFrames(remainder, decoder.write(chunk));
 				if (frames._tag === 'TooLarge') {
 					socket.destroy();

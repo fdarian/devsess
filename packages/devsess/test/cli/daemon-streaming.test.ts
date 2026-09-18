@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from '@effect/vitest';
 import { Deferred, Effect, Fiber, Layer } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
+import { callDaemon } from '../../src/cli/client';
 import { Daemon, makeDaemon } from '../../src/cli/daemon';
 import { Logs } from '../../src/cli/logs';
 import { Processes } from '../../src/cli/processes';
@@ -13,6 +14,7 @@ import {
 	type DaemonRequest,
 	LIVE_OUTPUT_OVERFLOW_MESSAGE,
 } from '../../src/cli/protocol';
+import { spawnPty } from '../../src/cli/pty';
 import { Registry, type RunRecord } from '../../src/cli/registry';
 import { runTest } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
@@ -48,6 +50,13 @@ const tailRequest = (runId: string): DaemonRequest => ({
 	version: 1,
 	requestId: `tail-${runId}`,
 	method: 'tail',
+	params: { runId, serviceName: 'web' },
+});
+
+const attachRequest = (runId: string, requestId: string): DaemonRequest => ({
+	version: 1,
+	requestId,
+	method: 'attach',
 	params: { runId, serviceName: 'web' },
 });
 
@@ -153,6 +162,85 @@ const stopTailClient = (client: TailClient) =>
 		client.child.kill('SIGCONT');
 		client.child.kill('SIGKILL');
 	});
+
+type AttachClient = {
+	readonly pid: number;
+	readonly ready: Deferred.Deferred<void, Error>;
+	readonly closed: Deferred.Deferred<{ readonly exitCode: number }, Error>;
+	readonly output: () => string;
+	readonly exited: () => boolean;
+};
+
+const startAttachClient = (options: {
+	readonly cwd: string;
+	readonly stateHome: string;
+	readonly runtimeDirectory: string;
+}) =>
+	Effect.gen(function* () {
+		const ready = yield* Deferred.make<void, Error>();
+		const closed = yield* Deferred.make<{ readonly exitCode: number }, Error>();
+		const terminal = yield* spawnPty({
+			command: process.execPath,
+			args: [cliPath, 'attach'],
+			cwd: options.cwd,
+			env: {
+				...process.env,
+				XDG_STATE_HOME: options.stateHome,
+				XDG_RUNTIME_DIR: options.runtimeDirectory,
+			},
+			cols: 80,
+			rows: 24,
+		});
+		const messages: Array<string> = [];
+		let exited = false;
+		const output = () => messages.join('');
+		terminal.onData((data) => {
+			messages.push(data);
+			if (output().includes('Press Ctrl-] to detach'))
+				Effect.runFork(Deferred.succeed(ready, undefined));
+		});
+		terminal.onExit((exit) => {
+			exited = true;
+			Effect.runFork(Deferred.succeed(closed, { exitCode: exit.exitCode }));
+			Effect.runFork(
+				Deferred.fail(
+					ready,
+					new Error('Attached client exited before acquiring its input lease'),
+				),
+			);
+		});
+		return {
+			pid: terminal.pid,
+			ready,
+			closed,
+			output,
+			exited: () => exited,
+		};
+	});
+
+const stopAttachClient = (client: AttachClient) =>
+	Effect.sync(() => {
+		if (client.exited()) return;
+		process.kill(client.pid, 'SIGCONT');
+		process.kill(client.pid, 'SIGKILL');
+	});
+
+const attachUntilSuccessful = (
+	socketPath: string,
+	runId: string,
+	attempt = 0,
+): Effect.Effect<unknown> =>
+	callDaemon(
+		socketPath,
+		attachRequest(runId, `replacement-${attempt}`),
+		250,
+	).pipe(
+		Effect.catch(() =>
+			Effect.sleep('10 millis').pipe(
+				Effect.andThen(attachUntilSuccessful(socketPath, runId, attempt + 1)),
+			),
+		),
+	);
 
 describe('daemon streaming integration', () => {
 	it.live('drains output before stop completes and sends the final chunk', () =>
@@ -446,6 +534,91 @@ describe('daemon streaming integration', () => {
 							expect(exited.exitCode).toBe(1);
 							expect(tail.output()).toContain(LIVE_OUTPUT_OVERFLOW_MESSAGE);
 							expect(tail.output()).not.toContain(
+								'Daemon output stream closed',
+							);
+						}).pipe(Effect.provide(daemonLayer)),
+					);
+				}),
+			),
+	);
+
+	it.live(
+		'releases a SIGSTOPped attach lease before its overflow frame drains',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const canonicalRoot = yield* Effect.try({
+						try: () => realpathSync(root),
+						catch: (cause) =>
+							new Error(`Could not resolve test directory ${root}`, { cause }),
+					});
+					const stateHome = join(root, 'state');
+					const runtimeDirectory = join(root, 'runtime');
+					const dataDirectory = join(stateHome, 'devsess');
+					const socketPath = join(runtimeDirectory, 'devsess', 'devsess.sock');
+					const gatePath = join(root, 'emit.ready');
+					const outputReadyPath = join(root, 'output.ready');
+					const fileSystem = yield* FileSystem;
+					yield* fileSystem.makeDirectory(join(runtimeDirectory, 'devsess'), {
+						recursive: true,
+					});
+					const dependencies = Layer.mergeAll(
+						Registry.layer({ dataDirectory }),
+						Logs.layer({ dataDirectory, maxBytes: 1024 * 1024 }),
+						Processes.layer,
+					);
+					const daemonLayer = Layer.effect(
+						Daemon,
+						makeDaemon({ socketPath }),
+					).pipe(Layer.provideMerge(dependencies));
+					yield* Effect.scoped(
+						Effect.gen(function* () {
+							const daemon = yield* Daemon;
+							const command = `${process.execPath} -e 'const fs=require("node:fs"); const gate=${JSON.stringify(gatePath)}; const outputReady=${JSON.stringify(outputReadyPath)}; const timer=setInterval(() => { if (fs.existsSync(gate)) { clearInterval(timer); process.stdout.write("x".repeat(8 * 1024 * 1024)); fs.writeFileSync(outputReady, "ready"); setTimeout(() => {}, 30000); } }, 5)'`;
+							yield* daemon.request(
+								startRequest('sigstop-attach', command, root, canonicalRoot),
+							);
+							const attached = yield* Effect.acquireRelease(
+								startAttachClient({
+									cwd: canonicalRoot,
+									stateHome,
+									runtimeDirectory,
+								}),
+								stopAttachClient,
+							);
+							yield* Deferred.await(attached.ready).pipe(
+								Effect.timeout('5 seconds'),
+							);
+							yield* Effect.sleep('250 millis');
+							yield* Effect.sync(() => process.kill(attached.pid, 'SIGSTOP'));
+							yield* fileSystem.writeFileString(gatePath, 'go');
+							let outputReady = false;
+							for (let attempt = 0; attempt < 500; attempt += 1) {
+								if (yield* fileSystem.exists(outputReadyPath)) {
+									outputReady = true;
+									break;
+								}
+								yield* Effect.sleep('10 millis');
+							}
+							expect(outputReady).toBe(true);
+							const started = performance.now();
+							const replacement = yield* attachUntilSuccessful(
+								socketPath,
+								'sigstop-attach',
+							).pipe(Effect.timeout('1 second'));
+							const latency = performance.now() - started;
+							expect(replacement).toMatchObject({
+								leaseId: expect.any(String),
+							});
+							expect(latency).toBeLessThan(1_000);
+							yield* Effect.sync(() => process.kill(attached.pid, 'SIGCONT'));
+							const exited = yield* Deferred.await(attached.closed).pipe(
+								Effect.timeout('5 seconds'),
+							);
+							expect(exited.exitCode).toBe(1);
+							expect(attached.output()).toContain(LIVE_OUTPUT_OVERFLOW_MESSAGE);
+							expect(attached.output()).not.toContain(
 								'Daemon output stream closed',
 							);
 						}).pipe(Effect.provide(daemonLayer)),
