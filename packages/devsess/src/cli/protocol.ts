@@ -2,6 +2,8 @@ import { Effect, Schema } from 'effect';
 import { Identifier } from './identifiers';
 
 export const PROTOCOL_VERSION = 1;
+export const LIVE_OUTPUT_OVERFLOW_MESSAGE =
+	'This client fell too far behind live output; re-run devsess tail to replay from the retained log.';
 export { Identifier } from './identifiers';
 export const ServiceSnapshot = Schema.Struct({
 	name: Identifier,

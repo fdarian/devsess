@@ -20,6 +20,10 @@ export type DaemonStream = {
 	readonly frames: Queue.Queue<DaemonStreamFrame>;
 };
 
+type StreamChunk =
+	| { readonly _tag: 'data'; readonly data: string }
+	| { readonly _tag: 'closed' };
+
 export const decodeDaemonStreamFrame = Schema.decodeUnknownEffect(
 	Schema.fromJsonString(Schema.Union([DaemonResponse, DaemonEvent])),
 );
@@ -32,35 +36,41 @@ export const openDaemonStream = (options: {
 	Effect.acquireRelease(
 		Effect.gen(function* () {
 			const frames = yield* Queue.bounded<DaemonStreamFrame>(16);
-			const chunks = yield* Queue.bounded<string>(16);
+			const chunks = yield* Queue.bounded<StreamChunk>(16);
 			const decoder = new StringDecoder('utf8');
 			let buffer = '';
-			const parser = yield* Effect.forever(
-				Queue.take(chunks).pipe(
-					Effect.flatMap((chunk) => {
-						const lines = `${buffer}${chunk}`.split('\n');
-						const remainder = lines.pop();
-						if (remainder === undefined)
-							return Effect.die('Terminal frame splitting lost its remainder');
-						buffer = remainder;
-						return Effect.forEach(
-							lines.filter((line) => line.length > 0),
-							(line) =>
-								decodeDaemonStreamFrame(line).pipe(
-									Effect.flatMap((frame) =>
-										Queue.offer(
-											frames,
-											'requestId' in frame && 'event' in frame
-												? { _tag: 'output', value: frame }
-												: { _tag: 'response', value: frame },
+			const parse = (): Effect.Effect<void, Schema.SchemaError, never> =>
+				Effect.suspend(() =>
+					Queue.take(chunks).pipe(
+						Effect.flatMap((chunk) => {
+							if (chunk._tag === 'closed')
+								return Queue.offer(frames, { _tag: 'closed' });
+							const lines = `${buffer}${chunk.data}`.split('\n');
+							const remainder = lines.pop();
+							if (remainder === undefined)
+								return Effect.die(
+									'Terminal frame splitting lost its remainder',
+								);
+							buffer = remainder;
+							return Effect.forEach(
+								lines.filter((line) => line.length > 0),
+								(line) =>
+									decodeDaemonStreamFrame(line).pipe(
+										Effect.flatMap((frame) =>
+											Queue.offer(
+												frames,
+												'requestId' in frame && 'event' in frame
+													? { _tag: 'output', value: frame }
+													: { _tag: 'response', value: frame },
+											),
 										),
 									),
-								),
-							{ discard: true },
-						);
-					}),
-				),
-			)
+								{ discard: true },
+							).pipe(Effect.andThen(parse));
+						}),
+					),
+				);
+			const parser = yield* parse()
 				.pipe(
 					Effect.catchTag('SchemaError', (cause) =>
 						Queue.offer(frames, {
@@ -92,14 +102,32 @@ export const openDaemonStream = (options: {
 						cause,
 					}),
 			});
+			let closing = false;
+			let closeQueued = false;
+			let pendingChunkOffers = 0;
+			const queueClosed = () => {
+				if (!closing || closeQueued || pendingChunkOffers > 0) return;
+				closeQueued = true;
+				Effect.runFork(
+					Queue.offer(chunks, { _tag: 'closed' }).pipe(
+						Effect.catch(() => Effect.void),
+					),
+				);
+			};
 			const offerChunk = (chunk: string) => {
-				if (Queue.offerUnsafe(chunks, chunk)) return;
+				if (closing || chunk.length === 0) return;
+				const item: StreamChunk = { _tag: 'data', data: chunk };
+				if (Queue.offerUnsafe(chunks, item)) return;
+				pendingChunkOffers += 1;
 				socket.pause();
 				Effect.runFork(
-					Queue.offer(chunks, chunk).pipe(
+					Queue.offer(chunks, item).pipe(
 						Effect.ensuring(
 							Effect.sync(() => {
-								if (!socket.destroyed) socket.resume();
+								pendingChunkOffers -= 1;
+								if (!closing && pendingChunkOffers === 0 && !socket.destroyed)
+									socket.resume();
+								queueClosed();
 							}),
 						),
 						Effect.catch(() => Effect.void),
@@ -107,12 +135,11 @@ export const openDaemonStream = (options: {
 				);
 			};
 			socket.on('data', (chunk) => offerChunk(decoder.write(chunk)));
-			const offerClosed = () =>
-				Effect.runFork(
-					Queue.offer(frames, { _tag: 'closed' }).pipe(
-						Effect.catch(() => Effect.void),
-					),
-				);
+			const offerClosed = () => {
+				if (closing) return;
+				closing = true;
+				queueClosed();
+			};
 			socket.once('close', offerClosed);
 			socket.once('error', offerClosed);
 			return { frames, chunks, parser, socket };
