@@ -3,6 +3,7 @@ import { Effect, Stream } from 'effect';
 import {
 	type DaemonEvent,
 	type DaemonResponse,
+	LIVE_OUTPUT_OVERFLOW_MESSAGE,
 	MAX_FRAME_BYTES,
 	PROTOCOL_VERSION,
 } from './protocol';
@@ -38,6 +39,7 @@ export type SocketWriter = {
 };
 
 const overflowMessage = 'Daemon output buffer exceeded 1 MiB; disconnecting';
+const OVERFLOW_DRAIN_TIMEOUT_MS = 3_000;
 
 export const makeSocketWriter = (
 	socket: Socket,
@@ -53,23 +55,35 @@ export const makeSocketWriter = (
 	let pumping = false;
 	let replayActive = false;
 	let closed = false;
+	let overflowing = false;
+	let overflowTimer: ReturnType<typeof setTimeout> | undefined;
 
 	const releaseIdleWaiters = () => {
 		const idles = Array.from(idleWaiters);
 		idleWaiters.clear();
 		for (const resolve of idles) resolve();
 	};
+	const releaseReplayWaiters = () => {
+		const replay = replayWaiters.splice(0);
+		for (const resolve of replay) resolve();
+	};
+	const clearOverflowTimer = () => {
+		const timer = overflowTimer;
+		if (timer === undefined) return;
+		clearTimeout(timer);
+		overflowTimer = undefined;
+	};
 	const releaseWaiters = () => {
 		const drains = Array.from(drainWaiters);
 		drainWaiters.clear();
 		for (const resolve of drains) resolve();
 		releaseIdleWaiters();
-		const replay = replayWaiters.splice(0);
-		for (const resolve of replay) resolve();
+		releaseReplayWaiters();
 	};
 	const cleanup = (notify: boolean) => {
 		if (closed) return;
 		closed = true;
+		clearOverflowTimer();
 		queue.length = 0;
 		queuedBytes = 0;
 		replayActive = false;
@@ -79,9 +93,12 @@ export const makeSocketWriter = (
 		if (notify) options.onClose();
 	};
 	const onClose = () => cleanup(true);
+	const destroySocket = () => {
+		if (!socket.destroyed) socket.destroy();
+	};
 	const onError = () => {
 		cleanup(true);
-		if (!socket.destroyed) socket.destroy();
+		destroySocket();
 	};
 	socket.once('close', onClose);
 	socket.once('error', onError);
@@ -105,7 +122,7 @@ export const makeSocketWriter = (
 		});
 	};
 	const pump = () => {
-		if (pumping || replayActive || closed) return;
+		if (pumping || replayActive || closed || overflowing) return;
 		const item = queue.shift();
 		if (item === undefined) {
 			if (queuedBytes === 0) releaseIdleWaiters();
@@ -140,39 +157,71 @@ export const makeSocketWriter = (
 		} catch {
 			pumping = false;
 			cleanup(true);
-			if (!socket.destroyed) socket.destroy();
+			destroySocket();
 		}
 	};
-	const writeOverflow = (requestId: string) => {
-		if (closed) return;
+	const discardQueuedFrames = () => {
+		for (const item of queue) queuedBytes -= item.bytes;
+		queue.length = 0;
+	};
+	const writeOverflow = (requestId: string, message: string) => {
+		if (closed || overflowing) return;
+		overflowing = true;
+		discardQueuedFrames();
+		replayActive = false;
+		releaseReplayWaiters();
+		releaseIdleWaiters();
 		const encoded = `${JSON.stringify({
 			version: PROTOCOL_VERSION,
 			requestId,
 			ok: false,
-			error: overflowMessage,
+			error: message,
 		})}\n`;
-		const canWrite =
-			socket.writable &&
-			!socket.destroyed &&
-			!socket.writableNeedDrain &&
-			socket.writableLength + Buffer.byteLength(encoded) <= maxBytes;
-		if (canWrite) {
-			try {
-				socket.write(encoded);
-			} catch {
-				// Cleanup below still releases the daemon-side subscription.
+		let drained = false;
+		let written = false;
+		const closeAfterDrain = () => {
+			if (closed || !drained || !written) return;
+			cleanup(true);
+			destroySocket();
+		};
+		const timeout = setTimeout(() => {
+			if (closed) return;
+			cleanup(true);
+			destroySocket();
+		}, OVERFLOW_DRAIN_TIMEOUT_MS);
+		timeout.unref();
+		overflowTimer = timeout;
+		try {
+			const accepted = socket.write(encoded, () => {
+				written = true;
+				closeAfterDrain();
+			});
+			if (accepted) {
+				drained = true;
+				closeAfterDrain();
+				return;
 			}
+			void waitForDrain().then(() => {
+				drained = true;
+				closeAfterDrain();
+			});
+		} catch {
+			cleanup(true);
+			destroySocket();
 		}
-		cleanup(true);
-		if (!socket.destroyed) socket.destroy();
 	};
 	const send = (frame: SocketWriterFrame) =>
 		Effect.sync(() => {
-			if (closed) return;
+			if (closed || overflowing) return;
 			const encoded = `${JSON.stringify(frame)}\n`;
 			const bytes = Buffer.byteLength(encoded);
 			if (bytes > maxBytes || queuedBytes + bytes > maxBytes) {
-				writeOverflow(frame.requestId);
+				writeOverflow(
+					frame.requestId,
+					'event' in frame && frame.event === 'output'
+						? LIVE_OUTPUT_OVERFLOW_MESSAGE
+						: overflowMessage,
+				);
 				return;
 			}
 			queue.push({ encoded, bytes });
@@ -183,8 +232,8 @@ export const makeSocketWriter = (
 		Effect.promise(
 			() =>
 				new Promise<void>((resolve) => {
-					if (closed || !replayActive) {
-						replayActive = !closed;
+					if (closed || overflowing || !replayActive) {
+						replayActive = !closed && !overflowing;
 						resolve();
 						return;
 					}
@@ -207,7 +256,7 @@ export const makeSocketWriter = (
 		Effect.promise(
 			() =>
 				new Promise<void>((resolve) => {
-					if (closed || socket.destroyed || !socket.writable) {
+					if (closed || overflowing || socket.destroyed || !socket.writable) {
 						resolve();
 						return;
 					}
@@ -229,6 +278,7 @@ export const makeSocketWriter = (
 	const sendReplay = ((source: SocketWriterReplay) =>
 		Effect.gen(function* () {
 			yield* acquireReplay();
+			if (closed || overflowing) return;
 			const replay: Stream.Stream<SocketWriterFrame, unknown, unknown> =
 				Array.isArray(source)
 					? Stream.fromIterable(source)
@@ -236,12 +286,13 @@ export const makeSocketWriter = (
 			yield* Stream.runForEach(replay, (frame) => writeReplayFrame(frame));
 		}).pipe(Effect.ensuring(releaseReplay()))) as SocketWriter['sendReplay'];
 	const overflow = (requestId: string) =>
-		Effect.sync(() => writeOverflow(requestId));
+		Effect.sync(() => writeOverflow(requestId, LIVE_OUTPUT_OVERFLOW_MESSAGE));
 	const awaitIdle = Effect.promise(
 		() =>
 			new Promise<void>((resolve) => {
 				if (
 					closed ||
+					overflowing ||
 					(!pumping && !replayActive && queue.length === 0 && queuedBytes === 0)
 				) {
 					resolve();

@@ -1,12 +1,18 @@
+import { spawn } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from '@effect/vitest';
-import { Deferred, Effect, Layer } from 'effect';
+import { Deferred, Effect, Fiber, Layer } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { Daemon, makeDaemon } from '../../src/cli/daemon';
 import { Logs } from '../../src/cli/logs';
 import { Processes } from '../../src/cli/processes';
-import type { DaemonRequest } from '../../src/cli/protocol';
+import {
+	type DaemonRequest,
+	LIVE_OUTPUT_OVERFLOW_MESSAGE,
+} from '../../src/cli/protocol';
 import { Registry, type RunRecord } from '../../src/cli/registry';
 import { runTest } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
@@ -14,6 +20,8 @@ import { makeTempDir } from '../support/temp-dir';
 const startRequest = (
 	runId: string,
 	command = `${process.execPath} -e 'process.stdout.write("x".repeat(32 * 1024 * 1024)); process.stdout.write("FINAL"); setTimeout(() => {}, 30000)'`,
+	cwd = '/tmp',
+	canonicalCwd = cwd,
 ): DaemonRequest => ({
 	version: 1,
 	requestId: `start-${runId}`,
@@ -22,15 +30,15 @@ const startRequest = (
 		runId,
 		projectName: 'project',
 		presetName: 'dev',
-		canonicalCwd: '/tmp',
-		invocationCwd: '/tmp',
+		canonicalCwd,
+		invocationCwd: cwd,
 		configSnapshot: {},
 		environment: {},
 		services: [
 			{
 				name: 'web',
 				command,
-				cwd: '/tmp',
+				cwd,
 			},
 		],
 	},
@@ -58,6 +66,92 @@ const waitForConnection = (socket: ReturnType<typeof createConnection>) =>
 				socket.once('connect', resolve);
 			}),
 		catch: (cause) => cause,
+	});
+
+const cliPath = fileURLToPath(new URL('../../dist/cli.js', import.meta.url));
+
+type TailClient = {
+	readonly child: ReturnType<typeof spawn>;
+	readonly pid: number;
+	readonly ready: Deferred.Deferred<void, Error>;
+	readonly closed: Deferred.Deferred<
+		{
+			readonly exitCode: number | null;
+			readonly signal: NodeJS.Signals | null;
+		},
+		Error
+	>;
+	readonly output: () => string;
+};
+
+const startTailClient = (options: {
+	readonly cwd: string;
+	readonly stateHome: string;
+	readonly runtimeDirectory: string;
+}) =>
+	Effect.gen(function* () {
+		const ready = yield* Deferred.make<void, Error>();
+		const closed = yield* Deferred.make<
+			{
+				readonly exitCode: number | null;
+				readonly signal: NodeJS.Signals | null;
+			},
+			Error
+		>();
+		const child = yield* Effect.try({
+			try: () =>
+				spawn(process.execPath, [cliPath, 'tail'], {
+					cwd: options.cwd,
+					env: {
+						...process.env,
+						XDG_STATE_HOME: options.stateHome,
+						XDG_RUNTIME_DIR: options.runtimeDirectory,
+					},
+					stdio: ['ignore', 'pipe', 'pipe'],
+				}),
+			catch: (cause) =>
+				new Error('Could not start the devsess tail client', { cause }),
+		});
+		const pid = child.pid;
+		if (pid === undefined)
+			return yield* Effect.die('Tail client did not receive a process ID');
+		const stdout = child.stdout;
+		if (stdout === null)
+			return yield* Effect.die('Tail client stdout was not piped');
+		const stderr = child.stderr;
+		if (stderr === null)
+			return yield* Effect.die('Tail client stderr was not piped');
+		const messages: Array<string> = [];
+		stdout.on('data', (chunk) => {
+			const text = chunk.toString();
+			messages.push(text);
+			if (!text.includes('TAIL_READY')) return;
+			Effect.runFork(Deferred.succeed(ready, undefined));
+		});
+		stderr.on('data', (chunk) => {
+			messages.push(chunk.toString());
+		});
+		child.once('error', (cause) => {
+			Effect.runFork(Deferred.fail(ready, cause));
+			Effect.runFork(Deferred.fail(closed, cause));
+		});
+		child.once('close', (exitCode, signal) => {
+			Effect.runFork(Deferred.succeed(closed, { exitCode, signal }));
+		});
+		return {
+			child,
+			pid,
+			ready,
+			closed,
+			output: () => messages.join(''),
+		};
+	});
+
+const stopTailClient = (client: TailClient) =>
+	Effect.sync(() => {
+		if (client.child.exitCode !== null) return;
+		client.child.kill('SIGCONT');
+		client.child.kill('SIGKILL');
 	});
 
 describe('daemon streaming integration', () => {
@@ -272,6 +366,92 @@ describe('daemon streaming integration', () => {
 				);
 			}),
 		),
+	);
+
+	it.live(
+		'delivers an overflow error to a SIGSTOPped tail after stop completes',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const canonicalRoot = yield* Effect.try({
+						try: () => realpathSync(root),
+						catch: (cause) =>
+							new Error(`Could not resolve test directory ${root}`, { cause }),
+					});
+					const stateHome = join(root, 'state');
+					const runtimeDirectory = join(root, 'runtime');
+					const dataDirectory = join(stateHome, 'devsess');
+					const socketPath = join(runtimeDirectory, 'devsess', 'devsess.sock');
+					const gatePath = join(root, 'emit.ready');
+					const outputReadyPath = join(root, 'output.ready');
+					const fileSystem = yield* FileSystem;
+					yield* fileSystem.makeDirectory(join(runtimeDirectory, 'devsess'), {
+						recursive: true,
+					});
+					const dependencies = Layer.mergeAll(
+						Registry.layer({ dataDirectory }),
+						Logs.layer({ dataDirectory, maxBytes: 1024 * 1024 }),
+						Processes.layer,
+					);
+					const daemonLayer = Layer.effect(
+						Daemon,
+						makeDaemon({ socketPath }),
+					).pipe(Layer.provideMerge(dependencies));
+					yield* Effect.scoped(
+						Effect.gen(function* () {
+							const daemon = yield* Daemon;
+							const command = `${process.execPath} -e 'const fs=require("node:fs"); const gate=${JSON.stringify(gatePath)}; const outputReady=${JSON.stringify(outputReadyPath)}; process.stdout.write("TAIL_READY\\n"); const timer=setInterval(() => { if (fs.existsSync(gate)) { clearInterval(timer); process.stdout.write("x".repeat(8 * 1024 * 1024)); process.stdout.write("FINAL"); fs.writeFileSync(outputReady, "ready"); setTimeout(() => {}, 30000); } }, 5)'`;
+							yield* daemon.request(
+								startRequest('sigstop-tail', command, root, canonicalRoot),
+							);
+							const tail = yield* Effect.acquireRelease(
+								startTailClient({
+									cwd: canonicalRoot,
+									stateHome,
+									runtimeDirectory,
+								}),
+								stopTailClient,
+							);
+							yield* Deferred.await(tail.ready).pipe(
+								Effect.timeout('5 seconds'),
+							);
+							yield* Effect.sync(() => process.kill(tail.pid, 'SIGSTOP'));
+							yield* fileSystem.writeFileString(gatePath, 'go');
+							let outputReady = false;
+							for (let attempt = 0; attempt < 500; attempt += 1) {
+								if (yield* fileSystem.exists(outputReadyPath)) {
+									outputReady = true;
+									break;
+								}
+								yield* Effect.sleep('10 millis');
+							}
+							expect(outputReady).toBe(true);
+							const stopping = yield* daemon
+								.request({
+									version: 1,
+									requestId: 'stop-sigstop-tail',
+									method: 'stopRun',
+									params: { runId: 'sigstop-tail' },
+								} as DaemonRequest)
+								.pipe(Effect.forkScoped({ startImmediately: true }));
+							const stopped = (yield* Fiber.join(stopping).pipe(
+								Effect.timeout('10 seconds'),
+							)) as RunRecord;
+							expect(stopped.state).toBe('exited');
+							yield* Effect.sync(() => process.kill(tail.pid, 'SIGCONT'));
+							const exited = yield* Deferred.await(tail.closed).pipe(
+								Effect.timeout('5 seconds'),
+							);
+							expect(exited.exitCode).toBe(1);
+							expect(tail.output()).toContain(LIVE_OUTPUT_OVERFLOW_MESSAGE);
+							expect(tail.output()).not.toContain(
+								'Daemon output stream closed',
+							);
+						}).pipe(Effect.provide(daemonLayer)),
+					);
+				}),
+			),
 	);
 
 	it.live('keeps list responsive while a completed replay is paused', () =>
