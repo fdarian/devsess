@@ -64,11 +64,14 @@ Service `cwd` is resolved when `start` is invoked. An omitted `cwd` uses the dir
 
 ```text
 devsess start [options] [preset]
+devsess presets [options]
 devsess list
 devsess stop [options] [--force] [preset]
 devsess tail [options] [preset]
 devsess attach [options] [preset]
 ```
+
+`presets` reads the configured file and reports the presets matched by the current directory, including each service command and resolved working directory. It does not start or contact the daemon; if a daemon is already reachable, active presets are marked as running. A bare-start summary explains whether `start` would select one preset, show an interactive picker, or fail in a non-interactive invocation.
 
 `start` captures the current environment and starts the selected preset through a detached daemon. It waits for a daemon handshake and for the start request to be acknowledged, prints the run ID, and returns control to the shell while services continue running. The run records its invocation directory while the daemon and state remain shared across projects and worktrees.
 
