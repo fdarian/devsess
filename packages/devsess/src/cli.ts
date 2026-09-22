@@ -8,6 +8,7 @@ import devsessPackageJson from '../package.json' with { type: 'json' };
 import { attach } from './cli/commands/attach';
 import { daemonCommand } from './cli/commands/daemon';
 import { list } from './cli/commands/list';
+import { presets } from './cli/commands/presets';
 import { start } from './cli/commands/start';
 import { stop } from './cli/commands/stop';
 import { tail } from './cli/commands/tail';
@@ -59,10 +60,20 @@ const listCommand = Command.make('list', options, (input) =>
 		configPath: value(input.configPath),
 	}),
 );
+const presetsCommand = Command.make(
+	'presets',
+	{ project: options.project, configPath: options.configPath },
+	(input) =>
+		presets({
+			project: value(input.project),
+			configPath: value(input.configPath),
+		}),
+);
 const app = Command.make('devsess', {}).pipe(
 	Command.withSubcommands([
 		startCommand,
 		listCommand,
+		presetsCommand,
 		stopCommand,
 		tailCommand,
 		attachCommand,
