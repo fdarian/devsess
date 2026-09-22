@@ -46,8 +46,12 @@ export const formatPresetList = (
 	interactive: boolean,
 ) => {
 	const lines = [`Config file: ${resolved.configPath}`, 'Matched projects:'];
+	const matchLabel =
+		resolved.matches.matchType === 'git'
+			? 'git origin'
+			: resolved.matches.matchType;
 	for (const project of resolved.projects)
-		lines.push(`  ${project.projectName} (${resolved.matches.matchType})`);
+		lines.push(`  ${project.projectName} (matched by ${matchLabel})`);
 	if (resolved.candidates.length === 0) {
 		lines.push('Presets: none');
 		lines.push('Bare start: would fail because no matching preset exists.');
