@@ -97,6 +97,11 @@ const StoredRunsSchema = Schema.fromJsonString(Schema.Array(RunRecordSchema));
 export const isActive = (state: ServiceState) =>
 	state === 'starting' || state === 'running' || state === 'stopping';
 
+export const isRunActive = (run: RunRecord) =>
+	run.services.some(
+		(service) => isActive(service.state) || service.state === 'orphaned',
+	);
+
 const writeAtomically = (target: string, content: string) =>
 	Effect.gen(function* () {
 		const fileSystem = yield* FileSystem;

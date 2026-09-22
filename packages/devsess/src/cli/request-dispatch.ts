@@ -8,7 +8,7 @@ import { type ServiceExit, serviceExitCode } from './exit-status';
 import type { OutputWorker } from './output-worker';
 import { type DaemonRequest, decodeRequest, decodeRequestId } from './protocol';
 import { resizePty, writePty } from './pty';
-import type { RegistryService } from './registry';
+import { isRunActive, type RegistryService } from './registry';
 import type { RunStart } from './run-start';
 import type { RunStop } from './run-stop';
 import {
@@ -74,6 +74,8 @@ export const makeRequestDispatcher = (options: {
 	readonly subscriptions: Subscriptions;
 	readonly runStart: RunStart;
 	readonly runStop: RunStop;
+	readonly info?: () => Effect.Effect<unknown, unknown, FileSystem | Path>;
+	readonly requestShutdown?: Effect.Effect<void>;
 	readonly reply: (
 		socket: Socket,
 		requestId: string,
@@ -95,6 +97,29 @@ export const makeRequestDispatcher = (options: {
 				return Effect.fail(new DaemonError({ message: 'Socket is closed' }));
 		}
 		if (incoming.method === 'listRuns') return options.registry.list;
+		if (incoming.method === 'info')
+			return options.info === undefined
+				? Effect.fail(
+						new DaemonError({ message: 'Daemon info is unavailable' }),
+					)
+				: options.info();
+		if (incoming.method === 'shutdown')
+			return options.registry.list.pipe(
+				Effect.flatMap((runs) => {
+					const active = runs.filter(isRunActive);
+					if (active.length > 0 && incoming.params.force !== true)
+						return Effect.fail(
+							new DaemonError({
+								message: `Cannot shut down daemon while runs are active: ${active.map((run) => `${run.projectName}/${run.presetName}`).join(', ')}. Use --force to stop them.`,
+							}),
+						);
+					return Effect.forEach(
+						active,
+						(run) => options.runStop.stopRun(run.runId, true),
+						{ discard: true },
+					).pipe(Effect.as({}));
+				}),
+			);
 		if (incoming.method === 'startRun')
 			return options.runStart.startRun(incoming);
 		if (incoming.method === 'stopRun')
@@ -232,6 +257,12 @@ export const makeRequestDispatcher = (options: {
 						message.reply === undefined
 							? Effect.void
 							: Deferred.succeed(message.reply, result),
+					),
+					Effect.tap(() =>
+						incoming.method === 'shutdown' &&
+						options.requestShutdown !== undefined
+							? options.requestShutdown
+							: Effect.void,
 					),
 					Effect.catch((cause) =>
 						Effect.all(

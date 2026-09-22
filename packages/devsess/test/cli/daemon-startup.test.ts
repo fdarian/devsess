@@ -5,7 +5,7 @@ import { Effect, Layer, Schema } from 'effect';
 import { Daemon, makeDaemon } from '../../src/cli/daemon';
 import { Logs } from '../../src/cli/logs';
 import { Processes } from '../../src/cli/processes';
-import type { DaemonRequest } from '../../src/cli/protocol';
+import { DaemonInfo, type DaemonRequest } from '../../src/cli/protocol';
 import { Registry, RunRecordSchema } from '../../src/cli/registry';
 import { runTest } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
@@ -28,9 +28,10 @@ const layer = (directory: string, socketPath: string) => {
 			}),
 		),
 	);
-	return Layer.effect(Daemon, makeDaemon({ socketPath })).pipe(
-		Layer.provideMerge(dependencies),
-	);
+	return Layer.effect(
+		Daemon,
+		makeDaemon({ dataDirectory: directory, socketPath }),
+	).pipe(Layer.provideMerge(dependencies));
 };
 const start = (command: string): DaemonRequest => ({
 	version: 1,
@@ -51,6 +52,18 @@ const list: DaemonRequest = {
 	version: 1,
 	requestId: 'list',
 	method: 'listRuns',
+	params: {},
+};
+const info: DaemonRequest = {
+	version: 1,
+	requestId: 'info',
+	method: 'info',
+	params: {},
+};
+const shutdown: DaemonRequest = {
+	version: 1,
+	requestId: 'shutdown',
+	method: 'shutdown',
 	params: {},
 };
 const tail = (socket: Socket, marker: string) =>
@@ -89,6 +102,27 @@ const checkReplay = (marker: string) =>
 	});
 
 describe('real PTY startup events', () => {
+	it.live('returns daemon info and closes through the shutdown request', () =>
+		runTest(
+			Effect.gen(function* () {
+				const directory = yield* makeTempDir;
+				const socketPath = join(directory, 'daemon.sock');
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					const value = yield* daemon
+						.request(info)
+						.pipe(Effect.flatMap(Schema.decodeUnknownEffect(DaemonInfo)));
+					expect(value.pid).toBe(process.pid);
+					expect(value.socketPath).toBe(socketPath);
+					expect(value.dataDirectory).toBe(directory);
+					expect(value.protocolVersion).toBe(1);
+					yield* daemon.request(shutdown);
+					yield* daemon.awaitShutdown;
+				}).pipe(Effect.provide(layer(directory, socketPath)));
+			}),
+		),
+	);
+
 	it.live(
 		'replays output printed before ownership capture for a running service',
 		() =>

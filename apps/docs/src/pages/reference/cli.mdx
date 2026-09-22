@@ -69,9 +69,15 @@ devsess list
 devsess stop [options] [--force] [preset]
 devsess tail [options] [preset]
 devsess attach [options] [preset]
+devsess daemon start
+devsess daemon stop [--force]
+devsess daemon status
+devsess daemon restart [--force]
 ```
 
 `presets` reads the configured file and reports the presets matched by the current directory, including each service command and resolved working directory. It does not start or contact the daemon; if a daemon is already reachable, active presets are marked as running. A bare-start summary explains whether `start` would select one preset, show an interactive picker, or fail in a non-interactive invocation.
+
+`daemon start` starts the per-user daemon idempotently and reports its PID. `daemon stop` requests a clean shutdown through the daemon; it refuses while services are live unless `--force` is supplied, then waits until the control endpoint is unreachable. `daemon restart` combines those operations. `daemon status` never starts anything: it reports the daemon identity, version, executable, Unix socket, state directory, uptime, and run/client counts. It exits with status `3` when the daemon is not running or not responding, and warns when the daemon differs from the current CLI. The daemon has no TCP port; all control traffic uses the per-user Unix socket shown in the status output. An older daemon that does not support the additive `info`/`shutdown` requests is reported as outdated; stop/restart can use the persisted daemon process identity when available.
 
 `start` captures the current environment and starts the selected preset through a detached daemon. It waits for a daemon handshake and for the start request to be acknowledged, prints the run ID, and returns control to the shell while services continue running. The run records its invocation directory while the daemon and state remain shared across projects and worktrees.
 

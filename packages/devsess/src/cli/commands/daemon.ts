@@ -9,7 +9,7 @@ import {
 import { callDaemon } from '../client';
 import { DaemonLifecycle } from '../lifecycle';
 import { captureInvocation } from '../project-matching';
-import { isActive, type RunRecord, RunRecordSchema } from '../registry';
+import { isRunActive, type RunRecord, RunRecordSchema } from '../registry';
 
 export class CommandError extends Schema.TaggedErrorClass<CommandError>()(
 	'devsess/cli/CommandError',
@@ -28,10 +28,8 @@ export type CommandOptions = {
 
 export type DaemonLocation = { dataDirectory: string; socketPath: string };
 
-export const isRunActive = (run: RunRecord) =>
-	run.services.some(
-		(service) => isActive(service.state) || service.state === 'orphaned',
-	);
+export { isRunActive } from '../registry';
+
 const isRunTailable = (run: RunRecord) =>
 	isRunActive(run) || run.state === 'exited' || run.state === 'failed';
 
@@ -166,7 +164,10 @@ export const daemonCommand = Command.make(
 		socketPath: Flag.string('socket-path'),
 	},
 	(input) =>
-		Effect.never.pipe(
+		Effect.gen(function* () {
+			const lifecycle = yield* DaemonLifecycle;
+			yield* lifecycle.daemon.awaitShutdown;
+		}).pipe(
 			Effect.provide(
 				DaemonLifecycle.layer({
 					dataDirectory: input.dataDirectory,

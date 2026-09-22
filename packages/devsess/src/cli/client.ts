@@ -10,7 +10,19 @@ import { DEFAULT_DAEMON_REQUEST_TIMEOUT_MS } from './termination';
 
 export class DaemonClientError extends Schema.TaggedErrorClass<DaemonClientError>()(
 	'DaemonClientError',
-	{ message: Schema.String, cause: Schema.optional(Schema.Defect()) },
+	{
+		message: Schema.String,
+		cause: Schema.optional(Schema.Defect()),
+		kind: Schema.optional(
+			Schema.Union([
+				Schema.Literal('unreachable'),
+				Schema.Literal('invalid-response'),
+				Schema.Literal('incompatible'),
+				Schema.Literal('rejected'),
+			]),
+		),
+		responseError: Schema.optional(Schema.String),
+	},
 ) {}
 
 const decodeResponse = Schema.decodeUnknownEffect(
@@ -63,6 +75,7 @@ export const callDaemon = (
 			new DaemonClientError({
 				message: `Could not contact daemon at ${socketPath}`,
 				cause,
+				kind: 'unreachable',
 			}),
 	}).pipe(
 		Effect.flatMap((raw) =>
@@ -72,6 +85,7 @@ export const callDaemon = (
 						new DaemonClientError({
 							message: 'Daemon returned an invalid response',
 							cause,
+							kind: 'invalid-response',
 						}),
 				),
 			),
@@ -80,21 +94,26 @@ export const callDaemon = (
 			if (response.version !== PROTOCOL_VERSION) {
 				return new DaemonClientError({
 					message: `Daemon protocol version ${response.version} is incompatible`,
+					kind: 'incompatible',
 				});
 			}
 			if (response.requestId !== request.requestId) {
 				return new DaemonClientError({
 					message: 'Daemon response ID did not match',
+					kind: 'invalid-response',
 				});
 			}
 			if (!response.ok) {
 				if (response.error === undefined) {
 					return new DaemonClientError({
 						message: 'Daemon rejected the request without an error',
+						kind: 'rejected',
 					});
 				}
 				return new DaemonClientError({
 					message: response.error,
+					kind: 'rejected',
+					responseError: response.error,
 				});
 			}
 			return Effect.succeed(response.result);
