@@ -4,12 +4,14 @@ import { Context, Deferred, Effect, Fiber, Layer, Queue } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { Scope } from 'effect/Scope';
+import devsessPackageJson from '../../package.json' with { type: 'json' };
 import { DaemonError, errorMessage } from './daemon-errors';
 import { Logs } from './logs';
 import { makeOutputWorker } from './output-worker';
 import { Processes } from './processes';
 import {
 	type DaemonEvent,
+	type DaemonInfo,
 	type DaemonRequest,
 	type DaemonResponse,
 	PROTOCOL_VERSION,
@@ -33,6 +35,7 @@ export type DaemonService = {
 	readonly request: (
 		incoming: DaemonRequest,
 	) => Effect.Effect<unknown, DaemonError>;
+	readonly awaitShutdown: Effect.Effect<void>;
 };
 
 export class Daemon extends Context.Service<Daemon, DaemonService>()(
@@ -83,21 +86,62 @@ const closeServer = (server: Server) =>
 
 export const makeDaemon = (options: {
 	socketPath: string;
+	dataDirectory?: string;
 }): Effect.Effect<
 	DaemonService,
 	unknown,
 	Registry | Logs | Processes | FileSystem | Path | Scope
 > =>
 	Effect.gen(function* () {
+		const scriptPath = process.argv[1];
+		if (scriptPath === undefined)
+			return yield* new DaemonError({
+				message: 'Could not determine the daemon script path',
+			});
 		const registry = yield* Registry;
 		const logs = yield* Logs;
 		const processes = yield* Processes;
 		const daemonIdentity = yield* processes.capture(process.pid);
+		const startedAt = new Date().toISOString();
+		const shutdownRequested = yield* Deferred.make<void>();
 		const requestQueue = yield* Queue.bounded<ClientRequestMessage>(256);
 		const lifecycleQueue = yield* Queue.unbounded<LifecycleMessage>();
 		const terminals = new Map<string, LiveService>();
 		const sockets = new Map<Socket, SocketState>();
 		const lifecycle = { closing: false };
+		const attachedClientCount = () =>
+			new Set(
+				Array.from(terminals.values()).flatMap((live) =>
+					live.lease?.socket === undefined ? [] : [live.lease.socket],
+				),
+			).size;
+		const info = () => {
+			const dataDirectory = options.dataDirectory;
+			if (dataDirectory === undefined)
+				return Effect.fail(
+					new DaemonError({ message: 'Daemon data directory is unavailable' }),
+				);
+			return registry.list.pipe(
+				Effect.map(
+					(runs): DaemonInfo => ({
+						pid: process.pid,
+						startedAt,
+						executable: process.execPath,
+						scriptPath,
+						packageVersion: devsessPackageJson.version,
+						protocolVersion: PROTOCOL_VERSION,
+						socketPath: options.socketPath,
+						dataDirectory,
+						runCount: runs.length,
+						liveServiceCount: terminals.size,
+						attachedClientCount: attachedClientCount(),
+					}),
+				),
+			);
+		};
+		const requestShutdown = Deferred.succeed(shutdownRequested, undefined).pipe(
+			Effect.asVoid,
+		);
 		const enqueueLifecycle = (message: LifecycleMessage) => {
 			Queue.offerUnsafe(lifecycleQueue, message);
 		};
@@ -198,6 +242,8 @@ export const makeDaemon = (options: {
 			subscriptions,
 			runStart,
 			runStop,
+			info,
+			requestShutdown,
 			reply,
 			fail,
 		});
@@ -289,5 +335,6 @@ export const makeDaemon = (options: {
 						});
 					return yield* Deferred.await(response);
 				}),
+			awaitShutdown: Deferred.await(shutdownRequested),
 		});
 	});

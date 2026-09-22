@@ -62,4 +62,27 @@ describe('CLI protocol validation', () => {
 			expect(exit._tag).toBe('Failure');
 		}),
 	);
+
+	it.effect('accepts additive daemon info and shutdown requests', () =>
+		Effect.gen(function* () {
+			const info = yield* decodeRequest(
+				JSON.stringify({
+					version: 1,
+					requestId: 'info',
+					method: 'info',
+					params: {},
+				}),
+			);
+			const shutdown = yield* decodeRequest(
+				JSON.stringify({
+					version: 1,
+					requestId: 'shutdown',
+					method: 'shutdown',
+					params: { force: true },
+				}),
+			);
+			expect(info.method).toBe('info');
+			expect(shutdown.method).toBe('shutdown');
+		}),
+	);
 });
