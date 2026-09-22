@@ -31,6 +31,18 @@ export const ListRunsRequest = Schema.Struct({
 	method: Schema.Literal('listRuns'),
 	params: Schema.Struct({}),
 });
+export const InfoRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('info'),
+	params: Schema.Struct({}),
+});
+export const ShutdownRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('shutdown'),
+	params: Schema.Struct({ force: Schema.optional(Schema.Boolean) }),
+});
 export const StopRunRequest = Schema.Struct({
 	version: Schema.Literal(PROTOCOL_VERSION),
 	requestId: Identifier,
@@ -92,6 +104,8 @@ export const DetachRequest = Schema.Struct({
 export const DaemonRequest = Schema.Union([
 	StartRunRequest,
 	ListRunsRequest,
+	InfoRequest,
+	ShutdownRequest,
 	StopRunRequest,
 	TailRequest,
 	AttachRequest,
@@ -101,6 +115,22 @@ export const DaemonRequest = Schema.Union([
 ]);
 
 export type DaemonRequest = typeof DaemonRequest.Type;
+
+export const DaemonInfo = Schema.Struct({
+	pid: Schema.Int,
+	startedAt: Schema.NonEmptyString,
+	executable: Schema.NonEmptyString,
+	scriptPath: Schema.NonEmptyString,
+	packageVersion: Schema.NonEmptyString,
+	protocolVersion: Schema.Literal(PROTOCOL_VERSION),
+	socketPath: Schema.NonEmptyString,
+	dataDirectory: Schema.NonEmptyString,
+	runCount: Schema.Int,
+	liveServiceCount: Schema.Int,
+	attachedClientCount: Schema.Int,
+});
+
+export type DaemonInfo = typeof DaemonInfo.Type;
 
 export const DaemonResponse = Schema.Struct({
 	version: Schema.Literal(PROTOCOL_VERSION),

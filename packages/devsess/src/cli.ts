@@ -7,6 +7,7 @@ import { Argument, Command, Flag } from 'effect/unstable/cli';
 import devsessPackageJson from '../package.json' with { type: 'json' };
 import { attach } from './cli/commands/attach';
 import { daemonCommand } from './cli/commands/daemon';
+import { daemonControlCommand } from './cli/commands/daemon-control';
 import { list } from './cli/commands/list';
 import { presets } from './cli/commands/presets';
 import { start } from './cli/commands/start';
@@ -77,6 +78,7 @@ const app = Command.make('devsess', {}).pipe(
 		stopCommand,
 		tailCommand,
 		attachCommand,
+		daemonControlCommand,
 		daemonCommand,
 	]),
 );
