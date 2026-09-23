@@ -1,11 +1,14 @@
 import { describe, expect, it } from '@effect/vitest';
 import { Effect, Queue } from 'effect';
 import { afterEach, vi } from 'vitest';
+import { callDaemon } from '../../src/cli/client';
 import { finishedAttachError } from '../../src/cli/commands/attach';
 import {
 	formatStartFailure,
 	isFailure,
 	recentOutput,
+	unpublishedExits,
+	watchStart,
 } from '../../src/cli/commands/start';
 import type { RunRecord } from '../../src/cli/registry';
 import {
@@ -15,8 +18,12 @@ import {
 import { runTest } from '../support/run-test';
 
 vi.mock('../../src/cli/terminal', () => ({ openDaemonStream: vi.fn() }));
+vi.mock('../../src/cli/client', () => ({ callDaemon: vi.fn() }));
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+	vi.restoreAllMocks();
+	vi.mocked(callDaemon).mockReset();
+});
 
 const run: RunRecord = {
 	runId: 'failed-run',
@@ -47,6 +54,110 @@ const run: RunRecord = {
 };
 
 describe('failed run diagnostics', () => {
+	it.live(
+		'waits only for included services and reports readiness as it arrives',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const initial: RunRecord = {
+						...run,
+						state: 'running',
+						services: [
+							{
+								name: 'web',
+								command: 'exit 1',
+								cwd: '/work/mock',
+								state: 'running',
+							},
+							{
+								name: 'db',
+								command: 'sleep 30',
+								cwd: '/work/mock',
+								state: 'running',
+							},
+						],
+					};
+					const ready: RunRecord = {
+						...initial,
+						services: initial.services.map((service) =>
+							service.name === 'web'
+								? {
+										...service,
+										published: {
+											value: { url: 'http://localhost:5173' },
+											publishedAt: new Date().toISOString(),
+										},
+									}
+								: service,
+						),
+					};
+					vi.mocked(callDaemon).mockReturnValue(
+						Effect.succeed([ready]) as never,
+					);
+					const output = vi
+						.spyOn(process.stdout, 'write')
+						.mockImplementation(() => true);
+					const result = yield* watchStart(
+						'/tmp/isolated.sock',
+						initial,
+						new Set(['web']),
+					).pipe(Effect.timeout('2 seconds'));
+					expect(result.seen.has('web')).toBe(true);
+					expect(result.seen.has('db')).toBe(false);
+					expect(output).toHaveBeenCalledWith(
+						'web ready → http://localhost:5173\n',
+					);
+				}),
+			),
+	);
+
+	it.live(
+		'stops waiting when an included service exits before publishing',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const initial: RunRecord = {
+						...run,
+						state: 'running',
+						services: [
+							{
+								name: 'web',
+								command: 'exit 1',
+								cwd: '/work/mock',
+								state: 'running',
+							},
+						],
+					};
+					const exited: RunRecord = {
+						...initial,
+						state: 'exited',
+						services: [
+							{
+								name: 'web',
+								command: 'exit 0',
+								cwd: '/work/mock',
+								state: 'exited',
+								exitCode: 0,
+							},
+						],
+					};
+					vi.mocked(callDaemon).mockReturnValue(
+						Effect.succeed([exited]) as never,
+					);
+					const result = yield* watchStart(
+						'/tmp/isolated.sock',
+						initial,
+						new Set(['web']),
+					).pipe(Effect.timeout('2 seconds'));
+					expect(
+						unpublishedExits(result.run, new Set(['web']), result.seen).map(
+							(service) => service.name,
+						),
+					).toEqual(['web']);
+					expect(result.run.services[0]?.exitCode).toBe(0);
+				}),
+			),
+	);
 	it.live(
 		'replays only the last ten output lines and preserves the saved exit',
 		() =>

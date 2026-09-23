@@ -122,6 +122,42 @@ export const makeRequestDispatcher = (options: {
 			);
 		if (incoming.method === 'startRun')
 			return options.runStart.startRun(incoming);
+		if (incoming.method === 'publish' || incoming.method === 'unpublish')
+			return Effect.gen(function* () {
+				const run = yield* options.registry.get(incoming.params.runId);
+				const service = run.services.find(
+					(candidate) => candidate.name === incoming.params.service,
+				);
+				if (service === undefined)
+					return yield* new DaemonError({
+						message: `Service ${incoming.params.service} was not found in run ${run.runId}`,
+					});
+				if (
+					service.state !== 'running' ||
+					!options.terminals.has(
+						serviceKey({ runId: run.runId, serviceName: service.name }),
+					)
+				)
+					return yield* new DaemonError({
+						message: `Service ${service.name} in run ${run.runId} is not live`,
+					});
+				const services = run.services.map((candidate) =>
+					candidate.name === service.name
+						? {
+								...candidate,
+								published:
+									incoming.method === 'publish'
+										? {
+												value: incoming.params.value,
+												publishedAt: new Date().toISOString(),
+											}
+										: undefined,
+							}
+						: candidate,
+				);
+				yield* options.registry.replace({ ...run, services });
+				return {};
+			});
 		if (incoming.method === 'stopRun')
 			return options.runStop.stopRun(
 				incoming.params.runId,

@@ -32,6 +32,9 @@ export const ServiceRecordSchema = Schema.Struct({
 	exitCode: Schema.optionalKey(Schema.Int),
 	signal: Schema.optionalKey(Schema.Int),
 	exitStatus: Schema.optionalKey(Schema.Literal('unknown')),
+	published: Schema.optionalKey(
+		Schema.Struct({ value: Schema.Json, publishedAt: Schema.NonEmptyString }),
+	),
 });
 
 export type ServiceRecord = typeof ServiceRecordSchema.Type;
@@ -52,11 +55,12 @@ export const refreshService = (
 		return {
 			...service,
 			state: 'exited',
+			published: undefined,
 			exitCode: undefined,
 			signal: undefined,
 			exitStatus: 'unknown',
 		};
-	return { ...service, state: 'orphaned' };
+	return { ...service, state: 'orphaned', published: undefined };
 };
 
 export const RunRecordSchema = Schema.Struct({
@@ -87,7 +91,7 @@ class RunAlreadyReserved extends Schema.TaggedErrorClass<RunAlreadyReserved>()(
 	},
 ) {}
 
-class RunNotFound extends Schema.TaggedErrorClass<RunNotFound>()(
+export class RunNotFound extends Schema.TaggedErrorClass<RunNotFound>()(
 	'devsess/cli/RunNotFound',
 	{ runId: Schema.String },
 ) {}

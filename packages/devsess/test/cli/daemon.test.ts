@@ -10,7 +10,7 @@ import { type LogAddress, type LogEvent, Logs } from '../../src/cli/logs';
 import { ProcessError, Processes } from '../../src/cli/processes';
 import type { DaemonRequest } from '../../src/cli/protocol';
 import { createPty, PtyError, terminatePty } from '../../src/cli/pty';
-import { Registry, type RunRecord } from '../../src/cli/registry';
+import { Registry, RunNotFound, type RunRecord } from '../../src/cli/registry';
 import { runTest } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
 
@@ -220,7 +220,7 @@ const fixture = () => {
 		Effect.suspend(() => {
 			const run = records.get(runId);
 			return run === undefined
-				? Effect.die(`Missing fixture run ${runId}`)
+				? Effect.fail(new RunNotFound({ runId }))
 				: Effect.succeed(run);
 		});
 	const replace = vi.fn(
@@ -329,6 +329,111 @@ const lastServer = () => {
 };
 
 describe('daemon lifetime and failure handling', () => {
+	it.live(
+		'injects service identity and persists publish/unpublish until exit',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const socketPath = join(root, 'daemon.sock');
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						const request = start();
+						const started = yield* daemon.request({
+							...request,
+							params: {
+								...request.params,
+								environment: { DEVSESS_SERVICE: 'wrong' },
+							},
+						});
+						expect(started).toMatchObject({ runId: 'run' });
+						const spawn = vi.mocked(createPty).mock.calls[0]?.[0];
+						expect(spawn?.env).toMatchObject({
+							DEVSESS_SOCKET: socketPath,
+							DEVSESS_RUN_ID: 'run',
+							DEVSESS_SERVICE: 'web',
+						});
+						const publish = {
+							version: 1 as const,
+							requestId: 'published',
+							method: 'publish' as const,
+							params: {
+								runId: 'run',
+								service: 'web',
+								value: { url: 'http://localhost:5173' },
+							},
+						};
+						yield* daemon.request(publish);
+						const ready = yield* state.registry.get('run');
+						expect(ready.services[0]?.published?.value).toEqual({
+							url: 'http://localhost:5173',
+						});
+						expect(ready.services[0]?.published?.publishedAt).toEqual(
+							expect.any(String),
+						);
+						yield* daemon.request({
+							version: 1,
+							requestId: 'unpublished',
+							method: 'unpublish',
+							params: { runId: 'run', service: 'web' },
+						});
+						expect(
+							(yield* state.registry.get('run')).services[0]?.published,
+						).toBeUndefined();
+						yield* daemon.request(publish);
+						const onExit = state.terminal.onExit.mock.calls[0]?.[0];
+						if (onExit === undefined)
+							return yield* Effect.die('Missing exit callback');
+						onExit({ exitCode: 0 });
+						for (let attempt = 0; attempt < 100; attempt += 1) {
+							if (
+								(yield* state.registry.get('run')).services[0]?.state ===
+								'exited'
+							)
+								break;
+							yield* Effect.sleep('5 millis');
+						}
+						expect(
+							(yield* state.registry.get('run')).services[0]?.published,
+						).toBeUndefined();
+						const dead = yield* Effect.exit(daemon.request(publish));
+						expect(Exit.isFailure(dead)).toBe(true);
+					}).pipe(Effect.provide(state.layer(socketPath)));
+				}),
+			),
+	);
+
+	it.live('rejects publish for unknown run or service', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					const unknownRun = yield* Effect.exit(
+						daemon.request({
+							version: 1,
+							requestId: 'unknown-run',
+							method: 'publish',
+							params: { runId: 'missing', service: 'web', value: 3 },
+						}),
+					);
+					expect(Exit.isFailure(unknownRun)).toBe(true);
+					yield* daemon.request(start());
+					const unknownService = yield* Effect.exit(
+						daemon.request({
+							version: 1,
+							requestId: 'unknown-service',
+							method: 'publish',
+							params: { runId: 'run', service: 'missing', value: 3 },
+						}),
+					);
+					expect(Exit.isFailure(unknownService)).toBe(true);
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
 	it.live(
 		'keeps the layer worker and socket alive until scope closure, then persists exits',
 		() =>

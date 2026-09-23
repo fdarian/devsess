@@ -63,7 +63,7 @@ export const formatPresetList = (
 			Option.isSome(runs) &&
 			isRunning(runs.value, candidate.projectName, candidate.presetName);
 		lines.push(
-			`  ${candidate.projectName}/${candidate.presetName}${running ? ' [running]' : ''}`,
+			`  ${candidate.projectName}/${candidate.presetName}${running ? ' [running]' : ''}${candidate.preset.awaitPublish === true ? ' [awaitPublish]' : ''}`,
 		);
 		for (const service of toServices(candidate.preset, resolved.invocation))
 			lines.push(

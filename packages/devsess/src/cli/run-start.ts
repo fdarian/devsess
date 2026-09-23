@@ -23,6 +23,7 @@ const parseShellCommand = (command: string) =>
 export type RunStart = ReturnType<typeof makeRunStart>;
 
 export const makeRunStart = (options: {
+	readonly socketPath: string;
 	readonly registry: RegistryService;
 	readonly processes: ProcessesService;
 	readonly daemonIdentity: ProcessIdentity;
@@ -164,7 +165,12 @@ export const makeRunStart = (options: {
 						command: shell[0],
 						args: [...shell[1]],
 						cwd: service.cwd,
-						env: request.params.environment,
+						env: {
+							...request.params.environment,
+							DEVSESS_SOCKET: options.socketPath,
+							DEVSESS_RUN_ID: run.runId,
+							DEVSESS_SERVICE: service.name,
+						},
 						cols: 80,
 						rows: 24,
 					});
