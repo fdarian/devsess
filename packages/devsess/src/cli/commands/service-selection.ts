@@ -4,6 +4,7 @@ import type { Path } from 'effect/Path';
 import type { Terminal } from 'effect/Terminal';
 import { Prompt } from 'effect/unstable/cli';
 import type { RunRecord } from '../registry';
+import { runSelector, shortRunId } from '../run-id';
 import { CommandError, type CommandOptions } from './daemon';
 
 export const chooseServices = (
@@ -11,6 +12,7 @@ export const chooseServices = (
 	options: CommandOptions,
 	command: 'tail' | 'attach',
 	interactive = process.stdin.isTTY === true && process.stdout.isTTY === true,
+	runs: ReadonlyArray<RunRecord> = [run],
 ): Effect.Effect<
 	ReadonlyArray<RunRecord['services'][number]>,
 	CommandError,
@@ -42,7 +44,14 @@ export const chooseServices = (
 	const service = services[0];
 	if (services.length === 1 && service !== undefined)
 		return Effect.succeed([service]);
-	const prefix = `devsess ${command} ${run.projectName}/${run.presetName}${options.runId === undefined ? '' : ` --run ${run.runId}`}`;
+	const positionalId =
+		options.preset !== undefined &&
+		options.preset !== run.presetName &&
+		run.runId.startsWith(options.preset);
+	const selector = positionalId
+		? runSelector(run, runs)
+		: `${run.projectName}/${run.presetName}${options.runId === undefined ? '' : ` --run ${shortRunId(run, runs)}`}`;
+	const prefix = `devsess ${command} ${selector}`;
 	if (services.length === 0)
 		return new CommandError({
 			message: `No matching ${command === 'attach' ? 'live ' : ''}service${options.service === undefined ? '' : ` named ${options.service}`} in ${run.projectName}/${run.presetName}. Available: ${available.map((candidate) => candidate.name).join(', ')}. See \`devsess status\`.`,

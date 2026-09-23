@@ -2,6 +2,7 @@ import { Effect } from 'effect';
 import { attachSession } from '../attach-session';
 import { serviceExitCode } from '../exit-status';
 import { isRunActive, type RunRecord } from '../registry';
+import { runSelector } from '../run-id';
 import { openDaemonStream } from '../terminal';
 import {
 	CommandError,
@@ -15,6 +16,7 @@ import { chooseServices } from './service-selection';
 export const finishedAttachError = (
 	run: RunRecord,
 	options: CommandOptions,
+	runs: ReadonlyArray<RunRecord> = [run],
 ) => {
 	const services =
 		options.service === undefined
@@ -25,7 +27,7 @@ export const finishedAttachError = (
 			message: `Service ${options.service} was not found in ${run.projectName}/${run.presetName}`,
 		});
 	return new CommandError({
-		message: `${run.projectName}/${run.presetName} is not running. ${services.map((service) => `${service.name}: ${service.state}${service.exitCode === undefined ? ' (exit status unknown)' : ` (exit ${serviceExitCode({ exitCode: service.exitCode, signal: service.signal })})`}. See output: devsess tail ${run.projectName}/${run.presetName} --run ${run.runId} --service ${service.name}`).join('\n')}`,
+		message: `${run.projectName}/${run.presetName} is not running. ${services.map((service) => `${service.name}: ${service.state}${service.exitCode === undefined ? ' (exit status unknown)' : ` (exit ${serviceExitCode({ exitCode: service.exitCode, signal: service.signal })})`}. See output: devsess tail ${runSelector(run, runs)} --service ${service.name}`).join('\n')}`,
 	});
 };
 
@@ -42,8 +44,15 @@ export const attach = (options: CommandOptions) => {
 				resolved.localRuns,
 				resolved.runs,
 			);
-			if (!isRunActive(run)) return yield* finishedAttachError(run, options);
-			const services = yield* chooseServices(run, options, 'attach');
+			if (!isRunActive(run))
+				return yield* finishedAttachError(run, options, resolved.runs);
+			const services = yield* chooseServices(
+				run,
+				options,
+				'attach',
+				undefined,
+				resolved.runs,
+			);
 			if (!process.stdin.isTTY || !process.stdout.isTTY)
 				return yield* new CommandError({
 					message: 'Attach requires an interactive terminal',
