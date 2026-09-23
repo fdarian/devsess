@@ -1,6 +1,7 @@
 import { Cause, Effect, Exit, Queue } from 'effect';
 import { ServiceExitError, serviceExit } from '../exit-status';
 import { isRunActive, type RunRecord } from '../registry';
+import { shortRunId } from '../run-id';
 import { openDaemonStream, type TerminalTransportError } from '../terminal';
 import {
 	CommandError,
@@ -90,10 +91,16 @@ export const tail = (options: CommandOptions) =>
 							if (!isRunActive(run))
 								yield* Effect.sync(() =>
 									process.stderr.write(
-										`${run.projectName}/${run.presetName} [${run.runId.slice(0, 8)}] is not running; replaying its last output.\n`,
+										`${run.projectName}/${run.presetName} [${shortRunId(run, resolved.runs)}] is not running; replaying its last output.\n`,
 									),
 								);
-							const services = yield* chooseServices(run, options, 'tail');
+							const services = yield* chooseServices(
+								run,
+								options,
+								'tail',
+								undefined,
+								resolved.runs,
+							);
 							const completions =
 								yield* Queue.unbounded<Exit.Exit<void, TailFailure>>();
 							for (const service of services)

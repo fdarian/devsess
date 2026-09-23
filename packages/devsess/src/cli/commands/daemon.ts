@@ -13,6 +13,7 @@ import { callDaemon } from '../client';
 import { DaemonLifecycle } from '../lifecycle';
 import { captureInvocation } from '../project-matching';
 import { isRunActive, type RunRecord, RunRecordSchema } from '../registry';
+import { shortRunId } from '../run-id';
 
 export class CommandError extends Schema.TaggedErrorClass<CommandError>()(
 	'devsess/cli/CommandError',
@@ -143,7 +144,10 @@ export const resolveCurrentRuns = () =>
 		return { location, runs, current, local, localRuns };
 	});
 
-const runChoices = (runs: ReadonlyArray<RunRecord>) =>
+const runChoices = (
+	runs: ReadonlyArray<RunRecord>,
+	allRuns: ReadonlyArray<RunRecord>,
+) =>
 	runs.map((run) => {
 		const name = `${run.projectName}/${run.presetName}`;
 		const duplicated = runs.some(
@@ -152,19 +156,13 @@ const runChoices = (runs: ReadonlyArray<RunRecord>) =>
 				other.projectName === run.projectName &&
 				other.presetName === run.presetName,
 		);
-		const shortId = runs.some(
-			(other) =>
-				other.runId !== run.runId &&
-				other.runId.startsWith(run.runId.slice(0, 8)),
-		)
-			? run.runId
-			: run.runId.slice(0, 8);
+		const shortId = shortRunId(run, allRuns);
 		return {
 			run,
 			label: duplicated
 				? `${name} [${shortId}] started ${run.startedAt}`
-				: name,
-			selector: duplicated ? ` --run ${run.runId}` : '',
+				: `${name} [${shortId}]`,
+			selector: duplicated ? ` --run ${shortId}` : '',
 		};
 	});
 
@@ -183,7 +181,7 @@ export const chooseRun = (
 		(parts.length > 2 || parts.some((part) => part.length === 0))
 	)
 		return new CommandError({
-			message: `Invalid preset ${options.preset}. Use a preset or project/preset.`,
+			message: `Invalid selector ${options.preset}. Use a run ID, preset, or project/preset.`,
 		});
 	const positionalProject = parts?.length === 2 ? parts[0] : undefined;
 	if (
@@ -194,54 +192,96 @@ export const chooseRun = (
 		return new CommandError({
 			message: `--project ${options.project} conflicts with ${options.preset}.`,
 		});
-	const presetName = parts?.length === 2 ? parts[1] : options.preset;
 	const projectName =
 		positionalProject === undefined ? options.project : positionalProject;
-	const matches = active.filter(
-		(run) =>
-			(projectName === undefined || run.projectName === projectName) &&
-			(presetName === undefined || run.presetName === presetName) &&
-			(options.runId === undefined || run.runId.startsWith(options.runId)),
-	);
+	const knownRuns = [...active, ...finished.filter((run) => !isRunActive(run))];
+	const positional = options.preset;
+	const positionalRunId =
+		positional !== undefined &&
+		parts?.length === 1 &&
+		!knownRuns.some(
+			(run) =>
+				(projectName === undefined || run.projectName === projectName) &&
+				run.presetName === positional,
+		) &&
+		knownRuns.some(
+			(run) =>
+				(projectName === undefined || run.projectName === projectName) &&
+				run.runId.startsWith(positional),
+		)
+			? positional
+			: undefined;
+	const presetName =
+		positionalRunId === undefined
+			? parts?.length === 2
+				? parts[1]
+				: options.preset
+			: undefined;
+	const runId = positionalRunId === undefined ? options.runId : positionalRunId;
+	if (
+		positionalRunId !== undefined &&
+		options.runId !== undefined &&
+		!positionalRunId.startsWith(options.runId) &&
+		!options.runId.startsWith(positionalRunId)
+	)
+		return new CommandError({
+			message: `--run ${options.runId} conflicts with ${positionalRunId}.`,
+		});
+	const filterRuns = (available: ReadonlyArray<RunRecord>) => {
+		const matching = available.filter(
+			(run) =>
+				(projectName === undefined || run.projectName === projectName) &&
+				(presetName === undefined || run.presetName === presetName) &&
+				(runId === undefined || run.runId.startsWith(runId)),
+		);
+		const exact =
+			runId === undefined
+				? undefined
+				: matching.find((run) => run.runId === runId);
+		return exact === undefined ? matching : [exact];
+	};
+	const matches = filterRuns(active);
 	// Runs started under the current directory win only when the user did not name a project or run.
 	const localMatches = matches.filter((run) =>
 		local.some((other) => other.runId === run.runId),
 	);
 	const candidates =
-		projectName === undefined &&
-		options.runId === undefined &&
-		localMatches.length > 0
+		projectName === undefined && runId === undefined && localMatches.length > 0
 			? localMatches
 			: matches;
 	if (candidates.length === 0 && finished.length > 0) {
-		const matching = finished.filter(
-			(run) =>
-				!isRunActive(run) &&
-				(projectName === undefined || run.projectName === projectName) &&
-				(presetName === undefined || run.presetName === presetName) &&
-				(options.runId === undefined || run.runId.startsWith(options.runId)),
-		);
+		const matching = filterRuns(finished.filter((run) => !isRunActive(run)));
 		const nearby = matching.filter((run) =>
 			local.some((candidate) => candidate.runId === run.runId),
 		);
 		const recent =
-			projectName === undefined &&
-			options.runId === undefined &&
-			nearby.length > 0
+			projectName === undefined && runId === undefined && nearby.length > 0
 				? nearby
 				: matching;
 		const latest = recent
 			.slice()
 			.sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0];
+		if (runId !== undefined && recent.length > 1)
+			return new CommandError({
+				message: `Multiple finished runs match ${runId}:\n${runChoices(
+					recent,
+					knownRuns,
+				)
+					.map(
+						(choice) =>
+							`  ${choice.label} — devsess ${command} ${choice.run.projectName}/${choice.run.presetName} --run ${shortRunId(choice.run, knownRuns)}`,
+					)
+					.join('\n')}`,
+			});
 		if (latest !== undefined) return Effect.succeed(latest);
 	}
 	const run = candidates[0];
 	if (candidates.length === 1 && run !== undefined) return Effect.succeed(run);
-	const choices = runChoices(candidates);
+	const choices = runChoices(candidates, knownRuns);
 	if (candidates.length === 0)
 		return new CommandError({
 			message: `Nothing running matches ${options.preset === undefined ? 'this command' : options.preset}. Running: ${
-				runChoices(active)
+				runChoices(active, knownRuns)
 					.map((choice) => choice.label)
 					.join(', ') || 'none'
 			}. See \`devsess status\`.`,
