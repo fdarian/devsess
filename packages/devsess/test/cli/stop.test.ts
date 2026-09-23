@@ -1,11 +1,14 @@
+import { NodeTerminal } from '@effect/platform-node';
 import { describe, expect, it } from '@effect/vitest';
-import { Effect } from 'effect';
+import { Effect, Layer } from 'effect';
+import { Terminal } from 'effect/Terminal';
 import { afterEach, vi } from 'vitest';
 import { callDaemon } from '../../src/cli/client';
 import { chooseRun, resolveCurrentRuns } from '../../src/cli/commands/daemon';
 import { stop } from '../../src/cli/commands/stop';
 import type { RunRecord } from '../../src/cli/registry';
 import { STOP_REQUEST_TIMEOUT_MS } from '../../src/cli/termination';
+import { runTest } from '../support/run-test';
 
 vi.mock('../../src/cli/client', () => ({ callDaemon: vi.fn() }));
 vi.mock('../../src/cli/commands/daemon', async (importOriginal) => {
@@ -39,25 +42,34 @@ const run: RunRecord = {
 
 describe('stop command', () => {
 	it.effect('allows both termination phases plus a margin for the RPC', () =>
-		Effect.gen(function* () {
-			vi.mocked(resolveCurrentRuns).mockReturnValue(
-				Effect.succeed({
-					location: { dataDirectory: '/tmp/data', socketPath: '/tmp/socket' },
-					runs: [run],
-					current: [run],
-				}),
-			);
-			vi.mocked(chooseRun).mockReturnValue(Effect.succeed(run));
-			let timeout: number | undefined;
-			vi.mocked(callDaemon).mockImplementation(
-				(_socketPath, _request, timeoutMs) => {
-					timeout = timeoutMs;
-					return Effect.succeed(run);
-				},
-			);
-			vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-			yield* stop({});
-			expect(timeout).toBe(STOP_REQUEST_TIMEOUT_MS);
-		}),
+		runTest(
+			Effect.gen(function* () {
+				vi.mocked(resolveCurrentRuns).mockReturnValue(
+					Effect.succeed({
+						location: { dataDirectory: '/tmp/data', socketPath: '/tmp/socket' },
+						runs: [run],
+						current: [run],
+					}),
+				);
+				vi.mocked(chooseRun).mockReturnValue(Effect.succeed(run));
+				let timeout: number | undefined;
+				vi.mocked(callDaemon).mockImplementation(
+					(_socketPath, _request, timeoutMs) => {
+						timeout = timeoutMs;
+						return Effect.succeed(run);
+					},
+				);
+				vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+				yield* stop({});
+				expect(timeout).toBe(STOP_REQUEST_TIMEOUT_MS);
+			}).pipe(
+				Effect.provide(
+					Layer.effect(
+						Terminal,
+						NodeTerminal.make(() => false),
+					),
+				),
+			),
+		),
 	);
 });

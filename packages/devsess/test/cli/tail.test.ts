@@ -1,5 +1,7 @@
+import { NodeTerminal } from '@effect/platform-node';
 import { describe, expect, it } from '@effect/vitest';
-import { Cause, Effect, Queue, Runtime } from 'effect';
+import { Cause, Effect, Layer, Queue, Runtime } from 'effect';
+import { Terminal } from 'effect/Terminal';
 import { afterEach, vi } from 'vitest';
 import { chooseRun, resolveCurrentRuns } from '../../src/cli/commands/daemon';
 import { tail } from '../../src/cli/commands/tail';
@@ -10,6 +12,19 @@ import {
 	type DaemonStreamFrame,
 	openDaemonStream,
 } from '../../src/cli/terminal';
+import { runTest } from '../support/run-test';
+
+const withServices = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+	runTest(
+		effect.pipe(
+			Effect.provide(
+				Layer.effect(
+					Terminal,
+					NodeTerminal.make(() => false),
+				),
+			),
+		),
+	);
 
 vi.mock('../../src/cli/terminal', () => ({
 	openDaemonStream: vi.fn(),
@@ -72,143 +87,160 @@ describe('tail command', () => {
 		});
 
 	it.effect('returns success for a zero service exit', () =>
-		Effect.gen(function* () {
-			const result = yield* runTailWithExit({
-				version: 1,
-				requestId: 'request',
-				event: 'exit',
-				exitCode: 0,
-			});
-			expect(result._tag).toBe('Success');
-			expect(resolveCurrentRuns).toHaveBeenCalledWith({}, true);
-		}),
+		withServices(
+			Effect.gen(function* () {
+				const result = yield* runTailWithExit({
+					version: 1,
+					requestId: 'request',
+					event: 'exit',
+					exitCode: 0,
+				});
+				expect(result._tag).toBe('Success');
+				expect(resolveCurrentRuns).toHaveBeenCalledWith();
+			}),
+		),
 	);
 
 	it.effect('returns the nonzero service exit code', () =>
-		Effect.gen(function* () {
-			const result = yield* runTailWithExit({
-				version: 1,
-				requestId: 'request',
-				event: 'exit',
-				exitCode: 7,
-			});
-			expect(result._tag).toBe('Failure');
-			if (result._tag === 'Failure') {
-				const error = Cause.squash(result.cause);
-				expect(error).toBeInstanceOf(ServiceExitError);
-				expect(Runtime.getErrorExitCode(error)).toBe(7);
-			}
-		}),
+		withServices(
+			Effect.gen(function* () {
+				const result = yield* runTailWithExit({
+					version: 1,
+					requestId: 'request',
+					event: 'exit',
+					exitCode: 7,
+				});
+				expect(result._tag).toBe('Failure');
+				if (result._tag === 'Failure') {
+					const error = Cause.squash(result.cause);
+					expect(error).toBeInstanceOf(ServiceExitError);
+					expect(Runtime.getErrorExitCode(error)).toBe(7);
+				}
+			}),
+		),
 	);
 
 	it.effect('maps a signal exit to the conventional status', () =>
-		Effect.gen(function* () {
-			const result = yield* runTailWithExit({
-				version: 1,
-				requestId: 'request',
-				event: 'exit',
-				exitCode: 0,
-				signal: 9,
-			});
-			expect(result._tag).toBe('Failure');
-			if (result._tag === 'Failure')
-				expect(Runtime.getErrorExitCode(Cause.squash(result.cause))).toBe(137);
-		}),
+		withServices(
+			Effect.gen(function* () {
+				const result = yield* runTailWithExit({
+					version: 1,
+					requestId: 'request',
+					event: 'exit',
+					exitCode: 0,
+					signal: 9,
+				});
+				expect(result._tag).toBe('Failure');
+				if (result._tag === 'Failure')
+					expect(Runtime.getErrorExitCode(Cause.squash(result.cause))).toBe(
+						137,
+					);
+			}),
+		),
 	);
 
 	it.effect(
 		'waits for every service and keeps completion order for exit codes',
 		() =>
-			Effect.gen(function* () {
-				const framesByService = new Map<
-					string,
-					Queue.Queue<DaemonStreamFrame>
-				>();
-				const failedFrames = yield* Queue.unbounded<DaemonStreamFrame>();
-				const slowFrames = yield* Queue.unbounded<DaemonStreamFrame>();
-				yield* Queue.offer(failedFrames, {
-					_tag: 'response',
-					value: {
-						version: 1,
-						requestId: 'failed',
-						ok: true,
-						result: {},
-					},
-				});
-				yield* Queue.offer(failedFrames, {
-					_tag: 'output',
-					value: {
-						version: 1,
-						requestId: 'failed',
-						event: 'exit',
-						exitCode: 7,
-					},
-				});
-				yield* Queue.offer(slowFrames, {
-					_tag: 'response',
-					value: {
-						version: 1,
-						requestId: 'slow',
-						ok: true,
-						result: {},
-					},
-				});
-				yield* Queue.offer(slowFrames, {
-					_tag: 'output',
-					value: {
-						version: 1,
-						requestId: 'slow',
-						event: 'output',
-						data: 'later output',
-						offset: 12,
-					},
-				});
-				yield* Queue.offer(slowFrames, {
-					_tag: 'output',
-					value: {
-						version: 1,
-						requestId: 'slow',
-						event: 'exit',
-						exitCode: 4,
-					},
-				});
-				framesByService.set('web', failedFrames);
-				framesByService.set('api', slowFrames);
-				const web = run.services[0];
-				if (web === undefined) return yield* Effect.die('Missing web fixture');
-				const api = {
-					name: 'api',
-					command: 'sleep 30',
-					cwd: '/tmp',
-					state: 'running' as const,
-				};
-				const multiRun: RunRecord = {
-					...run,
-					services: [api, web],
-				};
-				vi.mocked(resolveCurrentRuns).mockReturnValue(
-					Effect.succeed({
-						location: { dataDirectory: '/tmp/data', socketPath: '/tmp/socket' },
-						runs: [multiRun],
-						current: [multiRun],
-					}),
-				);
-				vi.mocked(chooseRun).mockReturnValue(Effect.succeed(multiRun));
-				vi.mocked(openDaemonStream).mockImplementation((options) => {
-					const frames = framesByService.get(
-						options.request.params.serviceName,
+			withServices(
+				Effect.gen(function* () {
+					const framesByService = new Map<
+						string,
+						Queue.Queue<DaemonStreamFrame>
+					>();
+					const failedFrames = yield* Queue.unbounded<DaemonStreamFrame>();
+					const slowFrames = yield* Queue.unbounded<DaemonStreamFrame>();
+					yield* Queue.offer(failedFrames, {
+						_tag: 'response',
+						value: {
+							version: 1,
+							requestId: 'failed',
+							ok: true,
+							result: {},
+						},
+					});
+					yield* Queue.offer(failedFrames, {
+						_tag: 'output',
+						value: {
+							version: 1,
+							requestId: 'failed',
+							event: 'exit',
+							exitCode: 7,
+						},
+					});
+					yield* Queue.offer(slowFrames, {
+						_tag: 'response',
+						value: {
+							version: 1,
+							requestId: 'slow',
+							ok: true,
+							result: {},
+						},
+					});
+					yield* Queue.offer(slowFrames, {
+						_tag: 'output',
+						value: {
+							version: 1,
+							requestId: 'slow',
+							event: 'output',
+							data: 'later output',
+							offset: 12,
+						},
+					});
+					yield* Queue.offer(slowFrames, {
+						_tag: 'output',
+						value: {
+							version: 1,
+							requestId: 'slow',
+							event: 'exit',
+							exitCode: 4,
+						},
+					});
+					framesByService.set('web', failedFrames);
+					framesByService.set('api', slowFrames);
+					const web = run.services[0];
+					if (web === undefined)
+						return yield* Effect.die('Missing web fixture');
+					const api = {
+						name: 'api',
+						command: 'sleep 30',
+						cwd: '/tmp',
+						state: 'running' as const,
+					};
+					const multiRun: RunRecord = {
+						...run,
+						services: [api, web],
+					};
+					vi.mocked(resolveCurrentRuns).mockReturnValue(
+						Effect.succeed({
+							location: {
+								dataDirectory: '/tmp/data',
+								socketPath: '/tmp/socket',
+							},
+							runs: [multiRun],
+							current: [multiRun],
+						}),
 					);
-					if (frames === undefined) return Effect.die('Missing stream fixture');
-					return Effect.succeed({ frames }) as never;
-				});
-				const output = vi
-					.spyOn(process.stdout, 'write')
-					.mockImplementation(() => true);
-				const result = yield* Effect.exit(tail({}));
-				expect(result._tag).toBe('Failure');
-				if (result._tag === 'Failure')
-					expect(Runtime.getErrorExitCode(Cause.squash(result.cause))).toBe(4);
-				expect(output).toHaveBeenCalledWith('[api] later output');
-			}),
+					vi.mocked(chooseRun).mockReturnValue(Effect.succeed(multiRun));
+					vi.mocked(openDaemonStream).mockImplementation((options) => {
+						const frames = framesByService.get(
+							options.request.params.serviceName,
+						);
+						if (frames === undefined)
+							return Effect.die('Missing stream fixture');
+						return Effect.succeed({ frames }) as never;
+					});
+					const output = vi
+						.spyOn(process.stdout, 'write')
+						.mockImplementation(() => true);
+					const result = yield* Effect.exit(tail({ allServices: true }));
+					expect(result._tag).toBe('Failure');
+					if (result._tag === 'Failure')
+						expect(Runtime.getErrorExitCode(Cause.squash(result.cause))).toBe(
+							4,
+						);
+					expect(output).toHaveBeenCalledWith('[api] later output');
+				}),
+			),
 	);
 });

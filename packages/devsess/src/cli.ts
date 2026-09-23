@@ -33,6 +33,14 @@ const commandOptions = (input: {
 	configPath: value(input.configPath),
 	preset: value(input.preset),
 });
+const selectedOptions = (
+	input: Parameters<typeof commandOptions>[0] & {
+		runId: Option.Option<string>;
+	},
+) => ({
+	...commandOptions(input),
+	runId: value(input.runId),
+});
 
 const startCommand = Command.make(
 	'start',
@@ -41,18 +49,29 @@ const startCommand = Command.make(
 );
 const stopCommand = Command.make(
 	'stop',
-	{ ...options, preset: optionalPreset, force: Flag.boolean('force') },
-	(input) => stop({ ...commandOptions(input), force: input.force }),
+	{
+		...options,
+		preset: optionalPreset,
+		runId: optionalString('run'),
+		force: Flag.boolean('force'),
+	},
+	(input) => stop({ ...selectedOptions(input), force: input.force }),
 );
 const tailCommand = Command.make(
 	'tail',
-	{ ...options, preset: optionalPreset },
-	(input) => tail(commandOptions(input)),
+	{
+		...options,
+		preset: optionalPreset,
+		runId: optionalString('run'),
+		allServices: Flag.boolean('all-services'),
+	},
+	(input) =>
+		tail({ ...selectedOptions(input), allServices: input.allServices }),
 );
 const attachCommand = Command.make(
 	'attach',
-	{ ...options, preset: optionalPreset },
-	(input) => attach(commandOptions(input)),
+	{ ...options, preset: optionalPreset, runId: optionalString('run') },
+	(input) => attach(selectedOptions(input)),
 );
 const statusCommand = Command.make(
 	'status',
