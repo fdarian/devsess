@@ -126,6 +126,7 @@ describe('run start registration ordering', () => {
 						reconcile: Effect.void,
 					} as unknown as ServiceStateApi;
 					const runStart = makeRunStart({
+						socketPath: '/tmp/test-devsess.sock',
 						registry,
 						processes: {
 							captureLive: () =>

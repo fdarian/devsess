@@ -3,7 +3,8 @@ import { FileSystem } from 'effect/FileSystem';
 import { callDaemon } from '../client';
 import { serviceExitCode } from '../exit-status';
 import { captureInvocation } from '../project-matching';
-import { isRunActive, type RunRecord } from '../registry';
+import { formatPublishedValue } from '../published-value';
+import { isRunActive, type RunRecord, type ServiceRecord } from '../registry';
 import {
 	CommandError,
 	containsPath,
@@ -22,6 +23,31 @@ const elapsed = (startedAt: string, now: number) => {
 	const hours = Math.floor(duration / 3600);
 	const minutes = Math.floor((duration % 3600) / 60);
 	return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m ${duration % 60}s`;
+};
+
+const formatService = (service: ServiceRecord) => {
+	const state =
+		service.state === 'failed' &&
+		service.exitCode === 0 &&
+		service.signal === undefined
+			? 'exited'
+			: service.state;
+	const readiness = service.published === undefined ? '' : ' ready';
+	const pid =
+		service.process === undefined ? '' : ` pid ${service.process.pid}`;
+	const exit =
+		service.exitCode === undefined
+			? ''
+			: ` exit ${serviceExitCode({ exitCode: service.exitCode, signal: service.signal })}`;
+	const signal =
+		service.signal === undefined || service.signal === 0
+			? ''
+			: ` (signal ${service.signal})`;
+	const value =
+		service.published === undefined
+			? ''
+			: ` — ${formatPublishedValue(service.published.value)}`;
+	return `  ${service.name}: ${state}${readiness}${pid}${exit}${signal} — ${service.command} (cwd: ${service.cwd})${value}`;
 };
 
 export const formatStatus = (
@@ -54,10 +80,7 @@ export const formatStatus = (
 		`${run.projectName}/${run.presetName} ${isRunActive(run) ? 'running' : 'finished'} [${run.runId.slice(0, 8)}]`,
 		`  Started: ${run.startedAt}`,
 		...(isRunActive(run) ? [`  Uptime: ${elapsed(run.startedAt, now)}`] : []),
-		...run.services.map(
-			(service) =>
-				`  ${service.name}: ${service.state === 'failed' && service.exitCode === 0 && service.signal === undefined ? 'exited' : service.state}${service.process === undefined ? '' : ` pid ${service.process.pid}`}${service.exitCode === undefined ? '' : ` exit ${serviceExitCode({ exitCode: service.exitCode, signal: service.signal })}`}${service.signal === undefined || service.signal === 0 ? '' : ` (signal ${service.signal})`} — ${service.command} (cwd: ${service.cwd})`,
-		),
+		...run.services.map(formatService),
 	]);
 };
 

@@ -1,9 +1,10 @@
 import { watch as fsWatch, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
-import { Deferred, Effect } from 'effect';
+import { Cause, Deferred, Effect, Exit, Schema } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { Path } from 'effect/Path';
+import { callDaemon } from '../cli/client';
 import { DevSessions } from '../dev-sessions';
 
 const RUNNING_SIGNAL_FILE = '.data/running.json';
@@ -102,6 +103,60 @@ export const publishRunning = (value: unknown) =>
 	Effect.gen(function* () {
 		const sessions = yield* DevSessions;
 		yield* publishRunningSignal(runningSignalPath(sessions.dir), value);
+		const socketPath = process.env.DEVSESS_SOCKET;
+		const runId = process.env.DEVSESS_RUN_ID;
+		const service = process.env.DEVSESS_SERVICE;
+		if (
+			socketPath === undefined ||
+			runId === undefined ||
+			service === undefined
+		)
+			return;
+		const identity = { socketPath, runId, service };
+		const warned = { value: false };
+		const warn = (cause: unknown) =>
+			Effect.sync(() => {
+				if (warned.value) return;
+				warned.value = true;
+				process.stderr.write(
+					`devsess: could not report readiness to daemon: ${String(cause)}\n`,
+				);
+			});
+		yield* Effect.acquireRelease(
+			Effect.gen(function* () {
+				const json = yield* Schema.decodeUnknownEffect(Schema.Json)(value);
+				const response = yield* callDaemon(identity.socketPath, {
+					version: 1,
+					requestId: crypto.randomUUID(),
+					method: 'publish',
+					params: {
+						runId: identity.runId,
+						service: identity.service,
+						value: json,
+					},
+				});
+				return response;
+			}).pipe(
+				Effect.exit,
+				Effect.flatMap((result) =>
+					Exit.isSuccess(result)
+						? Effect.succeed(true)
+						: warn(Cause.squash(result.cause)).pipe(Effect.as(false)),
+				),
+			),
+			(succeeded) =>
+				succeeded
+					? callDaemon(identity.socketPath, {
+							version: 1,
+							requestId: crypto.randomUUID(),
+							method: 'unpublish',
+							params: { runId: identity.runId, service: identity.service },
+						}).pipe(
+							Effect.asVoid,
+							Effect.catchCause((cause) => warn(Cause.squash(cause))),
+						)
+					: Effect.void,
+		);
 	});
 
 /**

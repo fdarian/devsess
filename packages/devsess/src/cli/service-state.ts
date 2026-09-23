@@ -105,10 +105,16 @@ export const makeServiceState = (options: {
 				const services = run.services.map((service) =>
 					service.name === address.serviceName
 						? exit === undefined
-							? { ...service, state, exitStatus: completionStatus }
+							? {
+									...service,
+									state,
+									exitStatus: completionStatus,
+									published: isActive(state) ? service.published : undefined,
+								}
 							: {
 									...service,
 									state,
+									published: isActive(state) ? service.published : undefined,
 									exitCode: exit.exitCode,
 									signal: exit.signal,
 									exitStatus: undefined,
