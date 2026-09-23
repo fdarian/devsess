@@ -40,6 +40,59 @@ const testSelection = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 
 describe('running session selection', () => {
 	it.live(
+		'prefers a matching active run, then the newest matching finished run with local preference',
+		() =>
+			testSelection(
+				Effect.gen(function* () {
+					const older = {
+						...run('older', 'oagent', 'failed'),
+						startedAt: '2026-09-21T00:00:00.000Z',
+					};
+					const newer = {
+						...run('newer', 'oagent', 'failed'),
+						startedAt: '2026-09-22T00:00:00.000Z',
+					};
+					const all = [older, newer, run('active')];
+					const active = yield* chooseRun(
+						all,
+						{ preset: 'oagent/default' },
+						'tail',
+						false,
+						[],
+						all,
+					);
+					expect(active.runId).toBe('active');
+					const recent = yield* chooseRun(
+						[],
+						{ preset: 'oagent/default' },
+						'tail',
+						false,
+						[],
+						[older, newer],
+					);
+					expect(recent.runId).toBe('newer');
+					const specified = yield* chooseRun(
+						[],
+						{ project: 'oagent', runId: 'older' },
+						'tail',
+						false,
+						[],
+						[older, newer],
+					);
+					expect(specified.runId).toBe('older');
+					const local = yield* chooseRun(
+						[],
+						{},
+						'tail',
+						false,
+						[older],
+						[older, newer],
+					);
+					expect(local.runId).toBe('older');
+				}),
+			),
+	);
+	it.live(
 		'excludes stale records and resolves the qualified argument with flags without prompting',
 		() =>
 			testSelection(

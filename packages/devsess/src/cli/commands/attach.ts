@@ -1,5 +1,7 @@
 import { Effect } from 'effect';
 import { attachSession } from '../attach-session';
+import { serviceExitCode } from '../exit-status';
+import { isRunActive, type RunRecord } from '../registry';
 import { openDaemonStream } from '../terminal';
 import {
 	CommandError,
@@ -9,6 +11,23 @@ import {
 	resolveCurrentRuns,
 } from './daemon';
 import { chooseServices } from './service-selection';
+
+export const finishedAttachError = (
+	run: RunRecord,
+	options: CommandOptions,
+) => {
+	const services =
+		options.service === undefined
+			? run.services
+			: run.services.filter((service) => service.name === options.service);
+	if (services.length === 0)
+		return new CommandError({
+			message: `Service ${options.service} was not found in ${run.projectName}/${run.presetName}`,
+		});
+	return new CommandError({
+		message: `${run.projectName}/${run.presetName} is not running. ${services.map((service) => `${service.name}: ${service.state}${service.exitCode === undefined ? ' (exit status unknown)' : ` (exit ${serviceExitCode({ exitCode: service.exitCode, signal: service.signal })})`}. See output: devsess tail ${run.projectName}/${run.presetName} --run ${run.runId} --service ${service.name}`).join('\n')}`,
+	});
+};
 
 /** Attaches one input lease; Ctrl-] returns to the caller and Ctrl-C reaches the service. */
 export const attach = (options: CommandOptions) => {
@@ -20,8 +39,10 @@ export const attach = (options: CommandOptions) => {
 				options,
 				'attach',
 				undefined,
-				resolved.local,
+				resolved.localRuns,
+				resolved.runs,
 			);
+			if (!isRunActive(run)) return yield* finishedAttachError(run, options);
 			const services = yield* chooseServices(run, options, 'attach');
 			if (!process.stdin.isTTY || !process.stdout.isTTY)
 				return yield* new CommandError({
