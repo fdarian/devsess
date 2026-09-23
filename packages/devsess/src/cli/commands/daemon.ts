@@ -1,7 +1,10 @@
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
 import { Config, Effect, Option, Runtime, Schema } from 'effect';
-import { Command, Flag } from 'effect/unstable/cli';
+import type { FileSystem } from 'effect/FileSystem';
+import type { Path } from 'effect/Path';
+import type { Terminal } from 'effect/Terminal';
+import { Command, Flag, Prompt } from 'effect/unstable/cli';
 import {
 	ensureDaemon as ensureDaemonBootstrap,
 	launchDetachedDaemon,
@@ -23,15 +26,14 @@ export type CommandOptions = {
 	project?: string;
 	service?: string;
 	preset?: string;
+	runId?: string;
+	allServices?: boolean;
 	force?: boolean;
 };
 
 export type DaemonLocation = { dataDirectory: string; socketPath: string };
 
 export { isRunActive } from '../registry';
-
-const isRunTailable = (run: RunRecord) =>
-	isRunActive(run) || run.state === 'exited' || run.state === 'failed';
 
 const containsPath = (parent: string, child: string) => {
 	const path = relative(parent, child);
@@ -113,48 +115,120 @@ export const ensureDaemon = (location: DaemonLocation) =>
 			}),
 	});
 
-export const resolveCurrentRuns = (
-	options: CommandOptions,
-	includeCompleted = false,
-) =>
+export const resolveCurrentRuns = () =>
 	Effect.gen(function* () {
 		const invocation = yield* captureInvocation(process.cwd());
 		const location = yield* resolveDaemonLocation;
-		yield* ensureDaemon(location);
 		const runs = yield* callDaemon(location.socketPath, {
 			version: 1,
 			requestId: requestId(),
 			method: 'listRuns',
 			params: {},
-		}).pipe(Effect.flatMap(decodeRunListResponse));
+		}).pipe(
+			Effect.flatMap(decodeRunListResponse),
+			Effect.mapError(
+				(cause) =>
+					new CommandError({
+						message:
+							'Cannot read running sessions. Is the daemon running? See `devsess status`.',
+						cause,
+					}),
+			),
+		);
 		const current = runs.filter(
 			(run) =>
 				containsPath(run.canonicalCwd, invocation.canonicalCwd) &&
-				(includeCompleted ? isRunTailable(run) : isRunActive(run)) &&
-				(options.project === undefined || run.projectName === options.project),
+				isRunActive(run),
 		);
 		return { location, runs, current };
+	});
+
+const runChoices = (runs: ReadonlyArray<RunRecord>) =>
+	runs.map((run) => {
+		const name = `${run.projectName}/${run.presetName}`;
+		const duplicated = runs.some(
+			(other) =>
+				other.runId !== run.runId &&
+				other.projectName === run.projectName &&
+				other.presetName === run.presetName,
+		);
+		const shortId = runs.some(
+			(other) =>
+				other.runId !== run.runId &&
+				other.runId.startsWith(run.runId.slice(0, 8)),
+		)
+			? run.runId
+			: run.runId.slice(0, 8);
+		return {
+			run,
+			label: duplicated
+				? `${name} [${shortId}] started ${run.startedAt}`
+				: name,
+			selector: duplicated ? ` --run ${run.runId}` : '',
+		};
 	});
 
 export const chooseRun = (
 	runs: ReadonlyArray<RunRecord>,
 	options: CommandOptions,
-): Effect.Effect<RunRecord, CommandError> => {
-	const named =
-		options.preset === undefined
-			? runs
-			: runs.filter((run) => run.presetName === options.preset);
-	const run = named[0];
-	if (named.length === 1 && run !== undefined) return Effect.succeed(run);
-	if (named.length === 0)
-		return Effect.fail(
-			new CommandError({ message: 'No running preset matches this command' }),
-		);
-	return Effect.fail(
-		new CommandError({
-			message: `Multiple running presets match: ${named.map((run) => `${run.projectName}/${run.presetName}`).join(', ')}. Specify a preset.`,
-		}),
+	command = 'tail',
+	interactive = process.stdin.isTTY === true && process.stdout.isTTY === true,
+): Effect.Effect<RunRecord, CommandError, FileSystem | Path | Terminal> => {
+	const active = runs.filter(isRunActive);
+	const parts = options.preset?.split('/');
+	if (
+		parts !== undefined &&
+		(parts.length > 2 || parts.some((part) => part.length === 0))
+	)
+		return new CommandError({
+			message: `Invalid preset ${options.preset}. Use a preset or project/preset.`,
+		});
+	const positionalProject = parts?.length === 2 ? parts[0] : undefined;
+	if (
+		positionalProject !== undefined &&
+		options.project !== undefined &&
+		positionalProject !== options.project
+	)
+		return new CommandError({
+			message: `--project ${options.project} conflicts with ${options.preset}.`,
+		});
+	const presetName = parts?.length === 2 ? parts[1] : options.preset;
+	const projectName =
+		positionalProject === undefined ? options.project : positionalProject;
+	const candidates = active.filter(
+		(run) =>
+			(projectName === undefined || run.projectName === projectName) &&
+			(presetName === undefined || run.presetName === presetName) &&
+			(options.runId === undefined || run.runId.startsWith(options.runId)),
 	);
+	const run = candidates[0];
+	if (candidates.length === 1 && run !== undefined) return Effect.succeed(run);
+	const choices = runChoices(candidates);
+	if (candidates.length === 0)
+		return new CommandError({
+			message: `Nothing running matches ${options.preset === undefined ? 'this command' : options.preset}. Running: ${
+				runChoices(active)
+					.map((choice) => choice.label)
+					.join(', ') || 'none'
+			}. See \`devsess status\`.`,
+		});
+	if (interactive)
+		return Prompt.run(
+			Prompt.select({
+				message: 'Choose a running preset',
+				choices: choices.map((choice) => ({
+					title: choice.label,
+					value: choice.run,
+				})),
+			}),
+		).pipe(
+			Effect.mapError(
+				() => new CommandError({ message: 'Preset selection cancelled' }),
+			),
+		);
+	return new CommandError({
+		message: `Multiple running presets match:\n${choices.map((choice) => `  ${choice.label} — devsess ${command} ${choice.run.projectName}/${choice.run.presetName}${choice.selector}`).join('\n')}\nSee \`devsess status\`.`,
+	});
 };
 
 export const daemonCommand = Command.make(

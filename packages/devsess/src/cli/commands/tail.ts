@@ -10,6 +10,7 @@ import {
 	requestId,
 	resolveCurrentRuns,
 } from './daemon';
+import { chooseServices } from './service-selection';
 
 const tailService = (
 	location: DaemonLocation,
@@ -74,21 +75,12 @@ type TailFailure = CommandError | ServiceExitError | TerminalTransportError;
 /** Streams all matching services, qualifying output when more than one is selected. */
 export const tail = (options: CommandOptions) =>
 	Effect.scoped(
-		resolveCurrentRuns(options, true).pipe(
+		resolveCurrentRuns().pipe(
 			Effect.flatMap((resolved) =>
-				chooseRun(resolved.current, options).pipe(
+				chooseRun(resolved.current, options, 'tail').pipe(
 					Effect.flatMap((run) =>
 						Effect.gen(function* () {
-							const services =
-								options.service === undefined
-									? run.services
-									: run.services.filter(
-											(service) => service.name === options.service,
-										);
-							if (services.length === 0)
-								return yield* new CommandError({
-									message: 'No matching service is running',
-								});
+							const services = yield* chooseServices(run, options, 'tail');
 							const completions =
 								yield* Queue.unbounded<Exit.Exit<void, TailFailure>>();
 							for (const service of services)
