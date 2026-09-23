@@ -85,4 +85,32 @@ describe('CLI protocol validation', () => {
 			expect(shutdown.method).toBe('shutdown');
 		}),
 	);
+	it.effect(
+		'accepts publish and unpublish without changing protocol version',
+		() =>
+			Effect.gen(function* () {
+				const published = yield* decodeRequest(
+					JSON.stringify({
+						version: 1,
+						requestId: 'publish',
+						method: 'publish',
+						params: {
+							runId: 'run',
+							service: 'web',
+							value: { url: 'http://localhost:5173' },
+						},
+					}),
+				);
+				const unpublished = yield* decodeRequest(
+					JSON.stringify({
+						version: 1,
+						requestId: 'unpublish',
+						method: 'unpublish',
+						params: { runId: 'run', service: 'web' },
+					}),
+				);
+				expect(published.method).toBe('publish');
+				expect(unpublished.method).toBe('unpublish');
+			}),
+	);
 });

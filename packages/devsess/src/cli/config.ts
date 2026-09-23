@@ -7,6 +7,7 @@ import { IdentifierRecord } from './identifiers';
 const ServiceSchema = Schema.Struct({
 	command: Schema.NonEmptyString,
 	cwd: Schema.optionalKey(Schema.NonEmptyString),
+	awaitPublish: Schema.optionalKey(Schema.Literal(false)),
 });
 
 const ServicesSchema = IdentifierRecord(ServiceSchema).check(
@@ -17,6 +18,7 @@ const ServicesSchema = IdentifierRecord(ServiceSchema).check(
 
 const PresetSchema = Schema.Struct({
 	services: ServicesSchema,
+	awaitPublish: Schema.optionalKey(Schema.Boolean),
 });
 
 const ProjectPathSchema = Schema.String.check(

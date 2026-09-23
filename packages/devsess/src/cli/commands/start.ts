@@ -3,6 +3,7 @@ import { callDaemon } from '../client';
 import { serviceExitCode } from '../exit-status';
 import { resolvePreset, toServices } from '../preset-resolution';
 import type { DaemonRequest } from '../protocol';
+import { formatPublishedValue } from '../published-value';
 import { isRunActive, type RunRecord, type ServiceRecord } from '../registry';
 import { openDaemonStream } from '../terminal';
 import type { CommandOptions } from './daemon';
@@ -76,19 +77,76 @@ const observedRun = (socketPath: string, runId: string) =>
 		}),
 	);
 
-const watchStart = (socketPath: string, initial: RunRecord) =>
-	Effect.gen(function* () {
-		const deadline = Date.now() + 2000;
-		let run = initial;
-		while (Date.now() < deadline && isRunActive(run)) {
-			yield* Effect.sleep('100 millis');
-			run = yield* observedRun(socketPath, run.runId);
-		}
-		return run;
-	});
+export const watchStart = (
+	socketPath: string,
+	initial: RunRecord,
+	awaited: ReadonlySet<string> | undefined,
+) =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const deadline = Date.now() + 2000;
+			const warningDeadline = Date.now() + 15000;
+			const seen = new Set<string>();
+			let run = initial;
+			let warned = false;
+			while (true) {
+				for (const service of run.services) {
+					if (service.published === undefined || seen.has(service.name))
+						continue;
+					seen.add(service.name);
+					yield* write(
+						`${service.name} ready → ${formatPublishedValue(service.published.value)}`,
+					);
+				}
+				if (awaited === undefined) {
+					if (Date.now() >= deadline || !isRunActive(run)) return { run, seen };
+				} else {
+					const pending = [...awaited].filter((name) => !seen.has(name));
+					if (
+						pending.length === 0 ||
+						pending.some((name) =>
+							run.services.some(
+								(service) => service.name === name && isFinished(service),
+							),
+						)
+					)
+						return { run, seen };
+					if (!warned && Date.now() >= warningDeadline) {
+						warned = true;
+						yield* Effect.sync(() =>
+							process.stderr.write(
+								`Still waiting for readiness: ${pending.join(', ')}\n${pending.map((name) => `  devsess tail ${run.projectName}/${run.presetName} --run ${run.runId} --service ${name}`).join('\n')}\n`,
+							),
+						);
+					}
+				}
+				yield* Effect.sleep('100 millis');
+				run = yield* observedRun(socketPath, run.runId);
+			}
+		}),
+	).pipe(
+		Effect.onInterrupt(() =>
+			awaited === undefined
+				? Effect.void
+				: write(
+						'Stopped waiting; services keep running. See `devsess status`.',
+					),
+		),
+	);
 
 const isFinished = (service: ServiceRecord) =>
 	service.state === 'exited' || service.state === 'failed';
+export const unpublishedExits = (
+	run: RunRecord,
+	awaited: ReadonlySet<string>,
+	seen: ReadonlySet<string>,
+) =>
+	run.services.filter(
+		(service) =>
+			awaited.has(service.name) &&
+			!seen.has(service.name) &&
+			isFinished(service),
+	);
 export const isFailure = (service: ServiceRecord) =>
 	isFinished(service) &&
 	(service.state === 'failed' ||
@@ -139,7 +197,20 @@ export const start = (options: CommandOptions, interactive: boolean) =>
 		const run = yield* callDaemon(location.socketPath, request).pipe(
 			Effect.flatMap(decodeRunResponse),
 		);
-		const observed = yield* watchStart(location.socketPath, run);
+		const awaited =
+			resolved.preset.preset.awaitPublish === true
+				? new Set(
+						Object.entries(resolved.preset.preset.services)
+							.filter((entry) => entry[1].awaitPublish !== false)
+							.map((entry) => entry[0]),
+					)
+				: undefined;
+		if (awaited !== undefined && awaited.size > 0)
+			yield* write(
+				`Waiting for ${[...awaited].join(', ')} to publish readiness…`,
+			);
+		const watched = yield* watchStart(location.socketPath, run, awaited);
+		const observed = watched.run;
 		const exited = observed.services.filter(isFinished);
 		const report = yield* Effect.forEach(exited, (service) =>
 			Effect.gen(function* () {
@@ -153,7 +224,15 @@ export const start = (options: CommandOptions, interactive: boolean) =>
 			}),
 		);
 		const summary = report.join('\n  ');
-		if (observed.services.length > 0 && observed.services.every(isFailure))
+		const missingReadiness =
+			awaited !== undefined &&
+			unpublishedExits(observed, awaited, watched.seen).length > 0;
+		if (
+			missingReadiness ||
+			(awaited === undefined &&
+				observed.services.length > 0 &&
+				observed.services.every(isFailure))
+		)
 			return yield* new CommandError({
 				message: `Run ${observed.projectName}/${observed.presetName} [${observed.runId.slice(0, 8)}] failed shortly after start:\n  ${summary}`,
 			});

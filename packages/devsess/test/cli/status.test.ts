@@ -31,6 +31,52 @@ const run = (
 });
 
 describe('CLI status formatting', () => {
+	it('renders published URLs, named URLs, and compact JSON while leaving unpublished services unchanged', () => {
+		const current = run('ready-run', 'oagent', 'running');
+		const web = current.services[0];
+		if (web === undefined) return expect.fail('Missing service fixture');
+		const publishedAt = '2026-09-23T00:00:00.000Z';
+		const visible: RunRecord = {
+			...current,
+			services: [
+				{
+					...web,
+					process: { pid: 123, processGroupId: 123, startedAt: 'birth' },
+					published: { value: { url: 'http://localhost:5173' }, publishedAt },
+				},
+				{
+					...web,
+					name: 'api',
+					published: {
+						value: {
+							urls: {
+								app: 'http://localhost:5173',
+								api: 'http://localhost:3000',
+							},
+						},
+						publishedAt,
+					},
+				},
+				{
+					...web,
+					name: 'worker',
+					published: { value: { detail: 'x'.repeat(200) }, publishedAt },
+				},
+				{ ...web, name: 'db' },
+			],
+		};
+		const lines = formatStatus([visible], false);
+		expect(lines).toContain(
+			'  web: running ready pid 123 — bun run dev (cwd: /work/oagent) — http://localhost:5173',
+		);
+		expect(lines).toContain(
+			'  api: running ready — bun run dev (cwd: /work/oagent) — app=http://localhost:5173, api=http://localhost:3000',
+		);
+		expect(lines.find((line) => line.includes('worker:'))).toMatch(
+			/running ready.* — \{"detail":"x+…$/,
+		);
+		expect(lines).toContain('  db: running — bun run dev (cwd: /work/oagent)');
+	});
 	it('omits exited runs and an empty elsewhere group', () => {
 		const current = run('current', 'devsess', 'running');
 		const exited = run('exited', 'old-project', 'exited');

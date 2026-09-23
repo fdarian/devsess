@@ -41,6 +41,72 @@ const requireDefined = <T>(value: T | undefined, label: string) =>
 		: Effect.succeed(value);
 
 describe('CLI configuration', () => {
+	it.effect('validates preset and per-service publish waiting options', () =>
+		Effect.gen(function* () {
+			const valid = yield* decodeConfig(
+				JSON.stringify({
+					projects: {
+						alpha: {
+							matcher: { type: 'path', path: '/work/alpha' },
+							presets: {
+								dev: {
+									awaitPublish: true,
+									services: {
+										web: { command: 'bun dev' },
+										db: { command: 'bun db', awaitPublish: false },
+									},
+								},
+							},
+						},
+					},
+				}),
+			);
+			expect(valid.projects.alpha?.presets.dev?.awaitPublish).toBe(true);
+			expect(valid.projects.alpha?.presets.dev?.services.db?.awaitPublish).toBe(
+				false,
+			);
+			const invalid = yield* Effect.exit(
+				decodeConfig(
+					JSON.stringify({
+						projects: {
+							alpha: {
+								matcher: { type: 'path', path: '/work/alpha' },
+								presets: {
+									dev: {
+										awaitPublish: 'yes',
+										services: {
+											web: { command: 'bun dev', awaitPublish: true },
+										},
+									},
+								},
+							},
+						},
+					}),
+				),
+			);
+			expect(invalid._tag).toBe('Failure');
+			const invalidOverride = yield* Effect.exit(
+				decodeConfig(
+					JSON.stringify({
+						projects: {
+							alpha: {
+								matcher: { type: 'path', path: '/work/alpha' },
+								presets: {
+									dev: {
+										awaitPublish: true,
+										services: {
+											web: { command: 'bun dev', awaitPublish: true },
+										},
+									},
+								},
+							},
+						},
+					}),
+				),
+			);
+			expect(invalidOverride._tag).toBe('Failure');
+		}),
+	);
 	it.effect(
 		'decodes the minimal global config and preserves optional service cwd',
 		() =>

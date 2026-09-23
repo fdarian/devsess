@@ -95,6 +95,7 @@ export const makeRunStop = (options: {
 						return {
 							...service,
 							state: failed ? ('failed' as const) : ('exited' as const),
+							published: undefined,
 							exitCode: exit.exitCode,
 							signal: exit.signal,
 							exitStatus: undefined,
@@ -146,6 +147,7 @@ export const makeRunStop = (options: {
 					return {
 						...service,
 						state: failed ? ('failed' as const) : ('exited' as const),
+						published: undefined,
 						exitCode: exit.exitCode,
 						signal: exit.signal,
 						exitStatus: undefined,
@@ -188,6 +190,7 @@ export const makeRunStop = (options: {
 					? {
 							...service,
 							state: 'exited' as const,
+							published: undefined,
 							exitCode: exit.exitCode,
 							signal: exit.signal,
 							exitStatus: undefined,

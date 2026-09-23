@@ -218,6 +218,7 @@ export const makeDaemon = (options: {
 			subscriptions,
 		});
 		const runStart = makeRunStart({
+			socketPath: options.socketPath,
 			registry,
 			processes,
 			daemonIdentity,
