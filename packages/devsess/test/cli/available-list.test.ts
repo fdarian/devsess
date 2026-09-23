@@ -2,12 +2,15 @@ import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 import { Effect, Option } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
-import { formatPresetList } from '../../src/cli/commands/presets';
-import { resolvePresetCandidates } from '../../src/cli/preset-resolution';
+import { formatPresetList } from '../../src/cli/commands/list';
+import {
+	resolvePreset,
+	resolvePresetCandidates,
+} from '../../src/cli/preset-resolution';
 import { runTest } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
 
-describe('CLI presets', () => {
+describe('CLI available list', () => {
 	it.live('resolves project presets without contacting the daemon', () =>
 		runTest(
 			Effect.gen(function* () {
@@ -41,6 +44,12 @@ describe('CLI presets', () => {
 				expect(resolved.candidates[0]?.preset.services.web?.command).toBe(
 					'bun dev',
 				);
+				const selected = yield* resolvePreset(
+					{ configPath, preset: 'project/dev' },
+					false,
+				);
+				expect(selected.preset.projectName).toBe('project');
+				expect(selected.preset.presetName).toBe('dev');
 			}),
 		),
 	);
