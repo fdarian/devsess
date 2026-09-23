@@ -105,10 +105,7 @@ const app = Command.make('devsess', {}).pipe(
 
 const services = Layer.mergeAll(
 	NodeServices.layer,
-	Layer.effect(
-		Terminal,
-		NodeTerminal.make(() => false),
-	),
+	Layer.effect(Terminal, NodeTerminal.make()),
 );
 
 NodeRuntime.runMain(
