@@ -10,9 +10,9 @@ import {
 } from './daemon';
 
 export const stop = (options: CommandOptions) =>
-	resolveCurrentRuns(options).pipe(
+	resolveCurrentRuns().pipe(
 		Effect.flatMap((resolved) =>
-			chooseRun(resolved.current, options).pipe(
+			chooseRun(resolved.current, options, 'stop').pipe(
 				Effect.flatMap((run) =>
 					callDaemon(
 						resolved.location.socketPath,

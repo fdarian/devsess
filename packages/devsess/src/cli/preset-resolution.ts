@@ -97,14 +97,24 @@ export const resolvePreset = (
 	interactive: boolean,
 ) =>
 	Effect.gen(function* () {
-		const resolved = yield* resolvePresetCandidates(options);
+		const parts = options.preset?.split('/');
+		if (
+			parts !== undefined &&
+			(parts.length > 2 || parts.some((part) => part.length === 0))
+		)
+			return yield* new CommandError({
+				message: `Invalid preset ${options.preset}. Use a preset or project/preset.`,
+			});
+		const project = parts?.length === 2 ? parts[0] : options.project;
+		if (options.project !== undefined && project !== options.project)
+			return yield* new CommandError({
+				message: `--project ${options.project} conflicts with ${options.preset}.`,
+			});
+		const presetName = parts?.length === 2 ? parts[1] : options.preset;
+		const resolved = yield* resolvePresetCandidates({ ...options, project });
 		return {
 			invocation: resolved.invocation,
-			preset: yield* choosePreset(
-				resolved.candidates,
-				options.preset,
-				interactive,
-			),
+			preset: yield* choosePreset(resolved.candidates, presetName, interactive),
 		};
 	});
 
