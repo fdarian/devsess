@@ -145,10 +145,7 @@ export const makeRunStop = (options: {
 					yield* finishService(address, exit);
 					return {
 						...service,
-						state:
-							failed || service.state === 'failed'
-								? ('failed' as const)
-								: ('exited' as const),
+						state: failed ? ('failed' as const) : ('exited' as const),
 						exitCode: exit.exitCode,
 						signal: exit.signal,
 						exitStatus: undefined,
