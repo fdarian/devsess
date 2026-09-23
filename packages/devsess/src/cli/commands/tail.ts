@@ -77,7 +77,13 @@ export const tail = (options: CommandOptions) =>
 	Effect.scoped(
 		resolveCurrentRuns().pipe(
 			Effect.flatMap((resolved) =>
-				chooseRun(resolved.current, options, 'tail').pipe(
+				chooseRun(
+					resolved.current,
+					options,
+					'tail',
+					undefined,
+					resolved.local,
+				).pipe(
 					Effect.flatMap((run) =>
 						Effect.gen(function* () {
 							const services = yield* chooseServices(run, options, 'tail');

@@ -15,7 +15,13 @@ export const attach = (options: CommandOptions) => {
 	return Effect.scoped(
 		Effect.gen(function* () {
 			const resolved = yield* resolveCurrentRuns();
-			const run = yield* chooseRun(resolved.current, options, 'attach');
+			const run = yield* chooseRun(
+				resolved.current,
+				options,
+				'attach',
+				undefined,
+				resolved.local,
+			);
 			const services = yield* chooseServices(run, options, 'attach');
 			if (!process.stdin.isTTY || !process.stdout.isTTY)
 				return yield* new CommandError({
