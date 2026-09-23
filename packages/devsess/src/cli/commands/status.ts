@@ -5,6 +5,7 @@ import { serviceExitCode } from '../exit-status';
 import { captureInvocation } from '../project-matching';
 import { formatPublishedValue } from '../published-value';
 import { isRunActive, type RunRecord, type ServiceRecord } from '../registry';
+import { runSelector, shortRunId } from '../run-id';
 import {
 	CommandError,
 	containsPath,
@@ -55,6 +56,7 @@ export const formatStatus = (
 	all: boolean,
 	now = Date.now(),
 	currentCwd?: string,
+	knownRuns: ReadonlyArray<RunRecord> = runs,
 ) => {
 	const visible = runs.filter((run) => all || isRunActive(run));
 	if (visible.length === 0) {
@@ -73,11 +75,11 @@ export const formatStatus = (
 		if (latest === undefined) return [empty];
 		return [
 			empty,
-			`Last run: ${latest.projectName}/${latest.presetName} [${latest.runId.slice(0, 8)}] finished (started ${elapsed(latest.startedAt, now)} ago) — ${latest.services.map((service) => `${service.name} ${service.exitCode === undefined ? 'exit unknown' : `exit ${serviceExitCode({ exitCode: service.exitCode, signal: service.signal })}`}`).join(', ')}. See: devsess tail ${latest.projectName}/${latest.presetName} --run ${latest.runId}`,
+			`Last run: ${latest.projectName}/${latest.presetName} [${shortRunId(latest, knownRuns)}] finished (started ${elapsed(latest.startedAt, now)} ago) — ${latest.services.map((service) => `${service.name} ${service.exitCode === undefined ? 'exit unknown' : `exit ${serviceExitCode({ exitCode: service.exitCode, signal: service.signal })}`}`).join(', ')}. See: devsess tail ${runSelector(latest, knownRuns)}`,
 		];
 	}
 	return visible.flatMap((run) => [
-		`${run.projectName}/${run.presetName} ${isRunActive(run) ? 'running' : 'finished'} [${run.runId.slice(0, 8)}]`,
+		`${run.projectName}/${run.presetName} ${isRunActive(run) ? 'running' : 'finished'} [${shortRunId(run, knownRuns)}]`,
 		`  Started: ${run.startedAt}`,
 		...(isRunActive(run) ? [`  Uptime: ${elapsed(run.startedAt, now)}`] : []),
 		...run.services.map(formatService),
@@ -122,7 +124,13 @@ export const status = (options: { project?: string; all: boolean }) =>
 				: runs.filter((run) => run.projectName === options.project);
 		const invocation = yield* captureInvocation(process.cwd());
 		yield* Effect.forEach(
-			formatStatus(visible, options.all, Date.now(), invocation.canonicalCwd),
+			formatStatus(
+				visible,
+				options.all,
+				Date.now(),
+				invocation.canonicalCwd,
+				runs,
+			),
 			write,
 			{
 				discard: true,

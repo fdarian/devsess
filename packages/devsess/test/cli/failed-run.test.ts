@@ -201,7 +201,7 @@ describe('failed run diagnostics', () => {
 					expect(lines[0]).toBe('line 2');
 					expect(lines[9]).toBe('line 11');
 					expect(formatStartFailure(run, service, lines)).toContain(
-						'devsess tail mockingbird/default --run failed-run --service web',
+						'devsess tail failed-r --service web',
 					);
 					expect(
 						vi.mocked(openDaemonStream).mock.calls[0]?.[0].request.method,
@@ -225,9 +225,7 @@ describe('failed run diagnostics', () => {
 	it('explains finished attachments with each exit status and exact tail command', () => {
 		const message = finishedAttachError(run, { service: 'web' }).message;
 		expect(message).toContain('web: failed (exit 1)');
-		expect(message).toContain(
-			'devsess tail mockingbird/default --run failed-run --service web',
-		);
+		expect(message).toContain('devsess tail failed-r --service web');
 		expect(message).not.toContain('engine:');
 	});
 });

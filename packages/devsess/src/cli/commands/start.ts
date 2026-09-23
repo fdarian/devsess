@@ -5,6 +5,7 @@ import { resolvePreset, toServices } from '../preset-resolution';
 import type { DaemonRequest } from '../protocol';
 import { formatPublishedValue } from '../published-value';
 import { isRunActive, type RunRecord, type ServiceRecord } from '../registry';
+import { runSelector, shortRunId } from '../run-id';
 import { openDaemonStream } from '../terminal';
 import type { CommandOptions } from './daemon';
 import {
@@ -73,7 +74,7 @@ const observedRun = (socketPath: string, runId: string) =>
 				? new CommandError({
 						message: `Started run ${runId} disappeared from the daemon`,
 					})
-				: Effect.succeed(run);
+				: Effect.succeed({ run, runs });
 		}),
 	);
 
@@ -87,7 +88,9 @@ export const watchStart = (
 			const deadline = Date.now() + 2000;
 			const warningDeadline = Date.now() + 15000;
 			const seen = new Set<string>();
-			let run = initial;
+			const observed = yield* observedRun(socketPath, initial.runId);
+			let run = observed.run;
+			let runs = observed.runs;
 			let warned = false;
 			while (true) {
 				for (const service of run.services) {
@@ -99,7 +102,8 @@ export const watchStart = (
 					);
 				}
 				if (awaited === undefined) {
-					if (Date.now() >= deadline || !isRunActive(run)) return { run, seen };
+					if (Date.now() >= deadline || !isRunActive(run))
+						return { run, runs, seen };
 				} else {
 					const pending = [...awaited].filter((name) => !seen.has(name));
 					if (
@@ -110,18 +114,20 @@ export const watchStart = (
 							),
 						)
 					)
-						return { run, seen };
+						return { run, runs, seen };
 					if (!warned && Date.now() >= warningDeadline) {
 						warned = true;
 						yield* Effect.sync(() =>
 							process.stderr.write(
-								`Still waiting for readiness: ${pending.join(', ')}\n${pending.map((name) => `  devsess tail ${run.projectName}/${run.presetName} --run ${run.runId} --service ${name}`).join('\n')}\n`,
+								`Still waiting for readiness: ${pending.join(', ')}\n${pending.map((name) => `  devsess tail ${runSelector(run, runs)} --service ${name}`).join('\n')}\n`,
 							),
 						);
 					}
 				}
 				yield* Effect.sleep('100 millis');
-				run = yield* observedRun(socketPath, run.runId);
+				const next = yield* observedRun(socketPath, run.runId);
+				run = next.run;
+				runs = next.runs;
 			}
 		}),
 	).pipe(
@@ -157,8 +163,9 @@ export const formatStartFailure = (
 	run: RunRecord,
 	service: ServiceRecord,
 	lines: ReadonlyArray<string>,
+	runs: ReadonlyArray<RunRecord> = [run],
 ) =>
-	`${service.name}: ${service.state}${service.exitCode === undefined ? ' (exit status unknown)' : ` (exit ${serviceExitCode({ exitCode: service.exitCode, signal: service.signal })})`}\n${lines.map((line) => `    ${line}`).join('\n')}\n  See: devsess tail ${run.projectName}/${run.presetName} --run ${run.runId} --service ${service.name}`;
+	`${service.name}: ${service.state}${service.exitCode === undefined ? ' (exit status unknown)' : ` (exit ${serviceExitCode({ exitCode: service.exitCode, signal: service.signal })})`}\n${lines.map((line) => `    ${line}`).join('\n')}\n  See: devsess tail ${runSelector(run, runs)} --service ${service.name}`;
 
 const clientEnvironment = () =>
 	Object.fromEntries(
@@ -220,7 +227,7 @@ export const start = (options: CommandOptions, interactive: boolean) =>
 				const lines = Exit.isSuccess(output)
 					? output.value
 					: [`Output unavailable: ${String(Cause.squash(output.cause))}`];
-				return formatStartFailure(observed, service, lines);
+				return formatStartFailure(observed, service, lines, watched.runs);
 			}),
 		);
 		const summary = report.join('\n  ');
@@ -234,7 +241,7 @@ export const start = (options: CommandOptions, interactive: boolean) =>
 				observed.services.every(isFailure))
 		)
 			return yield* new CommandError({
-				message: `Run ${observed.projectName}/${observed.presetName} [${observed.runId.slice(0, 8)}] failed shortly after start:\n  ${summary}`,
+				message: `Run ${observed.projectName}/${observed.presetName} [${shortRunId(observed, watched.runs)}] failed shortly after start:\n  ${summary}`,
 			});
 		yield* write(
 			`Started ${resolved.preset.projectName}/${resolved.preset.presetName}: ${run.runId}`,

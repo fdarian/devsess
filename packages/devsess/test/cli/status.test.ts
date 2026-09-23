@@ -31,6 +31,26 @@ const run = (
 });
 
 describe('CLI status formatting', () => {
+	it('shows unambiguous short IDs across active and finished runs', () => {
+		const current = run(
+			'c585f251-a000-0000-0000-000000000000',
+			'mockingbird',
+			'running',
+		);
+		const old = run('c585f251-b000-0000-0000-000000000000', 'other', 'exited');
+		expect(formatStatus([current, old], false)[0]).toBe(
+			'mockingbird/default running [c585f251-a]',
+		);
+		expect(formatStatus([current, old], true)).toContain(
+			'other/default finished [c585f251-b]',
+		);
+		const onlyFinished = formatStatus([old], false, Date.now(), '/work/other', [
+			current,
+			old,
+		]);
+		expect(onlyFinished[1]).toContain('Last run: other/default [c585f251-b]');
+		expect(onlyFinished[1]).toContain('devsess tail c585f251-b');
+	});
 	it('renders published URLs, named URLs, and compact JSON while leaving unpublished services unchanged', () => {
 		const current = run('ready-run', 'oagent', 'running');
 		const web = current.services[0];
@@ -122,7 +142,7 @@ describe('CLI status formatting', () => {
 			),
 		).toEqual([
 			'Nothing running. See `devsess list` for available presets.',
-			'Last run: oagent/default [finished] finished (started 2m 0s ago) — web exit unknown. See: devsess tail oagent/default --run finished',
+			'Last run: oagent/default [finished] finished (started 2m 0s ago) — web exit unknown. See: devsess tail finished',
 		]);
 		expect(formatStatus([finished], true)[0]).toBe(
 			'oagent/default finished [finished]',

@@ -5,6 +5,7 @@ import { Terminal } from 'effect/Terminal';
 import { chooseRun } from '../../src/cli/commands/daemon';
 import { chooseServices } from '../../src/cli/commands/service-selection';
 import type { RunRecord } from '../../src/cli/registry';
+import { runSelector, shortRunId } from '../../src/cli/run-id';
 import { runTest } from '../support/run-test';
 
 const run = (
@@ -39,6 +40,159 @@ const testSelection = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 	);
 
 describe('running session selection', () => {
+	it.live(
+		'accepts a status short ID as the positional selector for attach, tail and stop',
+		() =>
+			testSelection(
+				Effect.gen(function* () {
+					const target = run(
+						'c585f251-0000-0000-0000-000000000000',
+						'mockingbird',
+					);
+					const elsewhere = run(
+						'f73b142a-0000-0000-0000-000000000000',
+						'elsewhere',
+					);
+					for (const command of ['attach', 'tail', 'stop']) {
+						const selected = yield* chooseRun(
+							[elsewhere, target],
+							{ preset: 'c585f251' },
+							command,
+							false,
+							[elsewhere],
+						);
+						expect(selected.runId).toBe(target.runId);
+					}
+				}),
+			),
+	);
+
+	it.live(
+		'prefers preset names over run ID prefixes, even across finished runs',
+		() =>
+			testSelection(
+				Effect.gen(function* () {
+					const target = run('c585f251-0000-0000-0000-000000000000');
+					const preset = {
+						...run('elsewhere-0000', 'other'),
+						presetName: 'c585f251',
+					};
+					expect(shortRunId(target, [target, preset])).toBe('c585f251-');
+					expect(runSelector(target, [target, preset])).toBe('c585f251-');
+					const selected = yield* chooseRun(
+						[target, preset],
+						{ preset: 'c585f251' },
+						'attach',
+						false,
+						[],
+					);
+					expect(selected.runId).toBe(preset.runId);
+					const byId = yield* chooseRun(
+						[target, preset],
+						{ preset: 'c585f251-' },
+						'attach',
+						false,
+						[],
+					);
+					expect(byId.runId).toBe(target.runId);
+					const finished = {
+						...preset,
+						state: 'exited' as const,
+						services: preset.services.map((service) => ({
+							...service,
+							state: 'exited' as const,
+						})),
+					};
+					const replayed = yield* chooseRun(
+						[target],
+						{ preset: 'c585f251' },
+						'tail',
+						false,
+						[],
+						[target, finished],
+					);
+					expect(replayed.runId).toBe(finished.runId);
+				}),
+			),
+	);
+
+	it.live(
+		'uses a positional ID to replay a finished run if no active ID matches',
+		() =>
+			testSelection(
+				Effect.gen(function* () {
+					const active = run('active-0000');
+					const finished = run(
+						'c585f251-0000-0000-0000-000000000000',
+						'mockingbird',
+						'exited',
+					);
+					const selected = yield* chooseRun(
+						[active],
+						{ preset: 'c585f251' },
+						'tail',
+						false,
+						[],
+						[active, finished],
+					);
+					expect(selected.runId).toBe(finished.runId);
+				}),
+			),
+	);
+
+	it.live(
+		'rejects an ambiguous finished ID prefix with exact short-ID commands',
+		() =>
+			testSelection(
+				Effect.gen(function* () {
+					const first = run(
+						'c585f251-a000-0000-0000-000000000000',
+						'mockingbird',
+						'failed',
+					);
+					const second = run(
+						'c585f251-b000-0000-0000-000000000000',
+						'mockingbird',
+						'failed',
+					);
+					const result = yield* Effect.exit(
+						chooseRun(
+							[],
+							{ preset: 'c585f251' },
+							'tail',
+							false,
+							[],
+							[first, second],
+						),
+					);
+					if (Exit.isFailure(result)) {
+						const message = String(Cause.squash(result.cause));
+						expect(message).toContain('Multiple finished runs match c585f251');
+						expect(message).toContain('--run c585f251-a');
+						expect(message).toContain('--run c585f251-b');
+					} else expect.fail('Expected an ambiguous finished prefix');
+				}),
+			),
+	);
+
+	it.live(
+		'lists distinct selectors when an active ID prefix is ambiguous',
+		() =>
+			testSelection(
+				Effect.gen(function* () {
+					const first = run('c585f251-a000-0000-0000-000000000000');
+					const second = run('c585f251-b000-0000-0000-000000000000');
+					const result = yield* Effect.exit(
+						chooseRun([first, second], { preset: 'c585f251' }, 'stop', false),
+					);
+					if (Exit.isFailure(result)) {
+						const message = String(Cause.squash(result.cause));
+						expect(message).toContain('--run c585f251-a');
+						expect(message).toContain('--run c585f251-b');
+					} else expect.fail('Expected an ambiguous active prefix');
+				}),
+			),
+	);
 	it.live(
 		'prefers a matching active run, then the newest matching finished run with local preference',
 		() =>
@@ -157,29 +311,27 @@ describe('running session selection', () => {
 			),
 	);
 
-	it.live(
-		'expands colliding short IDs while keeping full IDs in commands',
-		() =>
-			testSelection(
-				Effect.gen(function* () {
-					const result = yield* Effect.exit(
-						chooseRun(
-							[run('same-id-111'), run('same-id-222')],
-							{},
-							'stop',
-							false,
-						),
+	it.live('expands colliding short IDs in labels and commands', () =>
+		testSelection(
+			Effect.gen(function* () {
+				const result = yield* Effect.exit(
+					chooseRun(
+						[run('same-id-111'), run('same-id-222')],
+						{},
+						'stop',
+						false,
+					),
+				);
+				if (Exit.isFailure(result)) {
+					const message = String(Cause.squash(result.cause));
+					expect(message).toContain('oagent/default [same-id-1]');
+					expect(message).toContain('oagent/default [same-id-2]');
+					expect(message).toContain(
+						'devsess stop oagent/default --run same-id-1',
 					);
-					if (Exit.isFailure(result)) {
-						const message = String(Cause.squash(result.cause));
-						expect(message).toContain('oagent/default [same-id-111]');
-						expect(message).toContain('oagent/default [same-id-222]');
-						expect(message).toContain(
-							'devsess stop oagent/default --run same-id-111',
-						);
-					} else expect.fail('Expected duplicate runs to require selection');
-				}),
-			),
+				} else expect.fail('Expected duplicate runs to require selection');
+			}),
+		),
 	);
 
 	it.live('reports live choices and status on no match', () =>
@@ -197,6 +349,7 @@ describe('running session selection', () => {
 					const message = String(Cause.squash(result.cause));
 					expect(message).toContain('Nothing running matches oagent/default');
 					expect(message).toContain('other/default');
+					expect(message).toContain('other/default [live]');
 					expect(message).toContain('devsess status');
 				} else expect.fail('Expected a selection error');
 			}),
@@ -302,6 +455,19 @@ describe('running session selection', () => {
 							'devsess attach oagent/default --service web',
 						);
 					} else expect.fail('Expected a service selection error');
+					const qualified = yield* Effect.exit(
+						chooseServices(
+							{ ...multi, runId: 'c585f251-0000-0000-0000-000000000000' },
+							{ runId: 'c585f251' },
+							'tail',
+							false,
+						),
+					);
+					if (Exit.isFailure(qualified))
+						expect(String(Cause.squash(qualified.cause))).toContain(
+							'devsess tail oagent/default --run c585f251 --service engine',
+						);
+					else expect.fail('Expected a service selection error');
 					const tail = yield* Effect.exit(
 						chooseServices(multi, {}, 'tail', false),
 					);
