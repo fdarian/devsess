@@ -296,6 +296,7 @@ export const chooseRun = (
 				})),
 			}),
 		).pipe(
+			Effect.catchTag('QuitError', () => Effect.interrupt),
 			Effect.mapError(
 				() => new CommandError({ message: 'Preset selection cancelled' }),
 			),

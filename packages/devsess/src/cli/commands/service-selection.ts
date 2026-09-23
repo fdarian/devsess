@@ -71,6 +71,7 @@ export const chooseServices = (
 				],
 			}),
 		).pipe(
+			Effect.catchTag('QuitError', () => Effect.interrupt),
 			Effect.mapError(
 				() => new CommandError({ message: 'Service selection cancelled' }),
 			),
