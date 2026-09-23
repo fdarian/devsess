@@ -18,7 +18,7 @@ const optionalPreset = Argument.string('preset').pipe(Argument.optional);
 const optionalString = (name: string) => Flag.string(name).pipe(Flag.optional);
 const options = {
 	project: optionalString('project'),
-	service: optionalString('service'),
+	service: Flag.string('service').pipe(Flag.withAlias('s'), Flag.optional),
 	configPath: optionalString('config'),
 };
 const value = <A>(option: Option.Option<A>) => Option.getOrUndefined(option);
@@ -75,7 +75,10 @@ const attachCommand = Command.make(
 );
 const statusCommand = Command.make(
 	'status',
-	{ project: options.project, all: Flag.boolean('all') },
+	{
+		project: options.project,
+		all: Flag.boolean('all').pipe(Flag.withAlias('a')),
+	},
 	(input) => status({ project: value(input.project), all: input.all }),
 );
 const listCommand = Command.make(

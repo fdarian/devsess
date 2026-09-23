@@ -185,6 +185,23 @@ describe('CLI status formatting', () => {
 		);
 	});
 
+	it('details the current project and summarizes other running projects', () => {
+		const local = run('local-run', 'oagent', 'running');
+		const other = run('other-run', 'mockingbird', 'running');
+		const now = Date.parse('2026-09-12T00:05:00.000Z');
+		expect(formatStatus([local, other], false, now, '/work/oagent')).toEqual([
+			'oagent/default running [local-ru]',
+			'  Started: 2026-09-12T00:00:00.000Z',
+			'  Uptime: 5m 0s',
+			'  web: running — bun run dev (cwd: /work/oagent)',
+			'mockingbird/default running [other-ru] — up 5m 0s, 1 service',
+			'Other projects are summarized. See `devsess status -a` for details.',
+		]);
+		expect(formatStatus([local, other], true, now, '/work/oagent')).toContain(
+			'  web: running — bun run dev (cwd: /work/mockingbird)',
+		);
+	});
+
 	it('shows service PID and exit code independently of the aggregate state', () => {
 		const current = run('active-session', 'oagent', 'running');
 		const visible: RunRecord = {
