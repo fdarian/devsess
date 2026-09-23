@@ -78,13 +78,45 @@ export const formatStatus = (
 			`Last run: ${latest.projectName}/${latest.presetName} [${shortRunId(latest, knownRuns)}] finished (started ${elapsed(latest.startedAt, now)} ago) — ${latest.services.map((service) => `${service.name} ${service.exitCode === undefined ? 'exit unknown' : `exit ${serviceExitCode({ exitCode: service.exitCode, signal: service.signal })}`}`).join(', ')}. See: devsess tail ${runSelector(latest, knownRuns)}`,
 		];
 	}
-	return visible.flatMap((run) => [
-		`${run.projectName}/${run.presetName} ${isRunActive(run) ? 'running' : 'finished'} [${shortRunId(run, knownRuns)}]`,
-		`  Started: ${run.startedAt}`,
-		...(isRunActive(run) ? [`  Uptime: ${elapsed(run.startedAt, now)}`] : []),
-		...run.services.map(formatService),
-	]);
+	const detailed = (run: RunRecord) =>
+		all ||
+		currentCwd === undefined ||
+		containsPath(run.canonicalCwd, currentCwd);
+	const lines = visible.flatMap((run) =>
+		detailed(run)
+			? formatRun(run, now, knownRuns)
+			: [formatRunLine(run, now, knownRuns)],
+	);
+	return visible.every(detailed)
+		? lines
+		: [
+				...lines,
+				'Other projects are summarized. See `devsess status -a` for details.',
+			];
 };
+
+const formatRunLine = (
+	run: RunRecord,
+	now: number,
+	knownRuns: ReadonlyArray<RunRecord>,
+) => {
+	const ready = run.services.filter(
+		(service) => service.published !== undefined,
+	);
+	const readiness = ready.length === 0 ? '' : `, ${ready.length} ready`;
+	return `${run.projectName}/${run.presetName} running [${shortRunId(run, knownRuns)}] — up ${elapsed(run.startedAt, now)}, ${run.services.length} ${run.services.length === 1 ? 'service' : 'services'}${readiness}`;
+};
+
+const formatRun = (
+	run: RunRecord,
+	now: number,
+	knownRuns: ReadonlyArray<RunRecord>,
+) => [
+	`${run.projectName}/${run.presetName} ${isRunActive(run) ? 'running' : 'finished'} [${shortRunId(run, knownRuns)}]`,
+	`  Started: ${run.startedAt}`,
+	...(isRunActive(run) ? [`  Uptime: ${elapsed(run.startedAt, now)}`] : []),
+	...run.services.map(formatService),
+];
 
 export const status = (options: { project?: string; all: boolean }) =>
 	Effect.gen(function* () {
@@ -126,7 +158,7 @@ export const status = (options: { project?: string; all: boolean }) =>
 		yield* Effect.forEach(
 			formatStatus(
 				visible,
-				options.all,
+				options.all || options.project !== undefined,
 				Date.now(),
 				invocation.canonicalCwd,
 				runs,
