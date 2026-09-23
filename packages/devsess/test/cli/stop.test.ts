@@ -50,6 +50,7 @@ describe('stop command', () => {
 						runs: [run],
 						current: [run],
 						local: [run],
+						localRuns: [run],
 					}),
 				);
 				vi.mocked(chooseRun).mockReturnValue(Effect.succeed(run));

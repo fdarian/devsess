@@ -1,9 +1,12 @@
 import { Effect } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { callDaemon } from '../client';
+import { serviceExitCode } from '../exit-status';
+import { captureInvocation } from '../project-matching';
 import { isRunActive, type RunRecord } from '../registry';
 import {
 	CommandError,
+	containsPath,
 	decodeRunListResponse,
 	requestId,
 	resolveDaemonLocation,
@@ -25,21 +28,35 @@ export const formatStatus = (
 	runs: ReadonlyArray<RunRecord>,
 	all: boolean,
 	now = Date.now(),
+	currentCwd?: string,
 ) => {
 	const visible = runs.filter((run) => all || isRunActive(run));
-	if (visible.length === 0)
+	if (visible.length === 0) {
+		const empty = all
+			? 'No recorded runs. See `devsess list` for available presets.'
+			: 'Nothing running. See `devsess list` for available presets.';
+		if (all) return [empty];
+		const finished = runs.filter((run) => !isRunActive(run));
+		const local =
+			currentCwd === undefined
+				? []
+				: finished.filter((run) => containsPath(run.canonicalCwd, currentCwd));
+		const latest = (local.length > 0 ? local : finished)
+			.slice()
+			.sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0];
+		if (latest === undefined) return [empty];
 		return [
-			all
-				? 'No recorded runs. See `devsess list` for available presets.'
-				: 'Nothing running. See `devsess list` for available presets.',
+			empty,
+			`Last run: ${latest.projectName}/${latest.presetName} [${latest.runId.slice(0, 8)}] finished (started ${elapsed(latest.startedAt, now)} ago) — ${latest.services.map((service) => `${service.name} ${service.exitCode === undefined ? 'exit unknown' : `exit ${serviceExitCode({ exitCode: service.exitCode, signal: service.signal })}`}`).join(', ')}. See: devsess tail ${latest.projectName}/${latest.presetName} --run ${latest.runId}`,
 		];
+	}
 	return visible.flatMap((run) => [
 		`${run.projectName}/${run.presetName} ${isRunActive(run) ? 'running' : 'finished'} [${run.runId.slice(0, 8)}]`,
 		`  Started: ${run.startedAt}`,
 		...(isRunActive(run) ? [`  Uptime: ${elapsed(run.startedAt, now)}`] : []),
 		...run.services.map(
 			(service) =>
-				`  ${service.name}: ${service.state}${service.process === undefined ? '' : ` pid ${service.process.pid}`}${service.exitCode === undefined ? '' : ` exit ${service.exitCode}`} — ${service.command} (cwd: ${service.cwd})`,
+				`  ${service.name}: ${service.state === 'failed' && service.exitCode === 0 && service.signal === undefined ? 'exited' : service.state}${service.process === undefined ? '' : ` pid ${service.process.pid}`}${service.exitCode === undefined ? '' : ` exit ${serviceExitCode({ exitCode: service.exitCode, signal: service.signal })}`}${service.signal === undefined || service.signal === 0 ? '' : ` (signal ${service.signal})`} — ${service.command} (cwd: ${service.cwd})`,
 		),
 	]);
 };
@@ -80,7 +97,12 @@ export const status = (options: { project?: string; all: boolean }) =>
 			options.project === undefined
 				? runs
 				: runs.filter((run) => run.projectName === options.project);
-		yield* Effect.forEach(formatStatus(visible, options.all), write, {
-			discard: true,
-		});
+		const invocation = yield* captureInvocation(process.cwd());
+		yield* Effect.forEach(
+			formatStatus(visible, options.all, Date.now(), invocation.canonicalCwd),
+			write,
+			{
+				discard: true,
+			},
+		);
 	});

@@ -67,11 +67,55 @@ describe('CLI status formatting', () => {
 			...run('finished', 'oagent', 'exited'),
 			state: 'running' as const,
 		};
-		expect(formatStatus([finished], false)).toEqual([
+		expect(
+			formatStatus(
+				[finished],
+				false,
+				Date.parse('2026-09-12T00:02:00.000Z'),
+				'/work/oagent',
+			),
+		).toEqual([
 			'Nothing running. See `devsess list` for available presets.',
+			'Last run: oagent/default [finished] finished (started 2m 0s ago) — web exit unknown. See: devsess tail oagent/default --run finished',
 		]);
 		expect(formatStatus([finished], true)[0]).toBe(
 			'oagent/default finished [finished]',
+		);
+	});
+
+	it('prefers the latest finished run in the current project and labels legacy failed/zero records correctly', () => {
+		const elsewhere = {
+			...run('newer', 'other', 'failed'),
+			startedAt: '2026-09-12T00:01:00.000Z',
+		};
+		const local = {
+			...run('local', 'oagent', 'failed'),
+			services: [
+				{
+					name: 'web',
+					command: 'bun dev',
+					cwd: '/work/oagent',
+					state: 'failed' as const,
+					exitCode: 0,
+				},
+			],
+		};
+		expect(
+			formatStatus(
+				[elsewhere, local],
+				false,
+				Date.parse('2026-09-12T00:02:00.000Z'),
+				'/work/oagent',
+			)[1],
+		).toContain('Last run: oagent/default [local]');
+		expect(formatStatus([local], true)).toContain(
+			'  web: exited exit 0 — bun dev (cwd: /work/oagent)',
+		);
+		const web = local.services[0];
+		if (web === undefined) return expect.fail('Missing service fixture');
+		const signaled = { ...local, services: [{ ...web, signal: 15 }] };
+		expect(formatStatus([signaled], true)).toContain(
+			'  web: failed exit 143 (signal 15) — bun dev (cwd: /work/oagent)',
 		);
 	});
 
