@@ -9,8 +9,8 @@ import { attach } from './cli/commands/attach';
 import { daemonCommand } from './cli/commands/daemon';
 import { daemonControlCommand } from './cli/commands/daemon-control';
 import { list } from './cli/commands/list';
-import { presets } from './cli/commands/presets';
 import { start } from './cli/commands/start';
+import { status } from './cli/commands/status';
 import { stop } from './cli/commands/stop';
 import { tail } from './cli/commands/tail';
 
@@ -54,18 +54,16 @@ const attachCommand = Command.make(
 	{ ...options, preset: optionalPreset },
 	(input) => attach(commandOptions(input)),
 );
-const listCommand = Command.make('list', options, (input) =>
-	list({
-		project: value(input.project),
-		service: value(input.service),
-		configPath: value(input.configPath),
-	}),
+const statusCommand = Command.make(
+	'status',
+	{ project: options.project, all: Flag.boolean('all') },
+	(input) => status({ project: value(input.project), all: input.all }),
 );
-const presetsCommand = Command.make(
-	'presets',
+const listCommand = Command.make(
+	'list',
 	{ project: options.project, configPath: options.configPath },
 	(input) =>
-		presets({
+		list({
 			project: value(input.project),
 			configPath: value(input.configPath),
 		}),
@@ -74,7 +72,7 @@ const app = Command.make('devsess', {}).pipe(
 	Command.withSubcommands([
 		startCommand,
 		listCommand,
-		presetsCommand,
+		statusCommand,
 		stopCommand,
 		tailCommand,
 		attachCommand,
