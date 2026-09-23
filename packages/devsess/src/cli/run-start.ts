@@ -130,14 +130,31 @@ export const makeRunStart = (options: {
 			yield* options.registry.reserve(run);
 			const rollback = Effect.gen(function* () {
 				const stopped = yield* options.stopRun(run.runId, false);
-				const services = stopped.services.map((service) => ({
-					...service,
-					state: 'failed' as const,
-				}));
+				const services = stopped.services.map((service) => {
+					const neverStarted =
+						service.process === undefined &&
+						service.exitCode === 0 &&
+						service.signal !== undefined;
+					if (neverStarted)
+						return {
+							...service,
+							state: 'failed' as const,
+							exitCode: 1,
+							signal: undefined,
+						};
+					return {
+						...service,
+						state:
+							service.exitCode === 0 &&
+							(service.state !== 'failed' || service.signal === undefined)
+								? ('exited' as const)
+								: ('failed' as const),
+					};
+				});
 				return yield* options.registry.replace({
 					...stopped,
 					services,
-					state: 'failed',
+					state: aggregateState(services),
 				});
 			});
 			return yield* Effect.gen(function* () {
