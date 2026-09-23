@@ -9,7 +9,7 @@ import { Daemon, makeDaemon } from '../../src/cli/daemon';
 import { type LogAddress, type LogEvent, Logs } from '../../src/cli/logs';
 import { ProcessError, Processes } from '../../src/cli/processes';
 import type { DaemonRequest } from '../../src/cli/protocol';
-import { createPty, terminatePty } from '../../src/cli/pty';
+import { createPty, PtyError, terminatePty } from '../../src/cli/pty';
 import { Registry, type RunRecord } from '../../src/cli/registry';
 import { runTest } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
@@ -669,6 +669,51 @@ describe('daemon lifetime and failure handling', () => {
 						);
 						expect(Exit.isFailure(result)).toBe(true);
 						expect(state.records.has('duplicate')).toBe(false);
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+
+	it.live(
+		'keeps successful stop exits as exited after a later service fails to start',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					vi.mocked(createPty)
+						.mockReturnValueOnce(Effect.succeed(state.terminal))
+						.mockReturnValueOnce(
+							Effect.fail(
+								new PtyError({ message: 'Could not start second service' }),
+							),
+						);
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						const request = start();
+						const result = yield* Effect.exit(
+							daemon.request({
+								...request,
+								params: {
+									...request.params,
+									services: [
+										...request.params.services,
+										{ name: 'broken', command: 'false', cwd: '/tmp' },
+									],
+								},
+							}),
+						);
+						expect(Exit.isFailure(result)).toBe(true);
+						const stored = yield* state.registry.get('run');
+						expect(stored.services[0]).toMatchObject({
+							state: 'exited',
+							exitCode: 0,
+						});
+						expect(stored.services[0]?.state).not.toBe('failed');
+						expect(stored.services[1]).toMatchObject({
+							state: 'failed',
+							exitCode: 1,
+						});
 					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
 				}),
 			),
