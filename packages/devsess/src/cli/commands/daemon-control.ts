@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { Cause, Effect, Exit, Runtime, Schema } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { Command, Flag } from 'effect/unstable/cli';
@@ -7,6 +8,10 @@ import { Processes } from '../processes';
 import type { DaemonInfo, DaemonRequest } from '../protocol';
 import { DaemonInfo as DaemonInfoSchema, PROTOCOL_VERSION } from '../protocol';
 import type { RunRecord } from '../registry';
+import {
+	PROCESS_INSPECTION_TIMEOUT_MS,
+	TERMINATION_KILL_SIGNAL,
+} from '../termination';
 import {
 	CommandError,
 	decodeRunListResponse,
@@ -78,6 +83,62 @@ const readRuns = (socketPath: string) =>
 	callDaemon(socketPath, listRunsRequest()).pipe(
 		Effect.flatMap(decodeRunListResponse),
 	);
+
+const readSocketOwnerPid = (socketPath: string) =>
+	Effect.tryPromise({
+		try: () =>
+			new Promise<number>((resolve, reject) => {
+				execFile(
+					'lsof',
+					['-nP', '-U', '-F', 'pn'],
+					{ timeout: PROCESS_INSPECTION_TIMEOUT_MS },
+					(error, stdout) => {
+						const ownerPids = new Set<number>();
+						let currentPid: number | undefined;
+						for (const line of stdout.split('\n')) {
+							if (line.startsWith('p')) {
+								const pid = Number(line.slice(1));
+								currentPid =
+									Number.isSafeInteger(pid) && pid > 1 ? pid : undefined;
+								continue;
+							}
+							if (
+								!line.startsWith('n') ||
+								line.slice(1) !== socketPath ||
+								currentPid === undefined
+							)
+								continue;
+							ownerPids.add(currentPid);
+						}
+						if (ownerPids.size === 1) {
+							const ownerPid = Array.from(ownerPids)[0];
+							if (ownerPid !== undefined) {
+								resolve(ownerPid);
+								return;
+							}
+						}
+						if (ownerPids.size > 1) {
+							reject(
+								new Error(
+									`Multiple processes own daemon socket ${socketPath}: ${Array.from(ownerPids).join(', ')}`,
+								),
+							);
+							return;
+						}
+						if (error !== null) {
+							reject(error);
+							return;
+						}
+						reject(new Error(`No process owns daemon socket ${socketPath}`));
+					},
+				);
+			}),
+		catch: (cause) =>
+			new CommandError({
+				message: `Could not identify the process owning daemon socket ${socketPath}`,
+				cause,
+			}),
+	});
 
 const socketExists = (socketPath: string) =>
 	Effect.gen(function* () {
@@ -180,6 +241,9 @@ const statusFailure = (message: string) =>
 		Effect.andThen(Effect.fail(new DaemonStatusError({ message }))),
 	);
 
+const isUnreachable = (cause: unknown) =>
+	cause instanceof DaemonClientError && cause.kind === 'unreachable';
+
 const waitForStopped = (
 	socketPath: string,
 	deadline: number,
@@ -188,8 +252,7 @@ const waitForStopped = (
 		const runs = yield* Effect.exit(readRuns(socketPath));
 		if (Exit.isFailure(runs)) {
 			const error = Cause.squash(runs.cause);
-			if (error instanceof DaemonClientError && error.kind === 'unreachable')
-				return;
+			if (isUnreachable(error)) return;
 		} else if (Date.now() >= deadline) {
 			return yield* new CommandError({
 				message: `Daemon at ${socketPath} did not stop within ${DAEMON_STOP_TIMEOUT_MS}ms`,
@@ -218,7 +281,7 @@ const refusal = (runs: ReadonlyArray<RunRecord>) =>
 			.join(', ')}`,
 	});
 
-const stopOutdated = (
+export const stopOutdatedDaemon = (
 	socketPath: string,
 	runs: ReadonlyArray<RunRecord>,
 	force: boolean,
@@ -229,23 +292,43 @@ const stopOutdated = (
 			yield* Effect.forEach(activeLines(runs), write, { discard: true });
 			return yield* refusal(runs);
 		}
-		const run = runs[0];
-		if (run === undefined)
-			return yield* new CommandError({
-				message: `Cannot stop this outdated daemon: no persisted daemon PID is available. Find the process owning ${socketPath} and run \`kill <pid>\` manually.`,
-			});
+		const ownerPid = yield* readSocketOwnerPid(socketPath);
 		const processes = yield* Processes;
-		yield* processes.terminate(run.daemon, force).pipe(
+		const identity = yield* processes.capture(ownerPid).pipe(
 			Effect.mapError(
 				(cause) =>
 					new CommandError({
-						message: `Could not terminate outdated daemon PID ${run.daemon.pid}`,
+						message: `Could not verify daemon process PID ${ownerPid}`,
 						cause,
 					}),
 			),
 		);
+		const termination = yield* processes.terminate(identity, false).pipe(
+			Effect.mapError(
+				(cause) =>
+					new CommandError({
+						message: `Could not terminate outdated daemon PID ${ownerPid}`,
+						cause,
+					}),
+			),
+		);
+		if (termination === undefined) {
+			const response = yield* Effect.exit(readRuns(socketPath));
+			if (
+				Exit.isFailure(response) &&
+				isUnreachable(Cause.squash(response.cause))
+			) {
+				yield* write('Outdated daemon was already stopped.');
+				return;
+			}
+			return yield* new CommandError({
+				message: `Could not stop outdated daemon PID ${ownerPid}: no signal was sent because its process identity could not be verified.`,
+			});
+		}
 		yield* waitForStopped(socketPath, Date.now() + DAEMON_STOP_TIMEOUT_MS);
-		yield* write(`Stopped outdated daemon PID ${run.daemon.pid}.`);
+		yield* write(
+			`Stopped outdated daemon PID ${ownerPid} with ${termination === TERMINATION_KILL_SIGNAL ? 'SIGKILL' : 'SIGTERM'}.`,
+		);
 	});
 
 const stopRunning = (
@@ -329,7 +412,7 @@ export const stop = (force: boolean) =>
 				message: `Daemon socket exists at ${location.socketPath}, but the daemon is not responding.`,
 			});
 		if (probe._tag === 'outdated') {
-			yield* stopOutdated(location.socketPath, probe.runs, force);
+			yield* stopOutdatedDaemon(location.socketPath, probe.runs, force);
 			return;
 		}
 		const runs = yield* readRuns(location.socketPath).pipe(
