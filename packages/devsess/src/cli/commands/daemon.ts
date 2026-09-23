@@ -135,12 +135,11 @@ export const resolveCurrentRuns = () =>
 					}),
 			),
 		);
-		const current = runs.filter(
-			(run) =>
-				containsPath(run.canonicalCwd, invocation.canonicalCwd) &&
-				isRunActive(run),
+		const current = runs.filter(isRunActive);
+		const local = current.filter((run) =>
+			containsPath(run.canonicalCwd, invocation.canonicalCwd),
 		);
-		return { location, runs, current };
+		return { location, runs, current, local };
 	});
 
 const runChoices = (runs: ReadonlyArray<RunRecord>) =>
@@ -173,6 +172,7 @@ export const chooseRun = (
 	options: CommandOptions,
 	command = 'tail',
 	interactive = process.stdin.isTTY === true && process.stdout.isTTY === true,
+	local: ReadonlyArray<RunRecord> = runs,
 ): Effect.Effect<RunRecord, CommandError, FileSystem | Path | Terminal> => {
 	const active = runs.filter(isRunActive);
 	const parts = options.preset?.split('/');
@@ -195,12 +195,22 @@ export const chooseRun = (
 	const presetName = parts?.length === 2 ? parts[1] : options.preset;
 	const projectName =
 		positionalProject === undefined ? options.project : positionalProject;
-	const candidates = active.filter(
+	const matches = active.filter(
 		(run) =>
 			(projectName === undefined || run.projectName === projectName) &&
 			(presetName === undefined || run.presetName === presetName) &&
 			(options.runId === undefined || run.runId.startsWith(options.runId)),
 	);
+	// Runs started under the current directory win only when the user did not name a project or run.
+	const localMatches = matches.filter((run) =>
+		local.some((other) => other.runId === run.runId),
+	);
+	const candidates =
+		projectName === undefined &&
+		options.runId === undefined &&
+		localMatches.length > 0
+			? localMatches
+			: matches;
 	const run = candidates[0];
 	if (candidates.length === 1 && run !== undefined) return Effect.succeed(run);
 	const choices = runChoices(candidates);
