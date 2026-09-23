@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest';
-import { formatStatus } from '../../src/cli/commands/status';
+import { formatService, formatStatus } from '../../src/cli/commands/status';
 import type { RunRecord } from '../../src/cli/registry';
 
 const run = (
@@ -41,9 +41,12 @@ describe('CLI status formatting', () => {
 		expect(formatStatus([current, old], false)[0]).toBe(
 			'mockingbird/default running [c585f251-a]',
 		);
-		expect(formatStatus([current, old], true)).toContain(
-			'other/default finished [c585f251-b]',
-		);
+		const all = formatStatus([current, old], true, Date.now(), undefined, [
+			current,
+			old,
+		]);
+		expect(all).toContain('mockingbird/default running [c585f251-a]');
+		expect(all).not.toContain('other/default');
 		const onlyFinished = formatStatus([old], false, Date.now(), '/work/other', [
 			current,
 			old,
@@ -128,7 +131,7 @@ describe('CLI status formatting', () => {
 		).toContain('other-project/default running [elsewher]');
 	});
 
-	it('labels completed runs with --all and reports empty state', () => {
+	it('keeps the last-run summary in --all mode when nothing is active', () => {
 		const finished = {
 			...run('finished', 'oagent', 'exited'),
 			state: 'running' as const,
@@ -144,9 +147,20 @@ describe('CLI status formatting', () => {
 			'Nothing running. See `devsess list` for available presets.',
 			'Last run: oagent/default [finished] finished (started 2m 0s ago) — web exit unknown. See: devsess tail finished',
 		]);
-		expect(formatStatus([finished], true)[0]).toBe(
-			'oagent/default finished [finished]',
-		);
+		expect(formatStatus([], true)).toEqual([
+			'Nothing running. See `devsess list` for available presets.',
+		]);
+		expect(
+			formatStatus(
+				[finished],
+				true,
+				Date.parse('2026-09-12T00:02:00.000Z'),
+				'/work/oagent',
+			),
+		).toEqual([
+			'Nothing running. See `devsess list` for available presets.',
+			'Last run: oagent/default [finished] finished (started 2m 0s ago) — web exit unknown. See: devsess tail finished',
+		]);
 	});
 
 	it('prefers the latest finished run in the current project and labels legacy failed/zero records correctly', () => {
@@ -174,13 +188,16 @@ describe('CLI status formatting', () => {
 				'/work/oagent',
 			)[1],
 		).toContain('Last run: oagent/default [local]');
-		expect(formatStatus([local], true)).toContain(
-			'  web: exited exit 0 — bun dev (cwd: /work/oagent)',
-		);
 		const web = local.services[0];
 		if (web === undefined) return expect.fail('Missing service fixture');
+		expect(formatService(web)).toBe(
+			'  web: exited exit 0 — bun dev (cwd: /work/oagent)',
+		);
 		const signaled = { ...local, services: [{ ...web, signal: 15 }] };
-		expect(formatStatus([signaled], true)).toContain(
+		const signaledService = signaled.services[0];
+		if (signaledService === undefined)
+			return expect.fail('Missing signaled service fixture');
+		expect(formatService(signaledService)).toBe(
 			'  web: failed exit 143 (signal 15) — bun dev (cwd: /work/oagent)',
 		);
 	});
@@ -200,6 +217,17 @@ describe('CLI status formatting', () => {
 		expect(formatStatus([local, other], true, now, '/work/oagent')).toContain(
 			'  web: running — bun run dev (cwd: /work/mockingbird)',
 		);
+		const finished = run('finished-run', 'finished-project', 'exited');
+		const allActive = formatStatus(
+			[local, other, finished],
+			true,
+			now,
+			'/work/oagent',
+		);
+		expect(allActive).toContain('oagent/default running [local-ru]');
+		expect(allActive).toContain('mockingbird/default running [other-ru]');
+		expect(allActive).not.toContain('finished-project');
+		expect(allActive).not.toContain('Other projects are summarized');
 	});
 
 	it('shows service PID and exit code independently of the aggregate state', () => {

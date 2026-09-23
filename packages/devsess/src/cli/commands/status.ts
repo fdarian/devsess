@@ -26,7 +26,7 @@ const elapsed = (startedAt: string, now: number) => {
 	return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m ${duration % 60}s`;
 };
 
-const formatService = (service: ServiceRecord) => {
+export const formatService = (service: ServiceRecord) => {
 	const state =
 		service.state === 'failed' &&
 		service.exitCode === 0 &&
@@ -58,12 +58,9 @@ export const formatStatus = (
 	currentCwd?: string,
 	knownRuns: ReadonlyArray<RunRecord> = runs,
 ) => {
-	const visible = runs.filter((run) => all || isRunActive(run));
+	const visible = runs.filter(isRunActive);
 	if (visible.length === 0) {
-		const empty = all
-			? 'No recorded runs. See `devsess list` for available presets.'
-			: 'Nothing running. See `devsess list` for available presets.';
-		if (all) return [empty];
+		const empty = 'Nothing running. See `devsess list` for available presets.';
 		const finished = runs.filter((run) => !isRunActive(run));
 		const local =
 			currentCwd === undefined
