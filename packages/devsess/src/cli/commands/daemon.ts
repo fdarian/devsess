@@ -35,7 +35,7 @@ export type DaemonLocation = { dataDirectory: string; socketPath: string };
 
 export { isRunActive } from '../registry';
 
-const containsPath = (parent: string, child: string) => {
+export const containsPath = (parent: string, child: string) => {
 	const path = relative(parent, child);
 	return (
 		path === '' ||
@@ -136,10 +136,11 @@ export const resolveCurrentRuns = () =>
 			),
 		);
 		const current = runs.filter(isRunActive);
-		const local = current.filter((run) =>
+		const localRuns = runs.filter((run) =>
 			containsPath(run.canonicalCwd, invocation.canonicalCwd),
 		);
-		return { location, runs, current, local };
+		const local = localRuns.filter(isRunActive);
+		return { location, runs, current, local, localRuns };
 	});
 
 const runChoices = (runs: ReadonlyArray<RunRecord>) =>
@@ -173,6 +174,7 @@ export const chooseRun = (
 	command = 'tail',
 	interactive = process.stdin.isTTY === true && process.stdout.isTTY === true,
 	local: ReadonlyArray<RunRecord> = runs,
+	finished: ReadonlyArray<RunRecord> = [],
 ): Effect.Effect<RunRecord, CommandError, FileSystem | Path | Terminal> => {
 	const active = runs.filter(isRunActive);
 	const parts = options.preset?.split('/');
@@ -211,6 +213,28 @@ export const chooseRun = (
 		localMatches.length > 0
 			? localMatches
 			: matches;
+	if (candidates.length === 0 && finished.length > 0) {
+		const matching = finished.filter(
+			(run) =>
+				!isRunActive(run) &&
+				(projectName === undefined || run.projectName === projectName) &&
+				(presetName === undefined || run.presetName === presetName) &&
+				(options.runId === undefined || run.runId.startsWith(options.runId)),
+		);
+		const nearby = matching.filter((run) =>
+			local.some((candidate) => candidate.runId === run.runId),
+		);
+		const recent =
+			projectName === undefined &&
+			options.runId === undefined &&
+			nearby.length > 0
+				? nearby
+				: matching;
+		const latest = recent
+			.slice()
+			.sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0];
+		if (latest !== undefined) return Effect.succeed(latest);
+	}
 	const run = candidates[0];
 	if (candidates.length === 1 && run !== undefined) return Effect.succeed(run);
 	const choices = runChoices(candidates);

@@ -1,6 +1,6 @@
 import { Cause, Effect, Exit, Queue } from 'effect';
 import { ServiceExitError, serviceExit } from '../exit-status';
-import type { RunRecord } from '../registry';
+import { isRunActive, type RunRecord } from '../registry';
 import { openDaemonStream, type TerminalTransportError } from '../terminal';
 import {
 	CommandError,
@@ -82,10 +82,17 @@ export const tail = (options: CommandOptions) =>
 					options,
 					'tail',
 					undefined,
-					resolved.local,
+					resolved.localRuns,
+					resolved.runs,
 				).pipe(
 					Effect.flatMap((run) =>
 						Effect.gen(function* () {
+							if (!isRunActive(run))
+								yield* Effect.sync(() =>
+									process.stderr.write(
+										`${run.projectName}/${run.presetName} [${run.runId.slice(0, 8)}] is not running; replaying its last output.\n`,
+									),
+								);
 							const services = yield* chooseServices(run, options, 'tail');
 							const completions =
 								yield* Queue.unbounded<Exit.Exit<void, TailFailure>>();

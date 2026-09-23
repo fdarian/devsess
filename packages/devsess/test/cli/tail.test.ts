@@ -59,7 +59,7 @@ const run: RunRecord = {
 };
 
 describe('tail command', () => {
-	const runTailWithExit = (event: DaemonEvent) =>
+	const runTailWithExit = (event: DaemonEvent, finished = false) =>
 		Effect.gen(function* () {
 			const frames = yield* Queue.unbounded<DaemonStreamFrame>();
 			yield* Queue.offer(frames, {
@@ -72,20 +72,56 @@ describe('tail command', () => {
 				},
 			});
 			yield* Queue.offer(frames, { _tag: 'output', value: event });
+			const selected: RunRecord = finished
+				? {
+						...run,
+						state: 'failed',
+						services: [
+							{
+								name: 'web',
+								command: 'sleep 30',
+								cwd: '/tmp',
+								state: 'failed',
+								exitCode: 7,
+							},
+						],
+					}
+				: run;
 			vi.mocked(resolveCurrentRuns).mockReturnValue(
 				Effect.succeed({
 					location: { dataDirectory: '/tmp/data', socketPath: '/tmp/socket' },
-					runs: [run],
-					current: [run],
-					local: [run],
+					runs: [selected],
+					current: finished ? [] : [selected],
+					local: finished ? [] : [selected],
+					localRuns: [selected],
 				}),
 			);
-			vi.mocked(chooseRun).mockReturnValue(Effect.succeed(run));
+			vi.mocked(chooseRun).mockReturnValue(Effect.succeed(selected));
 			vi.mocked(openDaemonStream).mockReturnValue(
 				Effect.succeed({ frames }) as never,
 			);
 			return yield* Effect.exit(tail({}).pipe(Effect.timeout('1 second')));
 		});
+
+	it.effect('announces a finished run and returns its saved exit code', () =>
+		withServices(
+			Effect.gen(function* () {
+				const stderr = vi
+					.spyOn(process.stderr, 'write')
+					.mockImplementation(() => true);
+				const result = yield* runTailWithExit(
+					{ version: 1, requestId: 'request', event: 'exit', exitCode: 7 },
+					true,
+				);
+				expect(result._tag).toBe('Failure');
+				if (result._tag === 'Failure')
+					expect(Runtime.getErrorExitCode(Cause.squash(result.cause))).toBe(7);
+				expect(stderr).toHaveBeenCalledWith(
+					'project/dev [run] is not running; replaying its last output.\n',
+				);
+			}),
+		),
+	);
 
 	it.effect('returns success for a zero service exit', () =>
 		withServices(
@@ -221,6 +257,7 @@ describe('tail command', () => {
 							runs: [multiRun],
 							current: [multiRun],
 							local: [multiRun],
+							localRuns: [multiRun],
 						}),
 					);
 					vi.mocked(chooseRun).mockReturnValue(Effect.succeed(multiRun));

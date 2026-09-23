@@ -1,15 +1,106 @@
-import { Effect } from 'effect';
+import { Cause, Effect, Exit, Queue } from 'effect';
 import { callDaemon } from '../client';
+import { serviceExitCode } from '../exit-status';
 import { resolvePreset, toServices } from '../preset-resolution';
 import type { DaemonRequest } from '../protocol';
+import { isRunActive, type RunRecord, type ServiceRecord } from '../registry';
+import { openDaemonStream } from '../terminal';
 import type { CommandOptions } from './daemon';
 import {
+	CommandError,
+	decodeRunListResponse,
 	decodeRunResponse,
 	ensureDaemon,
 	requestId,
 	resolveDaemonLocation,
 	write,
 } from './daemon';
+
+export const recentOutput = (
+	socketPath: string,
+	run: RunRecord,
+	service: ServiceRecord,
+) =>
+	Effect.scoped(
+		Effect.gen(function* () {
+			const stream = yield* openDaemonStream({
+				socketPath,
+				request: {
+					version: 1,
+					requestId: requestId(),
+					method: 'tail',
+					params: { runId: run.runId, serviceName: service.name },
+				},
+			});
+			let text = '';
+			while (true) {
+				const frame = yield* Queue.take(stream.frames);
+				if (frame._tag === 'output') {
+					if (frame.value.event === 'exit') break;
+					text = `${text}${frame.value.data}`.slice(-16000);
+				} else if (frame._tag === 'error') return yield* frame.error;
+				else if (frame._tag === 'closed')
+					return yield* new CommandError({
+						message: 'Log stream closed before exit',
+					});
+				else if (!frame.value.ok)
+					return yield* new CommandError({
+						message:
+							frame.value.error === undefined
+								? 'Daemon rejected tail request'
+								: frame.value.error,
+					});
+			}
+			return text
+				.split(/\r?\n/)
+				.filter((line) => line.length > 0)
+				.slice(-10);
+		}),
+	).pipe(Effect.timeout('2 seconds'));
+
+const observedRun = (socketPath: string, runId: string) =>
+	callDaemon(socketPath, {
+		version: 1,
+		requestId: requestId(),
+		method: 'listRuns',
+		params: {},
+	}).pipe(
+		Effect.flatMap(decodeRunListResponse),
+		Effect.flatMap((runs) => {
+			const run = runs.find((candidate) => candidate.runId === runId);
+			return run === undefined
+				? new CommandError({
+						message: `Started run ${runId} disappeared from the daemon`,
+					})
+				: Effect.succeed(run);
+		}),
+	);
+
+const watchStart = (socketPath: string, initial: RunRecord) =>
+	Effect.gen(function* () {
+		const deadline = Date.now() + 2000;
+		let run = initial;
+		while (Date.now() < deadline && isRunActive(run)) {
+			yield* Effect.sleep('100 millis');
+			run = yield* observedRun(socketPath, run.runId);
+		}
+		return run;
+	});
+
+const isFinished = (service: ServiceRecord) =>
+	service.state === 'exited' || service.state === 'failed';
+export const isFailure = (service: ServiceRecord) =>
+	isFinished(service) &&
+	(service.state === 'failed' ||
+		service.exitCode !== 0 ||
+		(service.signal !== undefined && service.signal > 0));
+
+export const formatStartFailure = (
+	run: RunRecord,
+	service: ServiceRecord,
+	lines: ReadonlyArray<string>,
+) =>
+	`${service.name}: ${service.state}${service.exitCode === undefined ? ' (exit status unknown)' : ` (exit ${serviceExitCode({ exitCode: service.exitCode, signal: service.signal })})`}\n${lines.map((line) => `    ${line}`).join('\n')}\n  See: devsess tail ${run.projectName}/${run.presetName} --run ${run.runId} --service ${service.name}`;
 
 const clientEnvironment = () =>
 	Object.fromEntries(
@@ -48,7 +139,31 @@ export const start = (options: CommandOptions, interactive: boolean) =>
 		const run = yield* callDaemon(location.socketPath, request).pipe(
 			Effect.flatMap(decodeRunResponse),
 		);
-		return yield* write(
+		const observed = yield* watchStart(location.socketPath, run);
+		const exited = observed.services.filter(isFinished);
+		const report = yield* Effect.forEach(exited, (service) =>
+			Effect.gen(function* () {
+				const output = yield* Effect.exit(
+					recentOutput(location.socketPath, observed, service),
+				);
+				const lines = Exit.isSuccess(output)
+					? output.value
+					: [`Output unavailable: ${String(Cause.squash(output.cause))}`];
+				return formatStartFailure(observed, service, lines);
+			}),
+		);
+		const summary = report.join('\n  ');
+		if (observed.services.length > 0 && observed.services.every(isFailure))
+			return yield* new CommandError({
+				message: `Run ${observed.projectName}/${observed.presetName} [${observed.runId.slice(0, 8)}] failed shortly after start:\n  ${summary}`,
+			});
+		yield* write(
 			`Started ${resolved.preset.projectName}/${resolved.preset.presetName}: ${run.runId}`,
 		);
+		if (report.length > 0)
+			yield* Effect.sync(() =>
+				process.stderr.write(
+					`Service exited shortly after start:\n  ${summary}\n`,
+				),
+			);
 	});
