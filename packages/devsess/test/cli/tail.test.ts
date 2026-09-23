@@ -77,6 +77,7 @@ describe('tail command', () => {
 					location: { dataDirectory: '/tmp/data', socketPath: '/tmp/socket' },
 					runs: [run],
 					current: [run],
+					local: [run],
 				}),
 			);
 			vi.mocked(chooseRun).mockReturnValue(Effect.succeed(run));
@@ -219,6 +220,7 @@ describe('tail command', () => {
 							},
 							runs: [multiRun],
 							current: [multiRun],
+							local: [multiRun],
 						}),
 					);
 					vi.mocked(chooseRun).mockReturnValue(Effect.succeed(multiRun));

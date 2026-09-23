@@ -49,6 +49,7 @@ describe('stop command', () => {
 						location: { dataDirectory: '/tmp/data', socketPath: '/tmp/socket' },
 						runs: [run],
 						current: [run],
+						local: [run],
 					}),
 				);
 				vi.mocked(chooseRun).mockReturnValue(Effect.succeed(run));

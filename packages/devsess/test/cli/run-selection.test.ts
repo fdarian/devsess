@@ -150,6 +150,39 @@ describe('running session selection', () => {
 		),
 	);
 
+	it.live('finds runs started outside the current directory', () =>
+		testSelection(
+			Effect.gen(function* () {
+				const selected = yield* chooseRun(
+					[run('elsewhere')],
+					{ project: 'oagent', preset: 'default' },
+					'tail',
+					false,
+					[],
+				).pipe(Effect.timeout('1 second'));
+				expect(selected.runId).toBe('elsewhere');
+			}),
+		),
+	);
+
+	it.live(
+		'prefers runs under the current directory when no project is named',
+		() =>
+			testSelection(
+				Effect.gen(function* () {
+					const local = run('local-run', 'here');
+					const selected = yield* chooseRun(
+						[run('elsewhere', 'there'), local],
+						{},
+						'tail',
+						false,
+						[local],
+					).pipe(Effect.timeout('1 second'));
+					expect(selected.runId).toBe('local-run');
+				}),
+			),
+	);
+
 	it.live('uses project and service flags to skip both pickers', () =>
 		testSelection(
 			Effect.gen(function* () {

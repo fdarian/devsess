@@ -12,7 +12,13 @@ import {
 export const stop = (options: CommandOptions) =>
 	resolveCurrentRuns().pipe(
 		Effect.flatMap((resolved) =>
-			chooseRun(resolved.current, options, 'stop').pipe(
+			chooseRun(
+				resolved.current,
+				options,
+				'stop',
+				undefined,
+				resolved.local,
+			).pipe(
 				Effect.flatMap((run) =>
 					callDaemon(
 						resolved.location.socketPath,
