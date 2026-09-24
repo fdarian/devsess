@@ -76,6 +76,10 @@ export const TailRequest = Schema.Struct({
 		runId: Identifier,
 		serviceName: Identifier,
 		after: Schema.optional(Schema.Int),
+		lines: Schema.optional(
+			Schema.Int.check(Schema.makeFilter((value) => value >= 0)),
+		),
+		follow: Schema.optional(Schema.Boolean),
 	}),
 });
 export const AttachRequest = Schema.Struct({
@@ -174,7 +178,16 @@ export const DaemonExitEvent = Schema.Struct({
 	exitCode: Schema.Int,
 	signal: Schema.optional(Schema.Int),
 });
-export const DaemonEvent = Schema.Union([DaemonOutputEvent, DaemonExitEvent]);
+export const DaemonEndEvent = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	event: Schema.Literal('end'),
+});
+export const DaemonEvent = Schema.Union([
+	DaemonOutputEvent,
+	DaemonExitEvent,
+	DaemonEndEvent,
+]);
 export type DaemonEvent = typeof DaemonEvent.Type;
 export const decodeRequest = Schema.decodeUnknownEffect(
 	Schema.fromJsonString(DaemonRequest),

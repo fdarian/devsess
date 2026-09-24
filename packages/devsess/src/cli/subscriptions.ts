@@ -20,6 +20,7 @@ type ActiveSubscription = {
 export type Subscription = {
 	readonly address: LogAddress;
 	readonly ready: Deferred.Deferred<void>;
+	readonly follow: boolean;
 	active: ActiveSubscription | undefined;
 	setupFiber: Fiber.Fiber<void, unknown> | undefined;
 	exit: ServiceExit | undefined;
@@ -46,6 +47,34 @@ type CompletionRecord = {
 
 const addressKey = (address: LogAddress) =>
 	`${address.runId}:${address.serviceName}`;
+
+const lastLines = (
+	events: ReadonlyArray<{ readonly data: string; readonly offset: number }>,
+	lines: number,
+) => {
+	if (lines === 0) return [];
+	const text = events.map((event) => event.data).join('');
+	const content = text.endsWith('\n') ? text.slice(0, -1) : text;
+	let start = content.length;
+	let search = content.length;
+	for (let index = 0; index < lines; index += 1) {
+		const boundary = content.lastIndexOf('\n', search - 1);
+		if (boundary < 0) {
+			start = 0;
+			break;
+		}
+		start = boundary + 1;
+		search = boundary;
+	}
+	let consumed = 0;
+	return events.flatMap((event) => {
+		const skip = Math.max(0, start - consumed);
+		consumed += event.data.length;
+		return skip >= event.data.length
+			? []
+			: [{ ...event, data: event.data.slice(skip) }];
+	});
+};
 
 export const makeSubscriptions = (options: {
 	readonly logs: LogsService;
@@ -179,6 +208,8 @@ export const makeSubscriptions = (options: {
 		address: LogAddress,
 		after: number,
 		exit?: ServiceExit,
+		lines?: number,
+		follow = true,
 	) =>
 		Effect.gen(function* () {
 			const state = options.sockets.get(socket);
@@ -193,6 +224,7 @@ export const makeSubscriptions = (options: {
 			const reservation: Subscription = {
 				address,
 				ready,
+				follow,
 				active: undefined,
 				setupFiber: undefined,
 				exit: undefined,
@@ -264,10 +296,25 @@ export const makeSubscriptions = (options: {
 				}
 				yield* Deferred.succeed(reservation.ready, undefined);
 				const replaySource = subscribed.replay;
+				const selected =
+					lines === undefined
+						? replaySource
+						: Array.isArray(replaySource)
+							? lastLines(replaySource, lines)
+							: lastLines(
+									yield* Stream.runCollect(
+										replaySource as Stream.Stream<
+											{ readonly data: string; readonly offset: number },
+											unknown,
+											FileSystem | Path
+										>,
+									),
+									lines,
+								);
 				const replay: Effect.Effect<void, unknown, FileSystem | Path> =
-					Array.isArray(replaySource)
+					Array.isArray(selected)
 						? state.writer.sendReplay(
-								replaySource.map((event) => ({
+								selected.map((event) => ({
 									version: PROTOCOL_VERSION as 1,
 									requestId,
 									event: 'output' as const,
@@ -277,7 +324,7 @@ export const makeSubscriptions = (options: {
 							)
 						: state.writer.sendReplay(
 								Stream.map(
-									replaySource as Stream.Stream<
+									selected as Stream.Stream<
 										{ readonly data: string; readonly offset: number },
 										unknown,
 										FileSystem | Path
@@ -296,6 +343,35 @@ export const makeSubscriptions = (options: {
 						subscribed.completeReplay === undefined
 							? Effect.void
 							: subscribed.completeReplay,
+					),
+					Effect.andThen(
+						follow
+							? Effect.void
+							: Effect.suspend(() => {
+									if (reservation.exit !== undefined)
+										return finishSubscription(
+											socket,
+											state,
+											requestId,
+											reservation,
+											reservation.exit,
+										);
+									return options
+										.send(socket, {
+											version: PROTOCOL_VERSION,
+											requestId,
+											event: 'end',
+										})
+										.pipe(
+											Effect.ensuring(
+												unsubscribeSubscription(reservation).pipe(
+													Effect.andThen(
+														removeSubscription(state, requestId, reservation),
+													),
+												),
+											),
+										);
+								}),
 					),
 					Effect.catch((cause) =>
 						unsubscribeSubscription(reservation).pipe(
@@ -356,6 +432,8 @@ export const makeSubscriptions = (options: {
 								const subscription = subscriptionEntry[1];
 								if (addressKey(subscription.address) !== addressKey(address))
 									return Effect.void;
+								subscription.exit = completion.exit;
+								if (!subscription.follow) return Effect.void;
 								return finishSubscription(
 									socket,
 									state,

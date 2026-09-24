@@ -78,6 +78,67 @@ const makeSocket = () => {
 };
 
 describe('subscription setup races', () => {
+	it.live(
+		'replays the last lines across event boundaries and ends without following',
+		() =>
+			runTest(
+				Effect.scoped(
+					Effect.gen(function* () {
+						const configured = makeSocket();
+						const completed = yield* Deferred.make<void>();
+						const replay = [
+							{ data: 'first\nsec', offset: 9 },
+							{ data: 'ond\nthird\n', offset: 19 },
+						];
+						const logs = Logs.of({
+							append: (_address: LogAddress, data: string) =>
+								Effect.succeed({ data, offset: data.length }),
+							replayAndSubscribe: () =>
+								Effect.succeed({
+									replay,
+									flush: Effect.void,
+									unsubscribe: Effect.void,
+								}),
+						});
+						const subscriptions = makeSubscriptions({
+							logs,
+							sockets: new Map([[configured.socket, configured.state]]),
+							send: (_socket, frame) =>
+								'event' in frame && frame.event === 'end'
+									? Deferred.succeed(completed, undefined).pipe(Effect.asVoid)
+									: Effect.void,
+						});
+						yield* subscriptions.subscribe(
+							configured.socket,
+							'tail',
+							address,
+							0,
+							undefined,
+							2,
+							false,
+						);
+						yield* Deferred.await(completed).pipe(Effect.timeout('1 second'));
+						const events = configured.written.flatMap((text) =>
+							text
+								.split('\n')
+								.filter(Boolean)
+								.map(
+									(line) => JSON.parse(line) as { event: string; data: string },
+								),
+						);
+						expect(
+							events
+								.filter((event) => event.event === 'output')
+								.map((event) => event.data)
+								.join(''),
+						).toBe('second\nthird\n');
+						configured.state.writer.close();
+						configured.socket.destroy();
+					}),
+				),
+			),
+	);
+
 	it.live('finishes a tail when exit arrives during replay setup', () =>
 		runTest(
 			Effect.scoped(
