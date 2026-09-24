@@ -211,6 +211,7 @@ describe('real PTY startup events', () => {
 					expect(value.pid).toBe(process.pid);
 					expect(value.socketPath).toBe(socketPath);
 					expect(value.dataDirectory).toBe(directory);
+					expect(value.logsDirectory).toBe(join(directory, 'logs'));
 					expect(value.protocolVersion).toBe(1);
 					yield* daemon.request(shutdown);
 					yield* daemon.awaitShutdown;

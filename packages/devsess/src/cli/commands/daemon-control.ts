@@ -221,6 +221,9 @@ const infoLines = (info: DaemonInfo) =>
 			`Protocol version: ${info.protocolVersion}`,
 			`Socket: ${info.socketPath}`,
 			`Data directory: ${info.dataDirectory}`,
+			...(info.logsDirectory === undefined
+				? []
+				: [`Logs directory: ${info.logsDirectory}`]),
 			`Runs: ${info.runCount}`,
 			`Live services: ${info.liveServiceCount}`,
 			`Attached clients: ${info.attachedClientCount}`,

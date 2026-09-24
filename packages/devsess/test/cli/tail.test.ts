@@ -104,7 +104,11 @@ describe('tail command', () => {
 				: run;
 			vi.mocked(resolveCurrentRuns).mockReturnValue(
 				Effect.succeed({
-					location: { dataDirectory: '/tmp/data', socketPath: '/tmp/socket' },
+					location: {
+						dataDirectory: '/tmp/data',
+						logsDirectory: '/tmp/data/logs',
+						socketPath: '/tmp/socket',
+					},
 					runs: [selected],
 					current: finished ? [] : [selected],
 					local: finished ? [] : [selected],
@@ -293,6 +297,7 @@ describe('tail command', () => {
 						Effect.succeed({
 							location: {
 								dataDirectory: '/tmp/data',
+								logsDirectory: '/tmp/data/logs',
 								socketPath: '/tmp/socket',
 							},
 							runs: [multiRun],

@@ -14,6 +14,7 @@ export class DaemonLifecycle extends Context.Service<
 	static readonly layer: (options: {
 		socketPath: string;
 		dataDirectory: string;
+		logsDirectory: string;
 	}) => Layer.Layer<DaemonLifecycle, unknown, FileSystem | Path> = (options) =>
 		Layer.effect(
 			DaemonLifecycle,
@@ -23,6 +24,7 @@ export class DaemonLifecycle extends Context.Service<
 				Daemon.layer({
 					socketPath: options.socketPath,
 					dataDirectory: options.dataDirectory,
+					logsDirectory: options.logsDirectory,
 					maxLogBytes: 1024 * 1024,
 				}),
 			),

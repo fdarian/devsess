@@ -145,6 +145,40 @@ describe('Registry', () => {
 });
 
 describe('Logs', () => {
+	it.effect('writes and replays from the configured logs directory', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const path = yield* Path;
+				const fileSystem = yield* FileSystem;
+				const logsDirectory = path.join(dataDirectory, 'mac-logs');
+				const logs = yield* Logs.pipe(
+					Effect.provide(
+						Logs.layer({ dataDirectory, logsDirectory, maxBytes: 1024 }),
+					),
+				);
+				const address = { runId: 'run', serviceName: 'web' };
+				yield* logs.append(address, 'hello');
+				expect(
+					yield* fileSystem.exists(
+						path.join(logsDirectory, 'run', 'web.jsonl'),
+					),
+				).toBe(true);
+				expect(
+					yield* fileSystem.exists(
+						path.join(dataDirectory, 'logs', 'run', 'web.jsonl'),
+					),
+				).toBe(false);
+				const replay = yield* logs.replayAndSubscribe(
+					address,
+					0,
+					() => Effect.void,
+				);
+				expect(replay.replay.map((event) => event.data)).toEqual(['hello']);
+				yield* replay.unsubscribe;
+			}),
+		),
+	);
 	it.effect('rejects path traversal in log addresses', () =>
 		Effect.gen(function* () {
 			const exit = yield* Effect.exit(

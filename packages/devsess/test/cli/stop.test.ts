@@ -46,7 +46,11 @@ describe('stop command', () => {
 			Effect.gen(function* () {
 				vi.mocked(resolveCurrentRuns).mockReturnValue(
 					Effect.succeed({
-						location: { dataDirectory: '/tmp/data', socketPath: '/tmp/socket' },
+						location: {
+							dataDirectory: '/tmp/data',
+							logsDirectory: '/tmp/data/logs',
+							socketPath: '/tmp/socket',
+						},
 						runs: [run],
 						current: [run],
 						local: [run],

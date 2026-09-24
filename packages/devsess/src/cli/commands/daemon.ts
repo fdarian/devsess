@@ -37,7 +37,11 @@ export type ChosenRun = RunRecord & {
 	readonly selection: { readonly local: boolean; readonly label: string };
 };
 
-export type DaemonLocation = { dataDirectory: string; socketPath: string };
+export type DaemonLocation = {
+	dataDirectory: string;
+	socketPath: string;
+	logsDirectory: string;
+};
 
 export { isRunActive } from '../registry';
 
@@ -55,9 +59,19 @@ export const write = (line: string) =>
 export const daemonLocation = (
 	stateHome: string,
 	runtimeDirectory: string,
+	platform = process.platform,
+	explicitStateHome = false,
 ): DaemonLocation => {
 	const dataDirectory = join(stateHome, 'devsess');
-	return { dataDirectory, socketPath: join(runtimeDirectory, 'devsess.sock') };
+	const logsDirectory =
+		platform === 'darwin' && !explicitStateHome
+			? join(homedir(), 'Library', 'Logs', 'devsess')
+			: join(dataDirectory, 'logs');
+	return {
+		dataDirectory,
+		logsDirectory,
+		socketPath: join(runtimeDirectory, 'devsess.sock'),
+	};
 };
 
 /** Resolves the one daemon location shared by every project for this user. */
@@ -76,7 +90,12 @@ export const resolveDaemonLocation = Effect.gen(function* () {
 		onNone: () => join('/tmp', `devsess-${process.getuid?.() ?? process.pid}`),
 		onSome: (path) => join(path, 'devsess'),
 	});
-	return daemonLocation(stateHome, runtimeDirectory);
+	return daemonLocation(
+		stateHome,
+		runtimeDirectory,
+		process.platform,
+		Option.isSome(xdgStateHome),
+	);
 });
 
 export const requestId = () => crypto.randomUUID();
@@ -115,6 +134,8 @@ export const ensureDaemon = (location: DaemonLocation) =>
 					'__daemon',
 					'--data-directory',
 					location.dataDirectory,
+					'--logs-directory',
+					location.logsDirectory,
 					'--socket-path',
 					location.socketPath,
 				],
@@ -347,6 +368,9 @@ export const daemonCommand = Command.make(
 		dataDirectory: Flag.string('data-directory').pipe(
 			Flag.withDescription('Daemon state directory.'),
 		),
+		logsDirectory: Flag.string('logs-directory').pipe(
+			Flag.withDescription('Directory for retained service logs.'),
+		),
 		socketPath: Flag.string('socket-path').pipe(
 			Flag.withDescription('Daemon control socket path.'),
 		),
@@ -359,6 +383,7 @@ export const daemonCommand = Command.make(
 			Effect.provide(
 				DaemonLifecycle.layer({
 					dataDirectory: input.dataDirectory,
+					logsDirectory: input.logsDirectory,
 					socketPath: input.socketPath,
 				}),
 			),
