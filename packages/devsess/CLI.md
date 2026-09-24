@@ -2,7 +2,7 @@
 
 The `devsess` binary runs named groups of development services through one detached daemon shared by the current user across projects and worktrees. The CLI requires Node.js on macOS or Linux; running the CLI itself under Bun is not supported. Service commands may use any installed runtime, including Bun.
 
-Install with `npm install -g devsess`, then run `devsess --help`.
+Install with `npm install -g devsess`, then run `devsess --help` for an overview or `devsess docs` to print this full reference offline as Markdown.
 
 ## Configuration
 
@@ -77,6 +77,7 @@ devsess daemon start
 devsess daemon stop [--force]
 devsess daemon status
 devsess daemon restart [--force]
+devsess docs
 ```
 
 `list` reads the configured file and reports the presets matched by the current directory, including each service command and resolved working directory. It marks presets with `awaitPublish: true`. It does not start the daemon; if a daemon is already reachable, active presets are marked as running. A bare-start summary explains whether `start` would select one preset, show an interactive picker, or fail in a non-interactive invocation.

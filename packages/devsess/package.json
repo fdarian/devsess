@@ -26,6 +26,7 @@
 	"sideEffects": false,
 	"files": [
 		"dist",
+		"CLI.md",
 		"README.md"
 	],
 	"main": "./dist/index.js",

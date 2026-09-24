@@ -145,3 +145,4 @@ vite.config.ts.timestamp-*
 
 # Blume generated runtime
 .blume/
+apps/docs/src/pages/reference/cli.mdx

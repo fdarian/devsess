@@ -344,8 +344,12 @@ export const chooseRun = (
 export const daemonCommand = Command.make(
 	'__daemon',
 	{
-		dataDirectory: Flag.string('data-directory'),
-		socketPath: Flag.string('socket-path'),
+		dataDirectory: Flag.string('data-directory').pipe(
+			Flag.withDescription('Daemon state directory.'),
+		),
+		socketPath: Flag.string('socket-path').pipe(
+			Flag.withDescription('Daemon control socket path.'),
+		),
 	},
 	(input) =>
 		Effect.gen(function* () {
@@ -359,4 +363,7 @@ export const daemonCommand = Command.make(
 				}),
 			),
 		),
-).pipe(Command.withHidden);
+).pipe(
+	Command.withDescription('Run the internal daemon process.'),
+	Command.withHidden,
+);

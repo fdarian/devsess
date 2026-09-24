@@ -3,8 +3,8 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"dev": "blume dev",
-		"build": "blume build",
+		"dev": "bun scripts/sync-cli-reference.ts && blume dev",
+		"build": "bun scripts/sync-cli-reference.ts && blume build",
 		"preview": "blume preview",
 		"check:lint": "biome check"
 	},
