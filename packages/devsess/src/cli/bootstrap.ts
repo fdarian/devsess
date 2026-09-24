@@ -36,16 +36,31 @@ export const awaitDaemonHandshake = (options: {
 					message: `Timed out contacting daemon at ${options.socketPath}`,
 				});
 			}
+			const timeoutMs = Math.min(remaining, 250);
 			return callDaemon(
 				options.socketPath,
 				{
 					version: 1,
 					requestId: crypto.randomUUID(),
-					method: 'listRuns',
+					method: 'info',
 					params: {},
 				},
-				Math.min(remaining, 250),
+				timeoutMs,
 			).pipe(
+				Effect.catchTag('DaemonClientError', (error) =>
+					error.kind === 'rejected' && deadline > Date.now()
+						? callDaemon(
+								options.socketPath,
+								{
+									version: 1,
+									requestId: crypto.randomUUID(),
+									method: 'listRuns',
+									params: {},
+								},
+								Math.min(deadline - Date.now(), 250),
+							)
+						: error,
+				),
 				Effect.catch((error) => {
 					const nextRemaining = deadline - Date.now();
 					if (nextRemaining <= 0) return error;

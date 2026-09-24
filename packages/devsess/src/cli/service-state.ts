@@ -173,24 +173,23 @@ export const makeServiceState = (options: {
 				),
 			);
 	};
-	const reconcileRuns = (includeActive: boolean) =>
+	const reconcileRuns = (finished: boolean) =>
 		options.registry.list.pipe(
 			Effect.flatMap((runs) =>
 				Effect.forEach(runs, (run) => {
 					if (
-						!includeActive &&
-						!run.services.some(
-							(service) =>
-								service.state === 'failed' || service.state === 'exited',
+						!run.services.some((service) =>
+							finished
+								? service.state === 'failed' || service.state === 'exited'
+								: isActive(service.state) || service.state === 'orphaned',
 						)
 					)
 						return Effect.void;
 					return Effect.forEach(run.services, (service) =>
-						!includeActive &&
-						service.state !== 'failed' &&
-						service.state !== 'exited'
-							? Effect.succeed(service)
-							: refreshServiceRecord(service, true),
+						finished ===
+						(service.state === 'failed' || service.state === 'exited')
+							? refreshServiceRecord(service, true)
+							: Effect.succeed(service),
 					).pipe(
 						Effect.flatMap((services) => {
 							if (
@@ -211,8 +210,8 @@ export const makeServiceState = (options: {
 				}),
 			),
 		);
-	const reconcile = reconcileRuns(true);
-	const reconcileFinished = reconcileRuns(false);
+	const reconcile = reconcileRuns(false);
+	const reconcileFinished = reconcileRuns(true);
 	return {
 		replaceService,
 		refreshServiceRecord,
