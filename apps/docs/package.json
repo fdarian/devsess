@@ -3,8 +3,8 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"dev": "vocs dev",
-		"build": "vocs build",
+		"dev": "bun scripts/sync-cli-reference.ts && vocs dev",
+		"build": "bun scripts/sync-cli-reference.ts && vocs build",
 		"preview": "vocs preview",
 		"check:lint": "biome check"
 	},

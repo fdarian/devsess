@@ -430,20 +430,33 @@ export const stop = (force: boolean) =>
 export const restart = (force: boolean) =>
 	stop(force).pipe(Effect.andThen(start()));
 
-const daemonStartCommand = Command.make('start', {}, () => start());
+const daemonStartCommand = Command.make('start', {}, () => start()).pipe(
+	Command.withDescription('Start the per-user daemon if it is not running.'),
+);
 const daemonStopCommand = Command.make(
 	'stop',
-	{ force: Flag.boolean('force') },
+	{
+		force: Flag.boolean('force').pipe(
+			Flag.withDescription('Stop live runs before shutting down.'),
+		),
+	},
 	(input) => stop(input.force),
+).pipe(Command.withDescription('Shut down the per-user daemon.'));
+const daemonStatusCommand = Command.make('status', {}, () => status()).pipe(
+	Command.withDescription('Show daemon identity, version, socket, and uptime.'),
 );
-const daemonStatusCommand = Command.make('status', {}, () => status());
 const daemonRestartCommand = Command.make(
 	'restart',
-	{ force: Flag.boolean('force') },
+	{
+		force: Flag.boolean('force').pipe(
+			Flag.withDescription('Stop live runs before restarting.'),
+		),
+	},
 	(input) => restart(input.force),
-);
+).pipe(Command.withDescription('Stop and start the per-user daemon.'));
 
 export const daemonControlCommand = Command.make('daemon', {}).pipe(
+	Command.withDescription('Manage the shared per-user daemon.'),
 	Command.withSubcommands([
 		daemonStartCommand,
 		daemonStopCommand,
