@@ -3,12 +3,13 @@ import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { Terminal } from 'effect/Terminal';
 import { Prompt } from 'effect/unstable/cli';
+import { cancelPicker } from '../picker-cancellation';
 import type { RunRecord } from '../registry';
 import { runSelector, shortRunId } from '../run-id';
-import { CommandError, type CommandOptions } from './daemon';
+import { type ChosenRun, CommandError, type CommandOptions } from './daemon';
 
 export const chooseServices = (
-	run: RunRecord,
+	run: RunRecord | ChosenRun,
 	options: CommandOptions,
 	command: 'tail' | 'attach',
 	interactive = process.stdin.isTTY === true && process.stdout.isTTY === true,
@@ -59,7 +60,7 @@ export const chooseServices = (
 	if (interactive)
 		return Prompt.run(
 			Prompt.select({
-				message: `Choose a service to ${command}`,
+				message: `Choose a service to ${command}${'selection' in run && !run.selection.local ? ` in ${run.selection.label}` : ''}`,
 				choices: [
 					...(command === 'tail'
 						? [{ title: 'All services', value: available }]
@@ -71,7 +72,7 @@ export const chooseServices = (
 				],
 			}),
 		).pipe(
-			Effect.catchTag('QuitError', () => Effect.interrupt),
+			Effect.catchTag('QuitError', cancelPicker),
 			Effect.mapError(
 				() => new CommandError({ message: 'Service selection cancelled' }),
 			),
