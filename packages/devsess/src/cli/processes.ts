@@ -5,6 +5,7 @@ import {
 	Deferred,
 	Effect,
 	Exit,
+	Fiber,
 	Layer,
 	Schema,
 	Semaphore,
@@ -31,6 +32,74 @@ export type LiveProcessOwnership = {
 	readonly terminate: Effect.Effect<number | undefined, ProcessError>;
 };
 
+type TreeProcess = {
+	readonly pid: number;
+	readonly parentPid: number;
+	readonly processGroupId: number;
+};
+
+export const parseProcessTree = (output: string): ReadonlyArray<TreeProcess> =>
+	output.split('\n').flatMap((line) => {
+		const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(line);
+		if (match === null) return [];
+		const pid = Number(match[1]);
+		const parentPid = Number(match[2]);
+		const processGroupId = Number(match[3]);
+		return isSafeProcessId(pid) && isSafeProcessId(processGroupId)
+			? [{ pid, parentPid, processGroupId }]
+			: [];
+	});
+
+export const descendantProcesses = (
+	tree: ReadonlyArray<TreeProcess>,
+	identity: ProcessIdentity,
+	trackedPids: ReadonlySet<number> = new Set(),
+	trustedGroupPids?: ReadonlySet<number>,
+): ReadonlyArray<TreeProcess> => {
+	const descendants = new Set(
+		trustedGroupPids === undefined
+			? tree
+					.filter(
+						(process) => process.processGroupId === identity.processGroupId,
+					)
+					.map((process) => process.pid)
+			: trustedGroupPids,
+	);
+	if (trustedGroupPids === undefined) descendants.add(identity.pid);
+	for (const pid of trackedPids) descendants.add(pid);
+	let changed = true;
+	while (changed) {
+		changed = false;
+		for (const process of tree) {
+			if (descendants.has(process.parentPid) && !descendants.has(process.pid)) {
+				descendants.add(process.pid);
+				changed = true;
+			}
+		}
+	}
+	return tree.filter(
+		(process) =>
+			descendants.has(process.pid) &&
+			process.processGroupId !== identity.processGroupId,
+	);
+};
+
+const readProcessTree = () =>
+	Effect.tryPromise({
+		try: () =>
+			new Promise<ReadonlyArray<TreeProcess>>((resolve, reject) => {
+				execFile(
+					'ps',
+					['-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'pgid='],
+					{ timeout: PROCESS_INSPECTION_TIMEOUT_MS },
+					(error, stdout) =>
+						error === null ? resolve(parseProcessTree(stdout)) : reject(error),
+				);
+			}),
+		catch: (cause) =>
+			new ProcessError({ message: 'Could not inspect process tree', cause }),
+	});
+
 export class ProcessError extends Schema.TaggedErrorClass<ProcessError>()(
 	'ProcessError',
 	{
@@ -47,7 +116,7 @@ const readMacProcess = (pid: number) =>
 			>((resolve, reject) => {
 				execFile(
 					'ps',
-					['-o', 'pgid=', '-o', 'lstart=', '-p', String(pid)],
+					['-o', 'stat=', '-o', 'pgid=', '-o', 'lstart=', '-p', String(pid)],
 					{ timeout: PROCESS_INSPECTION_TIMEOUT_MS },
 					(error, stdout) => {
 						if (error !== null) {
@@ -66,21 +135,26 @@ const readMacProcess = (pid: number) =>
 							reject(error);
 							return;
 						}
-						const match = /^\s*(\d+)\s+(.+?)\s*$/.exec(stdout);
+						const match = /^\s*(\S+)\s+(\d+)\s+(.+?)\s*$/.exec(stdout);
 						if (
 							match === null ||
 							match[1] === undefined ||
-							match[2] === undefined
+							match[2] === undefined ||
+							match[3] === undefined
 						) {
 							resolve(undefined);
 							return;
 						}
-						const processGroupId = Number(match[1]);
+						if (match[1].startsWith('Z')) {
+							resolve(undefined);
+							return;
+						}
+						const processGroupId = Number(match[2]);
 						if (!isSafeProcessId(processGroupId)) {
 							reject(new Error(`Process ${pid} has an invalid process group`));
 							return;
 						}
-						resolve({ processGroupId, startedAt: match[2] });
+						resolve({ processGroupId, startedAt: match[3] });
 					},
 				);
 			}),
@@ -98,6 +172,7 @@ const readLinuxProcess = (pid: number) =>
 					.slice(closingParen + 2)
 					.trim()
 					.split(/\s+/);
+				if (fields[0] === 'Z') return undefined;
 				const processGroupId = Number(fields[2]);
 				const startTicks = fields[19];
 				if (!isSafeProcessId(processGroupId) || startTicks === undefined) {
@@ -147,6 +222,18 @@ const signalGroup = (processGroupId: number, signal: NodeJS.Signals | 0) => {
 			}),
 	});
 };
+
+const signalProcess = (pid: number, signal: NodeJS.Signals) =>
+	Effect.try({
+		try: () => process.kill(pid, signal),
+		catch: (cause) =>
+			new ProcessError({ message: `Could not signal process ${pid}`, cause }),
+	}).pipe(
+		Effect.as(true),
+		Effect.catchTag('ProcessError', (error) =>
+			isGoneCause(error.cause) ? Effect.succeed(false) : error,
+		),
+	);
 
 const readGroupMembers = (processGroupId: number) =>
 	Effect.tryPromise({
@@ -369,12 +456,12 @@ export class Processes extends Context.Service<Processes>()(
 						);
 			const terminate = (
 				identity: ProcessIdentity,
-				force: boolean,
+				_force: boolean,
 			): Effect.Effect<number | undefined, ProcessError> =>
 				Effect.gen(function* () {
 					if (!isValidIdentity(identity))
 						return yield* invalidIdentity(identity);
-					if (!force && !(yield* owns(identity))) {
+					if (!(yield* owns(identity))) {
 						if (yield* groupAlive(identity.processGroupId))
 							return yield* new ProcessError({
 								message: `Cannot verify recovered process group ${identity.processGroupId} after its leader exited`,
@@ -388,17 +475,15 @@ export class Processes extends Context.Service<Processes>()(
 								isGoneCause(error.cause) ? Effect.succeed(false) : error,
 							),
 						);
-					const canEscalate = force
-						? Effect.succeed(true)
-						: owns(identity).pipe(
-								Effect.flatMap((owned) =>
-									owned
-										? Effect.succeed(true)
-										: new ProcessError({
-												message: `Cannot safely escalate recovered process group ${identity.processGroupId} after its leader changed`,
-											}),
-								),
-							);
+					const canEscalate = owns(identity).pipe(
+						Effect.flatMap((owned) =>
+							owned
+								? Effect.succeed(true)
+								: new ProcessError({
+										message: `Cannot safely escalate recovered process group ${identity.processGroupId} after its leader changed`,
+									}),
+						),
+					);
 					return yield* terminateWithEscalation({
 						processGroupId: identity.processGroupId,
 						groupAlive,
@@ -417,6 +502,119 @@ export class Processes extends Context.Service<Processes>()(
 						});
 					const permit = yield* Semaphore.make(1);
 					let valid = true;
+					const descendants = new Map<number, ProcessIdentity>();
+					const groupMembers = new Map<number, ProcessIdentity>([
+						[identity.pid, identity],
+					]);
+					const snapshot = Effect.gen(function* () {
+						const tree = yield* readProcessTree();
+						const leaderOwned = yield* owns(identity);
+						const trustedGroupPids = new Set<number>();
+						for (const process of tree) {
+							if (process.processGroupId !== identity.processGroupId) continue;
+							const known = groupMembers.get(process.pid);
+							if (
+								!leaderOwned &&
+								(known === undefined || !(yield* owns(known)))
+							)
+								continue;
+							const observed = yield* inspect(process.pid);
+							if (
+								observed === undefined ||
+								observed.processGroupId !== identity.processGroupId
+							)
+								continue;
+							if (known !== undefined && known.startedAt !== observed.startedAt)
+								continue;
+							groupMembers.set(process.pid, {
+								pid: process.pid,
+								processGroupId: observed.processGroupId,
+								startedAt: observed.startedAt,
+							});
+							trustedGroupPids.add(process.pid);
+						}
+						const trackedPids = new Set<number>();
+						for (const child of descendants.values())
+							if (yield* owns(child)) trackedPids.add(child.pid);
+						for (const process of descendantProcesses(
+							tree,
+							identity,
+							trackedPids,
+							trustedGroupPids,
+						)) {
+							const observed = yield* inspect(process.pid);
+							if (
+								observed === undefined ||
+								observed.processGroupId !== process.processGroupId
+							)
+								continue;
+							const previous = descendants.get(process.pid);
+							if (
+								previous !== undefined &&
+								previous.startedAt !== observed.startedAt
+							)
+								continue;
+							descendants.set(process.pid, {
+								pid: process.pid,
+								processGroupId: observed.processGroupId,
+								startedAt: observed.startedAt,
+							});
+						}
+					});
+					yield* snapshot;
+					/** A parent can reparent its children before its exit event reaches us. */
+					const monitor = yield* Effect.forever(
+						Effect.sleep('1 second').pipe(
+							Effect.andThen(snapshot),
+							Effect.catch((error) => Effect.logWarning(error)),
+						),
+					).pipe(Effect.forkDetach);
+					const waitForDescendant = (
+						child: ProcessIdentity,
+						deadline: number,
+					): Effect.Effect<boolean, ProcessError> =>
+						owns(child).pipe(
+							Effect.flatMap((alive) =>
+								!alive
+									? Effect.succeed(true)
+									: Date.now() >= deadline
+										? Effect.succeed(false)
+										: Effect.sleep(
+												`${TERMINATION_POLL_INTERVAL_MS} millis`,
+											).pipe(
+												Effect.andThen(waitForDescendant(child, deadline)),
+											),
+							),
+						);
+					const terminateDescendants = Effect.suspend(() =>
+						Effect.forEach(
+							[...descendants.values()],
+							(child) =>
+								Effect.gen(function* () {
+									if (!(yield* owns(child))) return;
+									if (!(yield* signalProcess(child.pid, 'SIGTERM'))) return;
+									if (
+										yield* waitForDescendant(
+											child,
+											Date.now() + TERMINATION_PHASE_TIMEOUT_MS,
+										)
+									)
+										return;
+									if (!(yield* owns(child))) return;
+									yield* signalProcess(child.pid, 'SIGKILL');
+									if (
+										!(yield* waitForDescendant(
+											child,
+											Date.now() + TERMINATION_PHASE_TIMEOUT_MS,
+										))
+									)
+										return yield* new ProcessError({
+											message: `Descendant process ${child.pid} survived SIGKILL`,
+										});
+								}),
+							{ concurrency: 'unbounded', discard: true },
+						),
+					);
 					const signal = (value: NodeJS.Signals | 0) =>
 						Effect.suspend(() => {
 							if (!valid) return Effect.succeed(false);
@@ -428,16 +626,31 @@ export class Processes extends Context.Service<Processes>()(
 										}),
 									),
 								);
-							return signalGroup(identity.processGroupId, value).pipe(
-								Effect.as(true),
-								Effect.catch((error) => {
-									if (isGoneCause(error.cause)) {
+							return Effect.gen(function* () {
+								const verified = yield* Effect.forEach(
+									[...groupMembers.values()],
+									owns,
+								);
+								if (!verified.some(Boolean)) {
+									if (!(yield* groupAlive(identity.processGroupId))) {
 										valid = false;
-										return Effect.succeed(false);
+										return false;
 									}
-									return error;
-								}),
-							);
+									return yield* new ProcessError({
+										message: `Cannot verify process group ${identity.processGroupId} before signaling`,
+									});
+								}
+								return yield* signalGroup(identity.processGroupId, value).pipe(
+									Effect.as(true),
+									Effect.catch((error) => {
+										if (isGoneCause(error.cause)) {
+											valid = false;
+											return Effect.succeed(false);
+										}
+										return error;
+									}),
+								);
+							});
 						});
 					const liveGroupAlive = (processGroupId: number) =>
 						groupAlive(processGroupId).pipe(
@@ -451,11 +664,23 @@ export class Processes extends Context.Service<Processes>()(
 					 * Unix group IDs have a disappearance/reuse race between observations, so use it
 					 * immediately on leader exit and invalidate it permanently on observed disappearance. */
 					const terminate = permit.withPermit(
-						terminateWithEscalation({
-							processGroupId: identity.processGroupId,
-							groupAlive: liveGroupAlive,
-							signal,
-							canEscalate: Effect.succeed(true),
+						Effect.gen(function* () {
+							yield* Fiber.interrupt(monitor);
+							const observed = yield* Effect.exit(snapshot);
+							const group = yield* Effect.exit(
+								terminateWithEscalation({
+									processGroupId: identity.processGroupId,
+									groupAlive: liveGroupAlive,
+									signal,
+									canEscalate: Effect.succeed(true),
+								}),
+							);
+							yield* terminateDescendants;
+							if (Exit.isFailure(observed))
+								return yield* Effect.failCause(observed.cause);
+							if (Exit.isFailure(group))
+								return yield* Effect.failCause(group.cause);
+							return group.value;
 						}),
 					);
 					return { identity, terminate } satisfies LiveProcessOwnership;

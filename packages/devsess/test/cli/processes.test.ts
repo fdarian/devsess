@@ -3,7 +3,11 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from '@effect/vitest';
 import { Effect } from 'effect';
 import { afterEach, vi } from 'vitest';
-import { Processes } from '../../src/cli/processes';
+import {
+	descendantProcesses,
+	Processes,
+	parseProcessTree,
+} from '../../src/cli/processes';
 
 vi.mock('node:child_process', async (importOriginal) => {
 	const actual = await importOriginal<typeof import('node:child_process')>();
@@ -20,25 +24,45 @@ afterEach(() => {
 
 const missing = () =>
 	Object.assign(new Error('No such process'), { code: 'ESRCH' });
-const fakeGroup = (termKillsGroup = true) => {
-	const state = { leaderAlive: true, groupAlive: true };
+const fakeGroup = (termKillsGroup = true, escaped = false) => {
+	const state = { leaderAlive: true, groupAlive: true, childStart: 'original' };
 	vi.mocked(execFile).mockImplementation((...args: Array<unknown>) => {
 		const commandArgs = args[1];
 		const callback = args.at(-1);
 		if (!Array.isArray(commandArgs) || typeof callback !== 'function')
 			throw new Error('Expected process inspection callback');
+		if (commandArgs[0] === '-A') {
+			callback(
+				null,
+				`${state.groupAlive ? ' 98765 1 98765\n 98766 98765 98765\n' : ''}${escaped ? ' 99999 98765 99999\n' : ''}`,
+				'',
+			);
+			return {} as ReturnType<typeof execFile>;
+		}
 		if (commandArgs[0] === '-g') {
 			if (state.groupAlive) callback(null, ' 98765\n', '');
 			else callback(Object.assign(new Error('missing'), { code: 1 }), '', '');
 			return {} as ReturnType<typeof execFile>;
 		}
-		if (state.leaderAlive)
-			callback(null, ' 98765 Wed Sep 9 00:00:00 2026\n', '');
+		if (commandArgs.at(-1) === '99999' && escaped)
+			callback(null, ` S 99999 ${state.childStart}\n`, '');
+		else if (commandArgs.at(-1) === '98766' && state.groupAlive)
+			callback(null, ' S 98765 Wed Sep 9 00:00:00 2026\n', '');
+		else if (state.leaderAlive)
+			callback(null, ' S 98765 Wed Sep 9 00:00:00 2026\n', '');
 		else callback(Object.assign(new Error('missing'), { code: 1 }), '', '');
 		return {} as ReturnType<typeof execFile>;
 	});
-	vi.mocked(readFile).mockImplementation(async () => {
-		if (!state.leaderAlive)
+	vi.mocked(readFile).mockImplementation(async (path) => {
+		if (String(path).includes('/99999/') && escaped) {
+			const fields = Array.from({ length: 20 }, () => '0');
+			fields[2] = '99999';
+			fields[19] = state.childStart;
+			return `99999 (child) ${fields.join(' ')}`;
+		}
+		if (
+			String(path).includes('/98766/') ? !state.groupAlive : !state.leaderAlive
+		)
 			throw Object.assign(new Error('missing'), { code: 'ENOENT' });
 		const fields = Array.from({ length: 20 }, () => '0');
 		fields[2] = '98765';
@@ -55,6 +79,28 @@ const fakeGroup = (termKillsGroup = true) => {
 };
 
 describe('live process group ownership', () => {
+	it('collects nested escaped groups from the leader, group members, and tracked children', () => {
+		const tree = parseProcessTree(`
+  101 1 101
+  102 101 101
+  103 102 103
+  104 103 104
+  105 1 105
+  106 105 106
+  107 999 101
+  108 107 108
+  malformed line
+`);
+		const identity = { pid: 101, processGroupId: 101, startedAt: 'birth' };
+		expect(
+			descendantProcesses(tree, identity).map((process) => process.pid),
+		).toEqual([103, 104, 108]);
+		expect(
+			descendantProcesses(tree, identity, new Set([105])).map(
+				(process) => process.pid,
+			),
+		).toEqual([103, 104, 105, 106, 108]);
+	});
 	it.live(
 		'cleans surviving descendants after leader exit and permanently expires on group disappearance',
 		() =>
@@ -147,15 +193,26 @@ describe('live process group ownership', () => {
 		}),
 	);
 
-	it.live('force signals a recovered group after its leader exits', () =>
+	it.live('force cannot signal an unverified recovered group', () =>
 		Effect.gen(function* () {
 			const group = fakeGroup();
 			const processes = yield* Processes.make;
 			const saved = yield* processes.capture(98765);
 			group.state.leaderAlive = false;
-			yield* processes.terminate(saved, true);
-			expect(group.kill).toHaveBeenCalledWith(-98765, 'SIGTERM');
-			expect(group.state.groupAlive).toBe(false);
+			const result = yield* Effect.exit(processes.terminate(saved, true));
+			expect(result._tag).toBe('Failure');
+			expect(group.kill).not.toHaveBeenCalledWith(-98765, 'SIGTERM');
+		}),
+	);
+	it.live('does not signal a descendant whose PID has been reused', () =>
+		Effect.gen(function* () {
+			const group = fakeGroup(true, true);
+			const processes = yield* Processes.make;
+			const owned = yield* processes.captureLive(98765);
+			group.state.childStart = 'reused';
+			yield* owned.terminate;
+			expect(group.kill).not.toHaveBeenCalledWith(99999, 'SIGTERM');
+			expect(group.kill).not.toHaveBeenCalledWith(99999, 'SIGKILL');
 		}),
 	);
 
