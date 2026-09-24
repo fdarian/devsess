@@ -757,6 +757,24 @@ describe('daemon lifetime and failure handling', () => {
 	);
 
 	it.live(
+		'defers inspection of historical finished processes until a run list is requested',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					for (let index = 0; index < 30; index += 1)
+						state.records.set(`old-${index}`, finishedRun(`old-${index}`));
+					state.owns.mockReturnValue(Effect.succeed(false));
+					yield* Effect.gen(function* () {
+						yield* Daemon;
+						expect(state.owns).not.toHaveBeenCalled();
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+
+	it.live(
 		'reports a verified surviving process from a finished run in status and on start',
 		() =>
 			runTest(
