@@ -1,4 +1,5 @@
 import { createServer, type Server, type Socket } from 'node:net';
+import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { Context, Deferred, Effect, Fiber, Layer, Queue } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
@@ -44,6 +45,7 @@ export class Daemon extends Context.Service<Daemon, DaemonService>()(
 	static readonly layer: (options: {
 		socketPath: string;
 		dataDirectory: string;
+		logsDirectory?: string;
 		maxLogBytes: number;
 	}) => Layer.Layer<Daemon, unknown, FileSystem | Path> = (options) =>
 		Layer.effect(Daemon, makeDaemon(options)).pipe(
@@ -51,6 +53,7 @@ export class Daemon extends Context.Service<Daemon, DaemonService>()(
 			Layer.provide(
 				Logs.layer({
 					dataDirectory: options.dataDirectory,
+					logsDirectory: options.logsDirectory,
 					maxBytes: options.maxLogBytes,
 				}),
 			),
@@ -87,6 +90,7 @@ const closeServer = (server: Server) =>
 export const makeDaemon = (options: {
 	socketPath: string;
 	dataDirectory?: string;
+	logsDirectory?: string;
 }): Effect.Effect<
 	DaemonService,
 	unknown,
@@ -133,6 +137,10 @@ export const makeDaemon = (options: {
 						protocolVersion: PROTOCOL_VERSION,
 						socketPath: options.socketPath,
 						dataDirectory,
+						logsDirectory:
+							options.logsDirectory === undefined
+								? join(dataDirectory, 'logs')
+								: options.logsDirectory,
 						runCount: runs.length,
 						liveServiceCount: terminals.size,
 						attachedClientCount: attachedClientCount(),

@@ -1,3 +1,5 @@
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 import { Effect } from 'effect';
 import {
@@ -26,6 +28,18 @@ describe('CLI command selection', () => {
 		expect(daemonLocation('/tmp/state', '/tmp/runtime').socketPath).toBe(
 			'/tmp/runtime/devsess.sock',
 		);
+	});
+	it('puts macOS logs in Library/Logs unless XDG_STATE_HOME is explicit', () => {
+		expect(
+			daemonLocation('/tmp/state', '/tmp/runtime', 'darwin').logsDirectory,
+		).toBe(join(homedir(), 'Library', 'Logs', 'devsess'));
+		expect(
+			daemonLocation('/tmp/state', '/tmp/runtime', 'darwin', true)
+				.logsDirectory,
+		).toBe('/tmp/state/devsess/logs');
+		expect(
+			daemonLocation('/tmp/state', '/tmp/runtime', 'linux').logsDirectory,
+		).toBe('/tmp/state/devsess/logs');
 	});
 
 	it('keeps bare preset ambiguity qualified for non-interactive callers', () => {

@@ -158,6 +158,7 @@ export const DaemonInfo = Schema.Struct({
 	protocolVersion: Schema.Literal(PROTOCOL_VERSION),
 	socketPath: Schema.NonEmptyString,
 	dataDirectory: Schema.NonEmptyString,
+	logsDirectory: Schema.optional(Schema.NonEmptyString),
 	runCount: Schema.Int,
 	liveServiceCount: Schema.Int,
 	attachedClientCount: Schema.Int,

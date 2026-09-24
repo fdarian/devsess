@@ -61,11 +61,16 @@ export class Logs extends Context.Service<
 >()('devsess/cli/Logs') {
 	static readonly layer = (options: {
 		dataDirectory: string;
+		logsDirectory?: string;
 		maxBytes: number;
 	}) => Layer.effect(Logs, makeLogs(options));
 }
 
-const makeLogs = (options: { dataDirectory: string; maxBytes: number }) =>
+const makeLogs = (options: {
+	dataDirectory: string;
+	logsDirectory?: string;
+	maxBytes: number;
+}) =>
 	Effect.gen(function* () {
 		const semaphore = yield* Semaphore.make(1);
 		const segments = yield* makeLogSegments(options);

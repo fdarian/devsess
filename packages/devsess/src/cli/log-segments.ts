@@ -116,19 +116,19 @@ const splitData = (data: string, maxBytes: number) => {
 
 export const makeLogSegments = (options: {
 	readonly dataDirectory: string;
+	readonly logsDirectory?: string;
 	readonly maxBytes: number;
 }): Effect.Effect<LogSegments, never, FileSystem | Path> =>
 	Effect.gen(function* () {
 		const fileSystem = yield* FileSystem;
 		const path = yield* Path;
 		const states = new Map<string, LogState>();
+		const logsDirectory =
+			options.logsDirectory === undefined
+				? path.join(options.dataDirectory, 'logs')
+				: options.logsDirectory;
 		const logBase = (address: LogAddress) =>
-			path.join(
-				options.dataDirectory,
-				'logs',
-				address.runId,
-				address.serviceName,
-			);
+			path.join(logsDirectory, address.runId, address.serviceName);
 		const currentPath = (address: LogAddress) => `${logBase(address)}.jsonl`;
 		const previousPath = (address: LogAddress) => `${logBase(address)}.1.jsonl`;
 
