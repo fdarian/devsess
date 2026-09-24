@@ -1,5 +1,11 @@
 # devsess
 
+## 0.3.1
+
+### Patch Changes
+
+- bfa9886: Publish and clear scoped readiness in a local devsess daemon when service identity is available.
+
 ## 0.3.0
 
 ### Minor Changes
