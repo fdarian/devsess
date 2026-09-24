@@ -79,10 +79,20 @@ export const formatStatus = (
 		all ||
 		currentCwd === undefined ||
 		containsPath(run.canonicalCwd, currentCwd);
+	const location = (run: RunRecord) =>
+		visible.some(
+			(other) =>
+				other.runId !== run.runId &&
+				other.projectName === run.projectName &&
+				other.presetName === run.presetName &&
+				other.canonicalCwd !== run.canonicalCwd,
+		)
+			? ` — ${run.canonicalCwd}`
+			: '';
 	const lines = visible.flatMap((run) =>
 		detailed(run)
-			? formatRun(run, now, knownRuns)
-			: [formatRunLine(run, now, knownRuns)],
+			? formatRun(run, now, knownRuns, location(run))
+			: [formatRunLine(run, now, knownRuns, location(run))],
 	);
 	return visible.every(detailed)
 		? lines
@@ -96,20 +106,22 @@ const formatRunLine = (
 	run: RunRecord,
 	now: number,
 	knownRuns: ReadonlyArray<RunRecord>,
+	location: string,
 ) => {
 	const ready = run.services.filter(
 		(service) => service.published !== undefined,
 	);
 	const readiness = ready.length === 0 ? '' : `, ${ready.length} ready`;
-	return `${run.projectName}/${run.presetName} running [${shortRunId(run, knownRuns)}] — up ${elapsed(run.startedAt, now)}, ${run.services.length} ${run.services.length === 1 ? 'service' : 'services'}${readiness}`;
+	return `${run.projectName}/${run.presetName} running [${shortRunId(run, knownRuns)}]${location} — up ${elapsed(run.startedAt, now)}, ${run.services.length} ${run.services.length === 1 ? 'service' : 'services'}${readiness}`;
 };
 
 const formatRun = (
 	run: RunRecord,
 	now: number,
 	knownRuns: ReadonlyArray<RunRecord>,
+	location: string,
 ) => [
-	`${run.projectName}/${run.presetName} ${isRunActive(run) ? 'running' : 'finished'} [${shortRunId(run, knownRuns)}]`,
+	`${run.projectName}/${run.presetName} ${isRunActive(run) ? 'running' : 'finished'} [${shortRunId(run, knownRuns)}]${location}`,
 	`  Started: ${run.startedAt}`,
 	...(isRunActive(run) ? [`  Uptime: ${elapsed(run.startedAt, now)}`] : []),
 	...run.services.map(formatService),

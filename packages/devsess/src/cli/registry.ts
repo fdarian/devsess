@@ -190,6 +190,7 @@ const makeRegistry = (options: { dataDirectory: string }) =>
 									candidate.runId === run.runId ||
 									(candidate.projectName === run.projectName &&
 										candidate.presetName === run.presetName &&
+										candidate.canonicalCwd === run.canonicalCwd &&
 										isActive(candidate.state)),
 							);
 							return conflicting === undefined
