@@ -31,6 +31,27 @@ const run = (
 });
 
 describe('CLI status formatting', () => {
+	it('shows checkout paths for same-named active runs', () => {
+		const local = run('first-run', 'nisi', 'running');
+		const remote = {
+			...run('second-run', 'nisi', 'running'),
+			canonicalCwd: '/work/nisi-other',
+		};
+		const lines = formatStatus([local, remote], true);
+		expect(lines).toContain('nisi/default running [first-ru] — /work/nisi');
+		expect(lines).toContain(
+			'nisi/default running [second-r] — /work/nisi-other',
+		);
+		const summary = formatStatus(
+			[local, remote],
+			false,
+			Date.now(),
+			'/work/nisi',
+		);
+		expect(
+			summary.some((line) => line.includes('— /work/nisi-other — up')),
+		).toBe(true);
+	});
 	it('shows unambiguous short IDs across active and finished runs', () => {
 		const current = run(
 			'c585f251-a000-0000-0000-000000000000',

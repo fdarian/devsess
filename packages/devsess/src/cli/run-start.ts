@@ -50,7 +50,8 @@ export const makeRunStart = (options: {
 			for (const candidate of existing) {
 				if (
 					candidate.projectName !== request.params.projectName ||
-					candidate.presetName !== request.params.presetName
+					candidate.presetName !== request.params.presetName ||
+					candidate.canonicalCwd !== request.params.canonicalCwd
 				)
 					continue;
 				const refreshedServices = yield* Effect.forEach(

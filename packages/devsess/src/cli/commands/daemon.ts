@@ -162,14 +162,26 @@ const runChoices = (
 				other.presetName === run.presetName,
 		);
 		const shortId = shortRunId(run, allRuns);
+		const location = duplicated ? ` — ${run.canonicalCwd}` : '';
 		return {
 			run,
 			label: duplicated
-				? `${name} [${shortId}] started ${run.startedAt}`
+				? `${name} [${shortId}]${location} started ${run.startedAt}`
 				: `${name} [${shortId}]`,
 			selector: duplicated ? ` --run ${shortId}` : '',
 		};
 	});
+
+const spansCheckouts = (runs: ReadonlyArray<RunRecord>) =>
+	runs.some((run) =>
+		runs.some(
+			(other) =>
+				other.runId !== run.runId &&
+				other.projectName === run.projectName &&
+				other.presetName === run.presetName &&
+				other.canonicalCwd !== run.canonicalCwd,
+		),
+	);
 
 export const chooseRun = (
 	runs: ReadonlyArray<RunRecord>,
@@ -257,29 +269,25 @@ export const chooseRun = (
 		return exact === undefined ? matching : [exact];
 	};
 	const matches = filterRuns(active);
-	// Runs started under the current directory win only when the user did not name a project or run.
 	const localMatches = matches.filter((run) =>
 		local.some((other) => other.runId === run.runId),
 	);
-	const preferLocal =
-		projectName === undefined && runId === undefined && localMatches.length > 0;
-	const candidates = !explicit || preferLocal ? localMatches : matches;
+	const candidates = explicit ? matches : localMatches;
 	if (candidates.length === 0 && finished.length > 0) {
 		const matching = filterRuns(finished.filter((run) => !isRunActive(run)));
 		const nearby = matching.filter((run) =>
 			local.some((candidate) => candidate.runId === run.runId),
 		);
-		const recent =
-			!explicit ||
-			(projectName === undefined && runId === undefined && nearby.length > 0)
-				? nearby
-				: matching;
+		const recent = explicit ? matching : nearby;
 		const latest = recent
 			.slice()
 			.sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0];
-		if (runId !== undefined && recent.length > 1)
+		if (
+			recent.length > 1 &&
+			(runId !== undefined || (explicit && spansCheckouts(recent)))
+		)
 			return new CommandError({
-				message: `Multiple finished runs match ${runId}:\n${runChoices(
+				message: `Multiple finished runs match ${runId === undefined ? (options.preset ?? options.project) : runId}:\n${runChoices(
 					recent,
 					knownRuns,
 				)
