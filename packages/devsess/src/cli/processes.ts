@@ -36,17 +36,24 @@ type TreeProcess = {
 	readonly pid: number;
 	readonly parentPid: number;
 	readonly processGroupId: number;
+	readonly startedAt: string;
 };
 
 export const parseProcessTree = (output: string): ReadonlyArray<TreeProcess> =>
 	output.split('\n').flatMap((line) => {
-		const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(line);
+		const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.{24})\s*$/.exec(line);
 		if (match === null) return [];
 		const pid = Number(match[1]);
 		const parentPid = Number(match[2]);
 		const processGroupId = Number(match[3]);
-		return isSafeProcessId(pid) && isSafeProcessId(processGroupId)
-			? [{ pid, parentPid, processGroupId }]
+		const status = match[4];
+		const startedAt = match[5];
+		return isSafeProcessId(pid) &&
+			isSafeProcessId(processGroupId) &&
+			status !== undefined &&
+			!status.startsWith('Z') &&
+			startedAt !== undefined
+			? [{ pid, parentPid, processGroupId, startedAt: startedAt.trim() }]
 			: [];
 	});
 
@@ -90,7 +97,7 @@ const readProcessTree = () =>
 			new Promise<ReadonlyArray<TreeProcess>>((resolve, reject) => {
 				execFile(
 					'ps',
-					['-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'pgid='],
+					['-A', '-o', 'pid=,ppid=,pgid=,stat=,lstart='],
 					{ timeout: PROCESS_INSPECTION_TIMEOUT_MS },
 					(error, stdout) =>
 						error === null ? resolve(parseProcessTree(stdout)) : reject(error),
@@ -99,6 +106,70 @@ const readProcessTree = () =>
 		catch: (cause) =>
 			new ProcessError({ message: 'Could not inspect process tree', cause }),
 	});
+
+const readTreeProcess = (pid: number) =>
+	Effect.tryPromise({
+		try: () =>
+			new Promise<TreeProcess | undefined>((resolve, reject) => {
+				execFile(
+					'ps',
+					['-o', 'pid=,ppid=,pgid=,stat=,lstart=', '-p', String(pid)],
+					{ timeout: PROCESS_INSPECTION_TIMEOUT_MS },
+					(error, stdout) => {
+						if (error !== null) {
+							const code = (error as NodeJS.ErrnoException).code;
+							if (code === 'ESRCH' || code === 'ENOENT' || Number(code) === 1) {
+								resolve(undefined);
+								return;
+							}
+							reject(error);
+							return;
+						}
+						resolve(parseProcessTree(stdout)[0]);
+					},
+				);
+			}),
+		catch: (cause) =>
+			new ProcessError({ message: `Could not inspect process ${pid}`, cause }),
+	});
+
+const ownsTreeProcess = (identity: TreeProcess) =>
+	readTreeProcess(identity.pid).pipe(
+		Effect.map(
+			(process) =>
+				process !== undefined &&
+				process.processGroupId === identity.processGroupId &&
+				process.startedAt === identity.startedAt,
+		),
+	);
+
+export const makeProcessSampler = (
+	readTree: () => Effect.Effect<ReadonlyArray<TreeProcess>, ProcessError>,
+) => {
+	const listeners = new Set<(tree: ReadonlyArray<TreeProcess>) => void>();
+	const sample = Effect.suspend(readTree).pipe(
+		Effect.tap((tree) =>
+			Effect.sync(() => {
+				for (const listener of listeners) listener(tree);
+			}),
+		),
+	);
+	return {
+		sample,
+		register: (listener: (tree: ReadonlyArray<TreeProcess>) => void) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+		get size() {
+			return listeners.size;
+		},
+	};
+};
+
+const sameTreeProcess = (left: TreeProcess, right: TreeProcess) =>
+	left.pid === right.pid &&
+	left.processGroupId === right.processGroupId &&
+	left.startedAt === right.startedAt;
 
 export class ProcessError extends Schema.TaggedErrorClass<ProcessError>()(
 	'ProcessError',
@@ -418,6 +489,23 @@ export class Processes extends Context.Service<Processes>()(
 	{
 		make: Effect.gen(function* () {
 			const livenessFallbacks = new Map<number, GroupLivenessFallback>();
+			const sampler = makeProcessSampler(readProcessTree);
+			let monitor: Fiber.Fiber<void> | undefined;
+			const stopMonitor = Effect.gen(function* () {
+				const running = monitor;
+				monitor = undefined;
+				if (running !== undefined) yield* Fiber.interrupt(running);
+			});
+			const startMonitor = Effect.gen(function* () {
+				if (monitor !== undefined) return;
+				/** A parent can reparent its children before its exit event reaches us. */
+				monitor = yield* Effect.forever(
+					Effect.sleep('1 second').pipe(
+						Effect.andThen(sampler.sample),
+						Effect.catch((error) => Effect.logWarning(error)),
+					),
+				).pipe(Effect.forkDetach);
+			});
 			const inspect = (pid: number) => readProcess(pid);
 			const groupAlive = (processGroupId: number) =>
 				groupIsAlive(processGroupId, livenessFallbacks);
@@ -456,12 +544,12 @@ export class Processes extends Context.Service<Processes>()(
 						);
 			const terminate = (
 				identity: ProcessIdentity,
-				_force: boolean,
+				force: boolean,
 			): Effect.Effect<number | undefined, ProcessError> =>
 				Effect.gen(function* () {
 					if (!isValidIdentity(identity))
 						return yield* invalidIdentity(identity);
-					if (!(yield* owns(identity))) {
+					if (!force && !(yield* owns(identity))) {
 						if (yield* groupAlive(identity.processGroupId))
 							return yield* new ProcessError({
 								message: `Cannot verify recovered process group ${identity.processGroupId} after its leader exited`,
@@ -475,15 +563,17 @@ export class Processes extends Context.Service<Processes>()(
 								isGoneCause(error.cause) ? Effect.succeed(false) : error,
 							),
 						);
-					const canEscalate = owns(identity).pipe(
-						Effect.flatMap((owned) =>
-							owned
-								? Effect.succeed(true)
-								: new ProcessError({
-										message: `Cannot safely escalate recovered process group ${identity.processGroupId} after its leader changed`,
-									}),
-						),
-					);
+					const canEscalate = force
+						? Effect.succeed(true)
+						: owns(identity).pipe(
+								Effect.flatMap((owned) =>
+									owned
+										? Effect.succeed(true)
+										: new ProcessError({
+												message: `Cannot safely escalate recovered process group ${identity.processGroupId} after its leader changed`,
+											}),
+								),
+							);
 					return yield* terminateWithEscalation({
 						processGroupId: identity.processGroupId,
 						groupAlive,
@@ -502,78 +592,59 @@ export class Processes extends Context.Service<Processes>()(
 						});
 					const permit = yield* Semaphore.make(1);
 					let valid = true;
-					const descendants = new Map<number, ProcessIdentity>();
-					const groupMembers = new Map<number, ProcessIdentity>([
-						[identity.pid, identity],
-					]);
-					const snapshot = Effect.gen(function* () {
-						const tree = yield* readProcessTree();
-						const leaderOwned = yield* owns(identity);
+					const descendants = new Map<number, TreeProcess>();
+					const groupMembers = new Map<number, TreeProcess>();
+					let initial = true;
+					const update = (tree: ReadonlyArray<TreeProcess>) => {
+						const leader = tree.find((process) => process.pid === identity.pid);
+						const knownLeader = groupMembers.get(identity.pid);
+						const leaderOwned =
+							leader !== undefined &&
+							leader.processGroupId === identity.processGroupId &&
+							(initial ||
+								(knownLeader !== undefined &&
+									sameTreeProcess(knownLeader, leader)));
 						const trustedGroupPids = new Set<number>();
 						for (const process of tree) {
 							if (process.processGroupId !== identity.processGroupId) continue;
 							const known = groupMembers.get(process.pid);
 							if (
 								!leaderOwned &&
-								(known === undefined || !(yield* owns(known)))
+								(known === undefined || !sameTreeProcess(known, process))
 							)
 								continue;
-							const observed = yield* inspect(process.pid);
-							if (
-								observed === undefined ||
-								observed.processGroupId !== identity.processGroupId
-							)
+							if (known !== undefined && !sameTreeProcess(known, process))
 								continue;
-							if (known !== undefined && known.startedAt !== observed.startedAt)
-								continue;
-							groupMembers.set(process.pid, {
-								pid: process.pid,
-								processGroupId: observed.processGroupId,
-								startedAt: observed.startedAt,
-							});
+							groupMembers.set(process.pid, process);
 							trustedGroupPids.add(process.pid);
 						}
 						const trackedPids = new Set<number>();
 						for (const child of descendants.values())
-							if (yield* owns(child)) trackedPids.add(child.pid);
+							if (tree.some((process) => sameTreeProcess(process, child)))
+								trackedPids.add(child.pid);
 						for (const process of descendantProcesses(
 							tree,
 							identity,
 							trackedPids,
 							trustedGroupPids,
 						)) {
-							const observed = yield* inspect(process.pid);
-							if (
-								observed === undefined ||
-								observed.processGroupId !== process.processGroupId
-							)
-								continue;
 							const previous = descendants.get(process.pid);
-							if (
-								previous !== undefined &&
-								previous.startedAt !== observed.startedAt
-							)
+							if (previous !== undefined && !sameTreeProcess(previous, process))
 								continue;
-							descendants.set(process.pid, {
-								pid: process.pid,
-								processGroupId: observed.processGroupId,
-								startedAt: observed.startedAt,
-							});
+							descendants.set(process.pid, process);
 						}
-					});
-					yield* snapshot;
-					/** A parent can reparent its children before its exit event reaches us. */
-					const monitor = yield* Effect.forever(
-						Effect.sleep('1 second').pipe(
-							Effect.andThen(snapshot),
-							Effect.catch((error) => Effect.logWarning(error)),
-						),
-					).pipe(Effect.forkDetach);
+						initial = false;
+					};
+					const unregister = sampler.register(update);
+					yield* sampler.sample.pipe(
+						Effect.onError(() => Effect.sync(unregister)),
+					);
+					yield* startMonitor;
 					const waitForDescendant = (
-						child: ProcessIdentity,
+						child: TreeProcess,
 						deadline: number,
 					): Effect.Effect<boolean, ProcessError> =>
-						owns(child).pipe(
+						ownsTreeProcess(child).pipe(
 							Effect.flatMap((alive) =>
 								!alive
 									? Effect.succeed(true)
@@ -591,7 +662,7 @@ export class Processes extends Context.Service<Processes>()(
 							[...descendants.values()],
 							(child) =>
 								Effect.gen(function* () {
-									if (!(yield* owns(child))) return;
+									if (!(yield* ownsTreeProcess(child))) return;
 									if (!(yield* signalProcess(child.pid, 'SIGTERM'))) return;
 									if (
 										yield* waitForDescendant(
@@ -600,7 +671,7 @@ export class Processes extends Context.Service<Processes>()(
 										)
 									)
 										return;
-									if (!(yield* owns(child))) return;
+									if (!(yield* ownsTreeProcess(child))) return;
 									yield* signalProcess(child.pid, 'SIGKILL');
 									if (
 										!(yield* waitForDescendant(
@@ -629,7 +700,7 @@ export class Processes extends Context.Service<Processes>()(
 							return Effect.gen(function* () {
 								const verified = yield* Effect.forEach(
 									[...groupMembers.values()],
-									owns,
+									ownsTreeProcess,
 								);
 								if (!verified.some(Boolean)) {
 									if (!(yield* groupAlive(identity.processGroupId))) {
@@ -665,8 +736,7 @@ export class Processes extends Context.Service<Processes>()(
 					 * immediately on leader exit and invalidate it permanently on observed disappearance. */
 					const terminate = permit.withPermit(
 						Effect.gen(function* () {
-							yield* Fiber.interrupt(monitor);
-							const observed = yield* Effect.exit(snapshot);
+							const observed = yield* Effect.exit(sampler.sample);
 							const group = yield* Effect.exit(
 								terminateWithEscalation({
 									processGroupId: identity.processGroupId,
@@ -681,15 +751,39 @@ export class Processes extends Context.Service<Processes>()(
 							if (Exit.isFailure(group))
 								return yield* Effect.failCause(group.cause);
 							return group.value;
-						}),
+						}).pipe(
+							Effect.ensuring(
+								Effect.sync(unregister).pipe(
+									Effect.andThen(
+										Effect.suspend(() =>
+											sampler.size === 0 ? stopMonitor : Effect.void,
+										),
+									),
+								),
+							),
+						),
 					);
 					return { identity, terminate } satisfies LiveProcessOwnership;
 				});
-			return { capture, captureLive, owns, groupAlive, terminate };
+			return {
+				capture,
+				captureLive,
+				owns,
+				groupAlive,
+				terminate,
+				stopSampler: stopMonitor,
+			};
 		}),
 	},
 ) {
-	static readonly layer = Layer.effect(Processes, Processes.make);
+	static readonly layer = Layer.effect(
+		Processes,
+		Effect.gen(function* () {
+			const processes = yield* Processes.make;
+			yield* Effect.addFinalizer(() => processes.stopSampler);
+			return processes;
+		}),
+	);
 }
 
 export type ProcessesService = Context.Service.Shape<typeof Processes>;
