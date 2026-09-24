@@ -65,7 +65,7 @@ describe('daemon bootstrap', () => {
 								method: string;
 							};
 							expect(request.version).toBe(1);
-							expect(request.method).toBe('listRuns');
+							expect(request.method).toBe('info');
 							socket.end(
 								`${JSON.stringify({ version: 1, requestId: request.requestId, ok: true, result: [] })}\n`,
 							);
@@ -75,6 +75,77 @@ describe('daemon bootstrap', () => {
 					yield* Effect.addFinalizer(() => Effect.sync(() => server.close()));
 
 					yield* awaitDaemonHandshake({ socketPath, timeoutMs: 500 });
+				}),
+			),
+		),
+	);
+
+	it.live('handshakes without waiting for a slow run-list reconciliation', () =>
+		runTest(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const rootDir = yield* makeTempDir;
+					const socketPath = join(rootDir, 'daemon.sock');
+					const methods: Array<string> = [];
+					const server = createServer((socket) => {
+						socket.once('data', (data) => {
+							const request = JSON.parse(data.toString()) as {
+								requestId: string;
+								method: string;
+							};
+							methods.push(request.method);
+							if (request.method === 'listRuns') return;
+							socket.end(
+								`${JSON.stringify({ version: 1, requestId: request.requestId, ok: true, result: {} })}\n`,
+							);
+						});
+					});
+					yield* listen(server, socketPath);
+					yield* Effect.addFinalizer(() => Effect.sync(() => server.close()));
+					yield* awaitDaemonHandshake({ socketPath, timeoutMs: 500 });
+					expect(methods).toEqual(['info']);
+				}),
+			),
+		),
+	);
+
+	it.live('falls back to listRuns for an older protocol-v1 daemon', () =>
+		runTest(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const rootDir = yield* makeTempDir;
+					const socketPath = join(rootDir, 'daemon.sock');
+					const methods: Array<string> = [];
+					const server = createServer((socket) => {
+						socket.once('data', (data) => {
+							const request = JSON.parse(data.toString()) as {
+								requestId: string;
+								method: string;
+							};
+							methods.push(request.method);
+							socket.end(
+								`${JSON.stringify(
+									request.method === 'info'
+										? {
+												version: 1,
+												requestId: request.requestId,
+												ok: false,
+												error: 'Unknown method info',
+											}
+										: {
+												version: 1,
+												requestId: request.requestId,
+												ok: true,
+												result: [],
+											},
+								)}\n`,
+							);
+						});
+					});
+					yield* listen(server, socketPath);
+					yield* Effect.addFinalizer(() => Effect.sync(() => server.close()));
+					yield* awaitDaemonHandshake({ socketPath, timeoutMs: 500 });
+					expect(methods).toEqual(['info', 'listRuns']);
 				}),
 			),
 		),
