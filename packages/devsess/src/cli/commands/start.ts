@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit, Queue } from 'effect';
+import { Cause, Effect, Exit, Queue, Runtime } from 'effect';
 import { callDaemon } from '../client';
 import { serviceExitCode } from '../exit-status';
 import { resolvePreset, toServices } from '../preset-resolution';
@@ -17,6 +17,10 @@ import {
 	resolveDaemonLocation,
 	write,
 } from './daemon';
+
+class StartCommandError extends CommandError {
+	override readonly [Runtime.errorReported] = false;
+}
 
 export const recentOutput = (
 	socketPath: string,
@@ -202,6 +206,18 @@ export const start = (options: CommandOptions, interactive: boolean) =>
 			},
 		};
 		const run = yield* callDaemon(location.socketPath, request).pipe(
+			Effect.mapError(
+				(error) =>
+					new StartCommandError({
+						message:
+							error.responseError === undefined
+								? error.message
+								: error.responseError,
+					}),
+			),
+			Effect.tapError((error) =>
+				Effect.sync(() => process.stderr.write(`${error.message}\n`)),
+			),
 			Effect.flatMap(decodeRunResponse),
 		);
 		const awaited =

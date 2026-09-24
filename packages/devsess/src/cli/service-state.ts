@@ -85,6 +85,7 @@ export type ServiceStateApi = {
 		verifyOwnership: boolean,
 	) => Effect.Effect<ServiceRecord, unknown, FileSystem | Path>;
 	readonly reconcile: Effect.Effect<void, unknown, FileSystem | Path>;
+	readonly reconcileFinished: Effect.Effect<void, unknown, FileSystem | Path>;
 };
 
 export const makeServiceState = (options: {
@@ -133,6 +134,18 @@ export const makeServiceState = (options: {
 		service: ServiceRecord,
 		verifyOwnership: boolean,
 	) => {
+		if (service.state === 'exited' || service.state === 'failed') {
+			if (service.process === undefined) return Effect.succeed(service);
+			return options.processes
+				.owns(service.process)
+				.pipe(
+					Effect.map((owned) =>
+						owned
+							? { ...service, state: 'orphaned' as const, published: undefined }
+							: service,
+					),
+				);
+		}
 		if (service.process === undefined)
 			return Effect.succeed(refreshService(service, 'missing'));
 		const process = service.process;
@@ -160,33 +173,50 @@ export const makeServiceState = (options: {
 				),
 			);
 	};
-	const reconcile = options.registry.list.pipe(
-		Effect.flatMap((runs) =>
-			Effect.forEach(runs, (run) => {
-				if (
-					!run.services.some(
-						(service) =>
-							isActive(service.state) || service.state === 'orphaned',
+	const reconcileRuns = (includeActive: boolean) =>
+		options.registry.list.pipe(
+			Effect.flatMap((runs) =>
+				Effect.forEach(runs, (run) => {
+					if (
+						!includeActive &&
+						!run.services.some(
+							(service) =>
+								service.state === 'failed' || service.state === 'exited',
+						)
 					)
-				)
-					return Effect.void;
-				return Effect.forEach(run.services, (service) =>
-					refreshServiceRecord(service, true),
-				).pipe(
-					Effect.flatMap((services) =>
-						options.registry.replace({
-							...run,
-							services,
-							state: aggregateState(services),
+						return Effect.void;
+					return Effect.forEach(run.services, (service) =>
+						!includeActive &&
+						service.state !== 'failed' &&
+						service.state !== 'exited'
+							? Effect.succeed(service)
+							: refreshServiceRecord(service, true),
+					).pipe(
+						Effect.flatMap((services) => {
+							if (
+								services.every(
+									(service, index) => service === run.services[index],
+								)
+							)
+								return Effect.void;
+							return options.registry
+								.replace({
+									...run,
+									services,
+									state: aggregateState(services),
+								})
+								.pipe(Effect.asVoid);
 						}),
-					),
-				);
-			}),
-		),
-	);
+					);
+				}),
+			),
+		);
+	const reconcile = reconcileRuns(true);
+	const reconcileFinished = reconcileRuns(false);
 	return {
 		replaceService,
 		refreshServiceRecord,
 		reconcile,
+		reconcileFinished,
 	};
 };
