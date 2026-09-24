@@ -8,6 +8,8 @@ export const runManagedSubprocess = (
 ) =>
 	Effect.gen(function* () {
 		const command = ChildProcess.make(cmd, args, {
+			// Keep children in the caller's group so its supervisor can signal them together.
+			detached: false,
 			stdin: 'inherit',
 			stdout: 'inherit',
 			stderr: 'inherit',

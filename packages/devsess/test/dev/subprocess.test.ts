@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
@@ -32,6 +33,33 @@ const waitUntil = (
 	}).pipe(Effect.timeout(timeout));
 
 describe('runManagedSubprocess', () => {
+	if (process.platform !== 'win32') {
+		it.live('keeps the child in the caller process group', () =>
+			runTest(
+				Effect.gen(function* () {
+					const rootDir = yield* makeTempDir;
+					const pgidFile = join(rootDir, 'pgid');
+					const parentPgid = execFileSync('ps', [
+						'-o',
+						'pgid=',
+						'-p',
+						String(process.pid),
+					])
+						.toString()
+						.trim();
+
+					const code = yield* runManagedSubprocess('node', [
+						'-e',
+						`require('fs').writeFileSync(${JSON.stringify(pgidFile)}, require('child_process').execFileSync('ps', ['-o', 'pgid=', '-p', String(process.pid)]).toString().trim())`,
+					]).pipe(Effect.timeout('5 seconds'));
+
+					expect(code).toBe(0);
+					expect(readFileSync(pgidFile, 'utf8')).toBe(parentPgid);
+				}),
+			),
+		);
+	}
+
 	it.live('kills the child when the scope closes', () =>
 		runTest(
 			Effect.gen(function* () {
@@ -121,8 +149,8 @@ describe('runManagedSubprocess', () => {
 				});
 
 				// The child exits on its own, so by the time the scope's release
-				// runs and tries to kill it, its process group is already gone —
-				// the kill fails, and that failure should be logged, not thrown.
+				// runs and tries to kill it, the process is already gone — the
+				// kill fails, and that failure should be logged, not thrown.
 				// Wrapped in `Effect.scoped` (as above) so the release — and its
 				// log message — happens before the assertion below runs, rather
 				// than whenever the test's own ambient scope happens to close.
