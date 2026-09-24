@@ -8,7 +8,7 @@ import type { OutputWorker } from './output-worker';
 import type { ProcessesService, ProcessIdentity } from './processes';
 import type { DaemonRequest } from './protocol';
 import { createPty } from './pty';
-import type { RegistryService, RunRecord } from './registry';
+import { isRunActive, type RegistryService, type RunRecord } from './registry';
 import {
 	aggregateState,
 	type LiveService,
@@ -27,12 +27,14 @@ export const makeRunStart = (options: {
 	readonly processes: ProcessesService;
 	readonly daemonIdentity: ProcessIdentity;
 	readonly terminals: Map<string, LiveService>;
+	readonly environments: Map<string, Readonly<Record<string, string>>>;
 	readonly output: OutputWorker;
 	readonly serviceState: ServiceStateApi;
 	readonly stopRun: (
 		runId: string,
 		force: boolean,
 		failedAddress?: { readonly runId: string; readonly serviceName: string },
+		serviceNames?: ReadonlySet<string>,
 	) => Effect.Effect<RunRecord, unknown, FileSystem | Path | Scope>;
 	readonly onExited: (
 		address: {
@@ -40,6 +42,7 @@ export const makeRunStart = (options: {
 			readonly serviceName: string;
 		},
 		exit: ServiceExit,
+		pid: number,
 	) => void;
 }) => {
 	const startRun = (
@@ -123,10 +126,12 @@ export const makeRunStart = (options: {
 					name: service.name,
 					command: service.command,
 					cwd: service.cwd,
+					awaitPublish: service.awaitPublish,
 					state: 'starting',
 				})),
 			};
 			yield* options.registry.reserve(run);
+			options.environments.set(run.runId, request.params.environment);
 			const rollback = Effect.gen(function* () {
 				const stopped = yield* options.stopRun(run.runId, false);
 				const services = stopped.services.map((service) => {
@@ -158,125 +163,139 @@ export const makeRunStart = (options: {
 			});
 			return yield* Effect.gen(function* () {
 				for (const service of run.services) {
-					const shell = parseShellCommand(service.command);
-					const terminal = yield* createPty({
-						command: shell[0],
-						args: [...shell[1]],
-						cwd: service.cwd,
-						env: {
-							...request.params.environment,
-							DEVSESS_SOCKET: options.socketPath,
-							DEVSESS_RUN_ID: run.runId,
-							DEVSESS_SERVICE: service.name,
-						},
-						cols: 80,
-						rows: 24,
-					});
-					const address = { runId: run.runId, serviceName: service.name };
-					let observedExit: ServiceExit | undefined;
-					let registeredLive: LiveService | undefined;
-					let exitNotified = false;
-					let lifecycleReady = false;
-					yield* options.output.start(address, terminal);
-					terminal.onData((data) => {
-						options.output.enqueue(address, data);
-					});
-					terminal.onExit((event) => {
-						const exit: ServiceExit = {
-							exitCode: event.exitCode,
-							signal: event.signal,
-						};
-						observedExit = exit;
-						const live =
-							registeredLive ?? options.terminals.get(serviceKey(address));
-						if (live === undefined) return;
-						live.exit = exit;
-						if (!lifecycleReady || exitNotified) return;
-						exitNotified = true;
-						options.onExited(address, exit);
-					});
-					const captured = yield* Effect.exit(
-						options.processes.captureLive(terminal.pid),
-					);
-					if (Exit.isFailure(captured)) {
-						if (observedExit !== undefined) {
-							yield* options.output.awaitIdle(address);
-							yield* options.output.close(address);
-							yield* options.serviceState.replaceService(
-								address,
-								serviceExitCode(observedExit) === 0 ? 'exited' : 'failed',
-								observedExit,
-							);
-							continue;
-						}
-						yield* Effect.try({
-							try: () => terminal.kill('SIGKILL'),
-							catch: (cause) =>
-								new DaemonError({
-									message: `Could not roll back unrecorded PTY ${service.name}`,
-									cause,
-								}),
-						}).pipe(
-							Effect.catch((error) =>
-								error.cause instanceof Error &&
-								(error.cause as NodeJS.ErrnoException).code === 'ESRCH'
-									? Effect.void
-									: error,
-							),
-						);
-						yield* options.output.close(address);
-						return yield* Effect.failCause(captured.cause);
-					}
-					const ownership = captured.value;
-					const live: LiveService = {
-						address,
-						terminal,
-						ownership,
-						exit: observedExit,
-						lease: undefined,
-					};
-					registeredLive = live;
-					yield* Effect.gen(function* () {
-						const stored = yield* options.registry.get(run.runId);
-						const services = stored.services.map((candidate) =>
-							candidate.name === service.name
-								? {
-										...candidate,
-										process: ownership.identity,
-										state: 'running' as const,
-									}
-								: candidate,
-						);
-						yield* options.registry.replace({
-							...stored,
-							services,
-							state: aggregateState(services),
-						});
-					}).pipe(
-						Effect.catch((cause) =>
-							ownership.terminate.pipe(
-								Effect.tap(() =>
-									Effect.sync(() =>
-										options.terminals.delete(serviceKey(address)),
-									),
-								),
-								Effect.andThen(Effect.fail(cause)),
-							),
-						),
-					);
-					options.terminals.set(serviceKey(address), live);
-					lifecycleReady = true;
-					if (observedExit !== undefined && !exitNotified) {
-						exitNotified = true;
-						options.onExited(address, observedExit);
-					}
+					yield* spawnService(run, service, request.params.environment);
 				}
 				return yield* options.registry.get(run.runId);
 			}).pipe(
 				Effect.catch((cause) =>
 					rollback.pipe(Effect.andThen(Effect.fail(cause))),
 				),
+				Effect.tap((stored) =>
+					Effect.sync(() => {
+						if (!isRunActive(stored)) options.environments.delete(run.runId);
+					}),
+				),
+				Effect.tapError(() =>
+					Effect.sync(() => options.environments.delete(run.runId)),
+				),
 			);
 		}).pipe(Effect.uninterruptible);
-	return { startRun };
+	const spawnService = (
+		run: RunRecord,
+		service: RunRecord['services'][number],
+		environment: Readonly<Record<string, string>>,
+	) =>
+		Effect.gen(function* () {
+			const shell = parseShellCommand(service.command);
+			const terminal = yield* createPty({
+				command: shell[0],
+				args: [...shell[1]],
+				cwd: service.cwd,
+				env: {
+					...environment,
+					DEVSESS_SOCKET: options.socketPath,
+					DEVSESS_RUN_ID: run.runId,
+					DEVSESS_SERVICE: service.name,
+				},
+				cols: 80,
+				rows: 24,
+			});
+			const address = { runId: run.runId, serviceName: service.name };
+			let observedExit: ServiceExit | undefined;
+			let registeredLive: LiveService | undefined;
+			let exitNotified = false;
+			let lifecycleReady = false;
+			yield* options.output.start(address, terminal);
+			terminal.onData((data) => {
+				options.output.enqueue(address, data);
+			});
+			terminal.onExit((event) => {
+				const exit: ServiceExit = {
+					exitCode: event.exitCode,
+					signal: event.signal,
+				};
+				observedExit = exit;
+				const live =
+					registeredLive ?? options.terminals.get(serviceKey(address));
+				if (live === undefined) return;
+				live.exit = exit;
+				if (!lifecycleReady || exitNotified) return;
+				exitNotified = true;
+				options.onExited(address, exit, terminal.pid);
+			});
+			const captured = yield* Effect.exit(
+				options.processes.captureLive(terminal.pid),
+			);
+			if (Exit.isFailure(captured)) {
+				if (observedExit !== undefined) {
+					yield* options.output.awaitIdle(address);
+					yield* options.output.close(address);
+					yield* options.serviceState.replaceService(
+						address,
+						serviceExitCode(observedExit) === 0 ? 'exited' : 'failed',
+						observedExit,
+					);
+					return;
+				}
+				yield* Effect.try({
+					try: () => terminal.kill('SIGKILL'),
+					catch: (cause) =>
+						new DaemonError({
+							message: `Could not roll back unrecorded PTY ${service.name}`,
+							cause,
+						}),
+				}).pipe(
+					Effect.catch((error) =>
+						error.cause instanceof Error &&
+						(error.cause as NodeJS.ErrnoException).code === 'ESRCH'
+							? Effect.void
+							: error,
+					),
+				);
+				yield* options.output.close(address);
+				return yield* Effect.failCause(captured.cause);
+			}
+			const ownership = captured.value;
+			const live: LiveService = {
+				address,
+				terminal,
+				ownership,
+				exit: observedExit,
+				lease: undefined,
+			};
+			registeredLive = live;
+			yield* Effect.gen(function* () {
+				const stored = yield* options.registry.get(run.runId);
+				const services = stored.services.map((candidate) =>
+					candidate.name === service.name
+						? {
+								...candidate,
+								process: ownership.identity,
+								state: 'running' as const,
+							}
+						: candidate,
+				);
+				yield* options.registry.replace({
+					...stored,
+					services,
+					state: aggregateState(services),
+				});
+			}).pipe(
+				Effect.catch((cause) =>
+					ownership.terminate.pipe(
+						Effect.tap(() =>
+							Effect.sync(() => options.terminals.delete(serviceKey(address))),
+						),
+						Effect.andThen(Effect.fail(cause)),
+					),
+				),
+			);
+			options.terminals.set(serviceKey(address), live);
+			lifecycleReady = true;
+			if (observedExit !== undefined && !exitNotified) {
+				exitNotified = true;
+				options.onExited(address, observedExit, terminal.pid);
+			}
+		});
+	return { startRun, spawnService };
 };

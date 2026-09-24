@@ -131,6 +131,8 @@ export const toServices = (preset: ConfigPreset, invocation: Invocation) =>
 					name,
 					command: service.command,
 					cwd: resolveServiceCwd(service, invocation),
+					awaitPublish:
+						preset.awaitPublish === true && service.awaitPublish !== false,
 				},
 			];
 		});

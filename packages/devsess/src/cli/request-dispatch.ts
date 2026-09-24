@@ -1,5 +1,5 @@
 import type { Socket } from 'node:net';
-import { Deferred, Effect } from 'effect';
+import { Deferred, Effect, Exit } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { Scope } from 'effect/Scope';
@@ -12,6 +12,7 @@ import { isRunActive, type RegistryService } from './registry';
 import type { RunStart } from './run-start';
 import type { RunStop } from './run-stop';
 import {
+	aggregateState,
 	completedExit,
 	type LiveService,
 	type ServiceStateApi,
@@ -37,6 +38,7 @@ export type LifecycleMessage =
 			};
 			readonly exitCode: number;
 			readonly signal?: number;
+			readonly pid?: number;
 	  }
 	| {
 			readonly _tag: 'persistenceFailure';
@@ -68,6 +70,7 @@ export type RequestDispatcher = {
 export const makeRequestDispatcher = (options: {
 	readonly registry: RegistryService;
 	readonly terminals: Map<string, LiveService>;
+	readonly environments: Map<string, Readonly<Record<string, string>>>;
 	readonly sockets: Map<Socket, SocketState>;
 	readonly output: OutputWorker;
 	readonly serviceState: ServiceStateApi;
@@ -87,6 +90,17 @@ export const makeRequestDispatcher = (options: {
 		cause: unknown,
 	) => Effect.Effect<void>;
 }): RequestDispatcher => {
+	const restartingRuns = new Set<string>();
+	const forgetFinished = (runId: string) =>
+		options.registry.get(runId).pipe(
+			Effect.tap((run) =>
+				Effect.sync(() => {
+					if (!isRunActive(run) && !restartingRuns.has(runId))
+						options.environments.delete(runId);
+				}),
+			),
+			Effect.asVoid,
+		);
 	const processRequest = (
 		incoming: DaemonRequest,
 		socket: Socket | undefined,
@@ -118,7 +132,10 @@ export const makeRequestDispatcher = (options: {
 						);
 					return Effect.forEach(
 						active,
-						(run) => options.runStop.stopRun(run.runId, true),
+						(run) =>
+							options.runStop
+								.stopRun(run.runId, true)
+								.pipe(Effect.tap(() => forgetFinished(run.runId))),
 						{ discard: true },
 					).pipe(Effect.as({}));
 				}),
@@ -162,10 +179,91 @@ export const makeRequestDispatcher = (options: {
 				return {};
 			});
 		if (incoming.method === 'stopRun')
-			return options.runStop.stopRun(
-				incoming.params.runId,
-				incoming.params.force === true,
-			);
+			return options.runStop
+				.stopRun(incoming.params.runId, incoming.params.force === true)
+				.pipe(Effect.tap(() => forgetFinished(incoming.params.runId)));
+		if (incoming.method === 'restartServices')
+			return Effect.gen(function* () {
+				const run = yield* options.registry.get(incoming.params.runId);
+				if (!isRunActive(run))
+					return yield* new DaemonError({
+						message: `Run ${run.runId} is not active`,
+					});
+				const names = new Set(incoming.params.serviceNames);
+				if (
+					names.size === 0 ||
+					names.size !== incoming.params.serviceNames.length
+				)
+					return yield* new DaemonError({
+						message: 'Select distinct services to restart',
+					});
+				for (const name of names) {
+					const service = run.services.find(
+						(candidate) => candidate.name === name,
+					);
+					if (service === undefined)
+						return yield* new DaemonError({
+							message: `Service ${name} was not found in run ${run.runId}`,
+						});
+				}
+				const environment = options.environments.get(run.runId);
+				if (environment === undefined)
+					return yield* new DaemonError({
+						message: `Run ${run.runId} was started by a previous daemon; stop it and start it again to enable restart.`,
+					});
+				restartingRuns.add(run.runId);
+				return yield* Effect.gen(function* () {
+					yield* options.runStop.stopRun(run.runId, false, undefined, names);
+					for (const name of names) {
+						const current = yield* options.registry.get(run.runId);
+						const service = current.services.find(
+							(candidate) => candidate.name === name,
+						);
+						if (service === undefined)
+							return yield* Effect.die(`Service ${name} disappeared`);
+						const services = current.services.map((candidate) =>
+							candidate.name === name
+								? {
+										...candidate,
+										state: 'starting' as const,
+										process: undefined,
+										published: undefined,
+										exitCode: undefined,
+										signal: undefined,
+										exitStatus: undefined,
+									}
+								: candidate,
+						);
+						const starting = yield* options.registry.replace({
+							...current,
+							services,
+							state: aggregateState(services),
+						});
+						yield* options.output.appendMarker(
+							{ runId: run.runId, serviceName: name },
+							`--- devsess: restarted ${name} ---\n`,
+						);
+						yield* options.runStart.spawnService(
+							starting,
+							service,
+							environment,
+						);
+					}
+					return yield* options.registry.get(run.runId);
+				}).pipe(
+					Effect.exit,
+					Effect.flatMap((result) =>
+						Effect.sync(() => restartingRuns.delete(run.runId)).pipe(
+							Effect.andThen(forgetFinished(run.runId)),
+							Effect.andThen(
+								Exit.isFailure(result)
+									? Effect.failCause(result.cause)
+									: Effect.succeed(result.value),
+							),
+						),
+					),
+				);
+			}).pipe(Effect.uninterruptible);
 		const address = {
 			runId: incoming.params.runId,
 			serviceName: incoming.params.serviceName,
@@ -240,6 +338,7 @@ export const makeRequestDispatcher = (options: {
 			return options.runStop
 				.stopRun(message.address.runId, false, message.address)
 				.pipe(
+					Effect.tap(() => forgetFinished(message.address.runId)),
 					Effect.catch((cause) => Effect.logError(cause)),
 					Effect.asVoid,
 				);
@@ -247,6 +346,8 @@ export const makeRequestDispatcher = (options: {
 			const key = serviceKey(message.address);
 			const live = options.terminals.get(key);
 			if (live === undefined) return Effect.void;
+			if (message.pid !== undefined && live.terminal.pid !== message.pid)
+				return Effect.void;
 			const exit: ServiceExit = {
 				exitCode: message.exitCode,
 				signal: message.signal,
@@ -266,6 +367,7 @@ export const makeRequestDispatcher = (options: {
 				),
 				Effect.andThen(options.runStop.finishService(message.address, exit)),
 				Effect.andThen(options.subscriptions.markPersisted(message.address)),
+				Effect.andThen(forgetFinished(message.address.runId)),
 				Effect.asVoid,
 				Effect.catch((cause) =>
 					options.serviceState

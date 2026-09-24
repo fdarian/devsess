@@ -55,6 +55,7 @@ const dispatcher = (runs: ReadonlyArray<RunRecord>) =>
 				replace: () => Effect.succeed(activeRun),
 			},
 			terminals: new Map(),
+			environments: new Map(),
 			sockets: new Map(),
 			output: {} as never,
 			serviceState: {} as never,
@@ -112,5 +113,31 @@ describe('daemon request dispatch', () => {
 				}),
 			),
 		),
+	);
+
+	it.effect(
+		'requires a run started by this daemon before restarting services',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const configured = yield* dispatcher([activeRun]);
+					const result = yield* Effect.exit(
+						configured.value.processRequest(
+							{
+								version: 1,
+								requestId: 'restart',
+								method: 'restartServices',
+								params: { runId: 'run', serviceNames: ['web'] },
+							},
+							undefined,
+						),
+					);
+					expect(result._tag).toBe('Failure');
+					if (Exit.isFailure(result))
+						expect(String(result.cause)).toContain(
+							'stop it and start it again to enable restart',
+						);
+				}),
+			),
 	);
 });

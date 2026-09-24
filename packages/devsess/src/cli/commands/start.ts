@@ -87,6 +87,7 @@ export const watchStart = (
 	socketPath: string,
 	initial: RunRecord,
 	awaited: ReadonlySet<string> | undefined,
+	selected?: ReadonlySet<string>,
 ) =>
 	Effect.scoped(
 		Effect.gen(function* () {
@@ -99,7 +100,11 @@ export const watchStart = (
 			let warned = false;
 			while (true) {
 				for (const service of run.services) {
-					if (service.published === undefined || seen.has(service.name))
+					if (
+						service.published === undefined ||
+						seen.has(service.name) ||
+						(selected !== undefined && !selected.has(service.name))
+					)
 						continue;
 					seen.add(service.name);
 					yield* write(

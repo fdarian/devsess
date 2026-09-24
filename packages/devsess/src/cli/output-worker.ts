@@ -30,6 +30,10 @@ export type OutputWorker = {
 	readonly enqueue: (address: LogAddress, data: string) => void;
 	readonly awaitIdle: (address: LogAddress) => Effect.Effect<void>;
 	readonly close: (address: LogAddress) => Effect.Effect<void>;
+	readonly appendMarker: (
+		address: LogAddress,
+		data: string,
+	) => Effect.Effect<void, unknown, FileSystem | Path>;
 };
 
 export const makeOutputWorker = (options: {
@@ -160,5 +164,12 @@ export const makeOutputWorker = (options: {
 				output.worker = worker;
 				return output;
 			});
-		return { start, enqueue, awaitIdle, close };
+		return {
+			start,
+			enqueue,
+			awaitIdle,
+			close,
+			appendMarker: (address, data) =>
+				options.logs.append(address, data).pipe(Effect.asVoid),
+		};
 	});

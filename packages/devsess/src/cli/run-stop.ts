@@ -26,6 +26,7 @@ export type RunStop = {
 		runId: string,
 		force: boolean,
 		failedAddress?: LogAddress,
+		serviceNames?: ReadonlySet<string>,
 	) => Effect.Effect<RunRecord, unknown, FileSystem | Path | Scope>;
 	readonly terminateRemaining: (
 		live: LiveService,
@@ -48,7 +49,12 @@ export const makeRunStop = (options: {
 					options.subscriptions.finishSubscriptions(address, exit),
 				),
 			);
-	const stopRun = (runId: string, force: boolean, failedAddress?: LogAddress) =>
+	const stopRun = (
+		runId: string,
+		force: boolean,
+		failedAddress?: LogAddress,
+		serviceNames?: ReadonlySet<string>,
+	) =>
 		Effect.gen(function* () {
 			const run = yield* options.registry.get(runId);
 			const orphanedServices = new Set(
@@ -57,7 +63,8 @@ export const makeRunStop = (options: {
 					.map((service) => service.name),
 			);
 			const stopping = run.services.map((service) =>
-				isActive(service.state) || service.state === 'orphaned'
+				(serviceNames === undefined || serviceNames.has(service.name)) &&
+				(isActive(service.state) || service.state === 'orphaned')
 					? { ...service, state: 'stopping' as const }
 					: service,
 			);
@@ -73,6 +80,8 @@ export const makeRunStop = (options: {
 			const failureMessages: Array<string> = [];
 			const services = yield* Effect.forEach(stopping, (service) =>
 				Effect.gen(function* () {
+					if (serviceNames !== undefined && !serviceNames.has(service.name))
+						return service;
 					const address = { runId, serviceName: service.name };
 					const live = options.terminals.get(serviceKey(address));
 					if (

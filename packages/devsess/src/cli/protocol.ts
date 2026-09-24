@@ -9,6 +9,7 @@ export const ServiceSnapshot = Schema.Struct({
 	name: Identifier,
 	command: Schema.NonEmptyString,
 	cwd: Schema.NonEmptyString,
+	awaitPublish: Schema.optional(Schema.Boolean),
 });
 export const StartRunRequest = Schema.Struct({
 	version: Schema.Literal(PROTOCOL_VERSION),
@@ -66,6 +67,15 @@ export const StopRunRequest = Schema.Struct({
 	params: Schema.Struct({
 		runId: Identifier,
 		force: Schema.optional(Schema.Boolean),
+	}),
+});
+export const RestartServicesRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('restartServices'),
+	params: Schema.Struct({
+		runId: Identifier,
+		serviceNames: Schema.Array(Identifier),
 	}),
 });
 export const TailRequest = Schema.Struct({
@@ -129,6 +139,7 @@ export const DaemonRequest = Schema.Union([
 	InfoRequest,
 	ShutdownRequest,
 	StopRunRequest,
+	RestartServicesRequest,
 	TailRequest,
 	AttachRequest,
 	InputRequest,

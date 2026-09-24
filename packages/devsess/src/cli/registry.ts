@@ -21,6 +21,7 @@ export const ServiceRecordSchema = Schema.Struct({
 	name: Identifier,
 	command: Schema.NonEmptyString,
 	cwd: Schema.NonEmptyString,
+	awaitPublish: Schema.optionalKey(Schema.Boolean),
 	state: ServiceStateSchema,
 	process: Schema.optionalKey(
 		Schema.Struct({

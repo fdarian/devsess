@@ -137,6 +137,7 @@ describe('run start registration ordering', () => {
 						} as never,
 						daemonIdentity: identity,
 						terminals: new Map(),
+						environments: new Map(),
 						output,
 						serviceState,
 						stopRun: () => Effect.die('unused'),
