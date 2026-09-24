@@ -96,7 +96,12 @@ describe('tail command', () => {
 					localRuns: [selected],
 				}),
 			);
-			vi.mocked(chooseRun).mockReturnValue(Effect.succeed(selected));
+			vi.mocked(chooseRun).mockReturnValue(
+				Effect.succeed({
+					...selected,
+					selection: { local: true, label: 'project/dev [run]' },
+				}),
+			);
 			vi.mocked(openDaemonStream).mockReturnValue(
 				Effect.succeed({ frames }) as never,
 			);
@@ -260,7 +265,12 @@ describe('tail command', () => {
 							localRuns: [multiRun],
 						}),
 					);
-					vi.mocked(chooseRun).mockReturnValue(Effect.succeed(multiRun));
+					vi.mocked(chooseRun).mockReturnValue(
+						Effect.succeed({
+							...multiRun,
+							selection: { local: true, label: 'project/dev [run]' },
+						}),
+					);
 					vi.mocked(openDaemonStream).mockImplementation((options) => {
 						const frames = framesByService.get(
 							options.request.params.serviceName,

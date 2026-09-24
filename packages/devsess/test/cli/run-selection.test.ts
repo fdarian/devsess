@@ -372,6 +372,82 @@ describe('running session selection', () => {
 	);
 
 	it.live(
+		'requires an explicit selector for runs outside the current directory',
+		() =>
+			testSelection(
+				Effect.gen(function* () {
+					const elsewhere = run(
+						'0079e20e-0000-0000-0000-000000000000',
+						'mockingbird',
+					);
+					const another = run(
+						'c585f251-0000-0000-0000-000000000000',
+						'elsewhere',
+					);
+					for (const command of ['tail', 'attach', 'stop']) {
+						const result = yield* Effect.exit(
+							chooseRun([elsewhere, another], {}, command, true, []).pipe(
+								Effect.timeout('1 second'),
+							),
+						);
+						expect(Exit.isFailure(result)).toBe(true);
+						if (Exit.isFailure(result)) {
+							const message = String(Cause.squash(result.cause));
+							expect(message).toContain('Nothing running in this project');
+							expect(message).toContain('mockingbird/default [0079e20e]');
+							expect(message).toContain('elsewhere/default [c585f251]');
+							expect(message).toContain(
+								`devsess ${command} mockingbird/default`,
+							);
+							expect(message).toContain(`devsess ${command} 0079e20e`);
+						}
+						for (const options of [
+							{ preset: 'mockingbird/default' },
+							{ project: 'mockingbird' },
+							{ preset: '0079e20e' },
+						]) {
+							const selected = yield* chooseRun(
+								[elsewhere, another],
+								options,
+								command,
+								false,
+								[],
+							);
+							expect(selected.runId).toBe(elsewhere.runId);
+							expect(selected.selection.local).toBe(false);
+						}
+					}
+				}),
+			),
+	);
+
+	it.live('replays only a local finished run without a selector', () =>
+		testSelection(
+			Effect.gen(function* () {
+				const remote = run('remote', 'elsewhere', 'failed');
+				const local = run('local', 'here', 'failed');
+				const selected = yield* chooseRun(
+					[],
+					{},
+					'tail',
+					false,
+					[local],
+					[remote, local],
+				);
+				expect(selected.runId).toBe('local');
+				const result = yield* Effect.exit(
+					chooseRun([], {}, 'tail', false, [], [remote]),
+				);
+				expect(Exit.isFailure(result)).toBe(true);
+				if (Exit.isFailure(result))
+					expect(String(Cause.squash(result.cause))).toContain(
+						'Nothing running in this project',
+					);
+			}),
+		),
+	);
+
+	it.live(
 		'prefers runs under the current directory when no project is named',
 		() =>
 			testSelection(
