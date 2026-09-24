@@ -11,7 +11,7 @@ import { type ChosenRun, CommandError, type CommandOptions } from './daemon';
 export const chooseServices = (
 	run: RunRecord | ChosenRun,
 	options: CommandOptions,
-	command: 'tail' | 'attach',
+	command: 'tail' | 'attach' | 'restart',
 	interactive = process.stdin.isTTY === true && process.stdout.isTTY === true,
 	runs: ReadonlyArray<RunRecord> = [run],
 ): Effect.Effect<
@@ -64,7 +64,9 @@ export const chooseServices = (
 				choices: [
 					...(command === 'tail'
 						? [{ title: 'All services', value: available }]
-						: []),
+						: command === 'restart'
+							? [{ title: 'All services', value: available }]
+							: []),
 					...services.map((candidate) => ({
 						title: `${candidate.name} (${candidate.state})`,
 						value: [candidate],
@@ -78,6 +80,6 @@ export const chooseServices = (
 			),
 		);
 	return new CommandError({
-		message: `Multiple services in ${run.projectName}/${run.presetName}:\n${services.map((candidate) => `  ${candidate.name} — ${prefix} --service ${candidate.name}`).join('\n')}${command === 'tail' ? `\n  all services — ${prefix} --all-services` : ''}`,
+		message: `Multiple services in ${run.projectName}/${run.presetName}:\n${services.map((candidate) => `  ${candidate.name} — ${prefix} --service ${candidate.name}`).join('\n')}${command === 'tail' || command === 'restart' ? `\n  all services — ${prefix} --all-services` : ''}`,
 	});
 };

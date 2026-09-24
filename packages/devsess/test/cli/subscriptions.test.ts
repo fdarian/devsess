@@ -304,6 +304,7 @@ describe('subscription setup races', () => {
 					const dispatcher = makeRequestDispatcher({
 						registry,
 						terminals: new Map(),
+						environments: new Map(),
 						sockets,
 						output: {} as unknown as OutputWorker,
 						serviceState: {} as unknown as ServiceStateApi,

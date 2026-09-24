@@ -2,6 +2,7 @@ import { createConnection, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 import { Effect, Layer, Schema } from 'effect';
+import { FileSystem } from 'effect/FileSystem';
 import { Daemon, makeDaemon } from '../../src/cli/daemon';
 import { Logs } from '../../src/cli/logs';
 import { Processes } from '../../src/cli/processes';
@@ -102,6 +103,101 @@ const checkReplay = (marker: string) =>
 	});
 
 describe('real PTY startup events', () => {
+	it.live(
+		'restarts one service with its original environment, clears readiness, and appends to its log',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const directory = yield* makeTempDir;
+					const socketPath = join(directory, 'daemon.sock');
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						const logs = yield* Logs;
+						const original: DaemonRequest = {
+							version: 1,
+							requestId: 'start',
+							method: 'startRun',
+							params: {
+								runId: 'run',
+								projectName: 'project',
+								presetName: 'dev',
+								canonicalCwd: directory,
+								invocationCwd: directory,
+								configSnapshot: {},
+								environment: { TOKEN: 'original' },
+								services: [
+									{
+										name: 'web',
+										command:
+											'printf "generation:%s\\n" "$TOKEN"; exec sleep 30',
+										cwd: directory,
+										awaitPublish: true,
+									},
+									{ name: 'db', command: 'exec sleep 30', cwd: directory },
+								],
+							},
+						};
+						const started = yield* daemon
+							.request(original)
+							.pipe(
+								Effect.flatMap(Schema.decodeUnknownEffect(RunRecordSchema)),
+							);
+						const fileSystem = yield* FileSystem;
+						const persisted = yield* fileSystem.readFileString(
+							join(directory, 'running.json'),
+						);
+						expect(persisted).not.toContain('original');
+						expect(persisted).not.toContain('environment');
+						const dbPid = started.services.find(
+							(service) => service.name === 'db',
+						)?.process?.pid;
+						expect(dbPid).toBeDefined();
+						yield* daemon.request({
+							version: 1,
+							requestId: 'publish',
+							method: 'publish',
+							params: { runId: 'run', service: 'web', value: 'ready' },
+						});
+						const restarted = yield* daemon
+							.request({
+								version: 1,
+								requestId: 'restart',
+								method: 'restartServices',
+								params: { runId: 'run', serviceNames: ['web'] },
+							})
+							.pipe(
+								Effect.flatMap(Schema.decodeUnknownEffect(RunRecordSchema)),
+							);
+						expect(restarted.runId).toBe(started.runId);
+						expect(
+							restarted.services.find((service) => service.name === 'web')
+								?.published,
+						).toBeUndefined();
+						expect(
+							restarted.services.find((service) => service.name === 'web')
+								?.process?.pid,
+						).not.toBe(
+							started.services.find((service) => service.name === 'web')
+								?.process?.pid,
+						);
+						expect(
+							restarted.services.find((service) => service.name === 'db')
+								?.process?.pid,
+						).toBe(dbPid);
+						yield* Effect.sleep('100 millis');
+						const replay = yield* logs.replayAndSubscribe(
+							{ runId: 'run', serviceName: 'web' },
+							0,
+							() => Effect.void,
+						);
+						yield* replay.unsubscribe;
+						const content = replay.replay.map((event) => event.data).join('');
+						expect(content.match(/generation:original/g)).toHaveLength(2);
+						expect(content).toContain('--- devsess: restarted web ---');
+					}).pipe(Effect.provide(layer(directory, socketPath)));
+				}),
+			),
+	);
 	it.live('returns daemon info and closes through the shutdown request', () =>
 		runTest(
 			Effect.gen(function* () {

@@ -10,6 +10,7 @@ import { attach } from './cli/commands/attach';
 import { CommandError, daemonCommand } from './cli/commands/daemon';
 import { daemonControlCommand } from './cli/commands/daemon-control';
 import { list } from './cli/commands/list';
+import { restart } from './cli/commands/restart';
 import { start } from './cli/commands/start';
 import { status } from './cli/commands/status';
 import { stop } from './cli/commands/stop';
@@ -68,6 +69,23 @@ const stopCommand = Command.make(
 	},
 	(input) => stop({ ...selectedOptions(input), force: input.force }),
 ).pipe(Command.withDescription('Stop an active run and its services.'));
+const restartCommand = Command.make(
+	'restart',
+	{
+		...options,
+		preset: optionalPreset,
+		runId: optionalString('run', 'Select a run by its ID or unique prefix.'),
+		allServices: Flag.boolean('all-services').pipe(
+			Flag.withDescription('Restart every service in the run.'),
+		),
+	},
+	(input) =>
+		restart({ ...selectedOptions(input), allServices: input.allServices }),
+).pipe(
+	Command.withDescription(
+		'Restart services in an active run without changing its run ID.',
+	),
+);
 const tailCommand = Command.make(
 	'tail',
 	{
@@ -184,6 +202,7 @@ const app = Command.make('devsess', {}).pipe(
 		listCommand,
 		statusCommand,
 		stopCommand,
+		restartCommand,
 		tailCommand,
 		attachCommand,
 		docsCommand,

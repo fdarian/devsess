@@ -107,6 +107,7 @@ export const makeDaemon = (options: {
 		const requestQueue = yield* Queue.bounded<ClientRequestMessage>(256);
 		const lifecycleQueue = yield* Queue.unbounded<LifecycleMessage>();
 		const terminals = new Map<string, LiveService>();
+		const environments = new Map<string, Readonly<Record<string, string>>>();
 		const sockets = new Map<Socket, SocketState>();
 		const lifecycle = { closing: false };
 		const attachedClientCount = () =>
@@ -223,20 +224,23 @@ export const makeDaemon = (options: {
 			processes,
 			daemonIdentity,
 			terminals,
+			environments,
 			output,
 			serviceState,
 			stopRun: runStop.stopRun,
-			onExited: (address, exit) =>
+			onExited: (address, exit, pid) =>
 				enqueueLifecycle({
 					_tag: 'exited',
 					address,
 					exitCode: exit.exitCode,
 					signal: exit.signal,
+					pid,
 				}),
 		});
 		const dispatcher = makeRequestDispatcher({
 			registry,
 			terminals,
+			environments,
 			sockets,
 			output,
 			serviceState,
