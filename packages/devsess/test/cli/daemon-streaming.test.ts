@@ -109,7 +109,7 @@ const startTailClient = (options: {
 		>();
 		const child = yield* Effect.try({
 			try: () =>
-				spawn(process.execPath, [cliPath, 'tail'], {
+				spawn(process.execPath, [cliPath, 'tail', '--follow'], {
 					cwd: options.cwd,
 					env: {
 						...process.env,

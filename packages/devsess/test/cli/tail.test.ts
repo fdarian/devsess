@@ -59,7 +59,11 @@ const run: RunRecord = {
 };
 
 describe('tail command', () => {
-	const runTailWithExit = (event: DaemonEvent, finished = false) =>
+	const runTailWithExit = (
+		event: DaemonEvent,
+		finished = false,
+		output: ReadonlyArray<string> = [],
+	) =>
 		Effect.gen(function* () {
 			const frames = yield* Queue.unbounded<DaemonStreamFrame>();
 			yield* Queue.offer(frames, {
@@ -71,6 +75,17 @@ describe('tail command', () => {
 					result: {},
 				},
 			});
+			for (const data of output)
+				yield* Queue.offer(frames, {
+					_tag: 'output',
+					value: {
+						version: 1,
+						requestId: 'request',
+						event: 'output',
+						data,
+						offset: 0,
+					},
+				});
 			yield* Queue.offer(frames, { _tag: 'output', value: event });
 			const selected: RunRecord = finished
 				? {
@@ -105,8 +120,29 @@ describe('tail command', () => {
 			vi.mocked(openDaemonStream).mockReturnValue(
 				Effect.succeed({ frames }) as never,
 			);
-			return yield* Effect.exit(tail({}).pipe(Effect.timeout('1 second')));
+			return yield* Effect.exit(
+				tail({ lines: 10, follow: false }).pipe(Effect.timeout('1 second')),
+			);
 		});
+
+	it.effect('strips ANSI sequences split across output events when piped', () =>
+		withServices(
+			Effect.gen(function* () {
+				const stdout = vi
+					.spyOn(process.stdout, 'write')
+					.mockImplementation(() => true);
+				const result = yield* runTailWithExit(
+					{ version: 1, requestId: 'request', event: 'end' },
+					false,
+					['before\x1b[3', '1mred\x1b[0m\x1b[2', 'Jafter\n'],
+				);
+				expect(result._tag).toBe('Success');
+				expect(stdout.mock.calls.map((call) => call[0]).join('')).toBe(
+					'beforeredafter\n',
+				);
+			}),
+		),
+	);
 
 	it.effect('announces a finished run and returns its saved exit code', () =>
 		withServices(
@@ -282,7 +318,9 @@ describe('tail command', () => {
 					const output = vi
 						.spyOn(process.stdout, 'write')
 						.mockImplementation(() => true);
-					const result = yield* Effect.exit(tail({ allServices: true }));
+					const result = yield* Effect.exit(
+						tail({ allServices: true, lines: 10, follow: true }),
+					);
 					expect(result._tag).toBe('Failure');
 					if (result._tag === 'Failure')
 						expect(Runtime.getErrorExitCode(Cause.squash(result.cause))).toBe(

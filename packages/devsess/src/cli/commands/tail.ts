@@ -1,4 +1,5 @@
 import { Cause, Effect, Exit, Queue } from 'effect';
+import { makeAnsiStripper } from '../ansi';
 import { ServiceExitError, serviceExit } from '../exit-status';
 import { isRunActive, type RunRecord } from '../registry';
 import { shortRunId } from '../run-id';
@@ -18,14 +19,17 @@ const tailService = (
 	run: RunRecord,
 	service: RunRecord['services'][number],
 	prefix: boolean,
-) =>
-	openDaemonStream({
+	lines: number,
+	follow: boolean,
+) => {
+	const plain = makeAnsiStripper();
+	return openDaemonStream({
 		socketPath: location.socketPath,
 		request: {
 			version: 1,
 			requestId: requestId(),
 			method: 'tail',
-			params: { runId: run.runId, serviceName: service.name },
+			params: { runId: run.runId, serviceName: service.name, lines, follow },
 		},
 	}).pipe(
 		Effect.flatMap((stream) => {
@@ -36,11 +40,16 @@ const tailService = (
 							if (frame._tag === 'output') {
 								const event = frame.value;
 								if (event.event === 'output')
-									return Effect.sync(() =>
-										process.stdout.write(
-											prefix ? `[${service.name}] ${event.data}` : event.data,
-										),
-									).pipe(Effect.andThen(read));
+									return Effect.sync(() => {
+										const data = process.stdout.isTTY
+											? event.data
+											: plain(event.data);
+										if (data.length > 0)
+											process.stdout.write(
+												prefix ? `[${service.name}] ${data}` : data,
+											);
+									}).pipe(Effect.andThen(read));
+								if (event.event === 'end') return Effect.void;
 								const exitError = serviceExit(event);
 								return exitError === undefined
 									? Effect.void
@@ -70,11 +79,14 @@ const tailService = (
 			return read();
 		}),
 	);
+};
 
 type TailFailure = CommandError | ServiceExitError | TerminalTransportError;
 
 /** Streams all matching services, qualifying output when more than one is selected. */
-export const tail = (options: CommandOptions) =>
+export const tail = (
+	options: CommandOptions & { lines: number; follow: boolean },
+) =>
 	Effect.scoped(
 		resolveCurrentRuns().pipe(
 			Effect.flatMap((resolved) =>
@@ -109,6 +121,8 @@ export const tail = (options: CommandOptions) =>
 									run,
 									service,
 									services.length > 1,
+									options.lines,
+									options.follow,
 								).pipe(
 									Effect.exit,
 									Effect.flatMap((result) => Queue.offer(completions, result)),

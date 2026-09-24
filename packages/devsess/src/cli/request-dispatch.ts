@@ -191,6 +191,8 @@ export const makeRequestDispatcher = (options: {
 										address,
 										incoming.params.after ?? 0,
 										completedExit(service),
+										incoming.params.lines,
+										incoming.params.follow !== false,
 									)
 									.pipe(Effect.as({}));
 							}),

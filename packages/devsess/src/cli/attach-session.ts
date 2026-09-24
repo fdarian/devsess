@@ -103,6 +103,7 @@ const render = <E>(
 				? Effect.succeed<RenderResult>('complete')
 				: Effect.fail(exitError);
 		}
+		if (event.event === 'end') return Effect.succeed('complete');
 		return Effect.sync(() => process.stdout.write(event.data)).pipe(
 			Effect.as<RenderResult>('continue'),
 		);

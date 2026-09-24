@@ -43,6 +43,7 @@ export const recentOutput = (
 				const frame = yield* Queue.take(stream.frames);
 				if (frame._tag === 'output') {
 					if (frame.value.event === 'exit') break;
+					if (frame.value.event === 'end') break;
 					text = `${text}${frame.value.data}`.slice(-16000);
 				} else if (frame._tag === 'error') return yield* frame.error;
 				else if (frame._tag === 'closed')

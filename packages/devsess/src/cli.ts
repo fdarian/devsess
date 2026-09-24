@@ -6,7 +6,7 @@ import { Terminal } from 'effect/Terminal';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
 import devsessPackageJson from '../package.json' with { type: 'json' };
 import { attach } from './cli/commands/attach';
-import { daemonCommand } from './cli/commands/daemon';
+import { CommandError, daemonCommand } from './cli/commands/daemon';
 import { daemonControlCommand } from './cli/commands/daemon-control';
 import { list } from './cli/commands/list';
 import { start } from './cli/commands/start';
@@ -64,9 +64,25 @@ const tailCommand = Command.make(
 		preset: optionalPreset,
 		runId: optionalString('run'),
 		allServices: Flag.boolean('all-services'),
+		lines: Flag.integer('lines').pipe(
+			Flag.withAlias('n'),
+			Flag.withDefault(10),
+		),
+		follow: Flag.boolean('follow').pipe(Flag.withAlias('f')),
 	},
 	(input) =>
-		tail({ ...selectedOptions(input), allServices: input.allServices }),
+		input.lines < 0
+			? Effect.fail(
+					new CommandError({
+						message: 'The number of lines must be non-negative',
+					}),
+				)
+			: tail({
+					...selectedOptions(input),
+					allServices: input.allServices,
+					lines: input.lines,
+					follow: input.follow,
+				}),
 );
 const attachCommand = Command.make(
 	'attach',
