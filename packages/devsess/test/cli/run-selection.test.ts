@@ -293,8 +293,12 @@ describe('running session selection', () => {
 					expect(Exit.isFailure(result)).toBe(true);
 					if (Exit.isFailure(result)) {
 						const message = String(Cause.squash(result.cause));
-						expect(message).toContain('oagent/default [first-1] started');
-						expect(message).toContain('oagent/default [second-2] started');
+						expect(message).toContain(
+							'oagent/default [first-1] — /work/oagent started',
+						);
+						expect(message).toContain(
+							'oagent/default [second-2] — /work/oagent started',
+						);
 						expect(message).toContain(
 							'devsess tail oagent/default --run first-1',
 						);
@@ -367,6 +371,67 @@ describe('running session selection', () => {
 					[],
 				).pipe(Effect.timeout('1 second'));
 				expect(selected.runId).toBe('elsewhere');
+			}),
+		),
+	);
+	it.live('lists checkout paths and IDs for an ambiguous named selector', () =>
+		testSelection(
+			Effect.gen(function* () {
+				const local = run('first-run');
+				const remote = {
+					...run('second-run'),
+					canonicalCwd: '/work/other-checkout',
+				};
+				for (const options of [
+					{ preset: 'oagent/default' },
+					{ project: 'oagent' },
+				]) {
+					const result = yield* Effect.exit(
+						chooseRun([local, remote], options, 'stop', false, [local]),
+					);
+					if (Exit.isFailure(result)) {
+						const message = String(Cause.squash(result.cause));
+						expect(message).toContain('/work/oagent');
+						expect(message).toContain('/work/other-checkout');
+						expect(message).toContain('--run first-ru');
+						expect(message).toContain('--run second-r');
+					} else expect.fail('Expected ambiguous selector');
+				}
+				const bare = yield* chooseRun([local, remote], {}, 'stop', false, [
+					local,
+				]);
+				expect(bare.runId).toBe(local.runId);
+			}),
+		),
+	);
+	it.live('does not guess between finished runs from different checkouts', () =>
+		testSelection(
+			Effect.gen(function* () {
+				const first = run('first-run', 'oagent', 'exited');
+				const second = {
+					...run('second-run', 'oagent', 'exited'),
+					canonicalCwd: '/work/other-checkout',
+				};
+				const result = yield* Effect.exit(
+					chooseRun(
+						[],
+						{ preset: 'oagent/default' },
+						'tail',
+						false,
+						[],
+						[first, second],
+					),
+				);
+				if (Exit.isFailure(result)) {
+					const message = String(Cause.squash(result.cause));
+					expect(message).toContain(
+						'Multiple finished runs match oagent/default',
+					);
+					expect(message).toContain('/work/oagent');
+					expect(message).toContain('/work/other-checkout');
+					expect(message).toContain('--run first-ru');
+					expect(message).toContain('--run second-r');
+				} else expect.fail('Expected ambiguous finished selector');
 			}),
 		),
 	);

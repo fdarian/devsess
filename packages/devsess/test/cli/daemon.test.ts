@@ -734,6 +734,24 @@ describe('daemon lifetime and failure handling', () => {
 			}),
 		),
 	);
+	it.live('does not let an orphan in another checkout block start', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				state.records.set('orphan', {
+					...orphanedRun('orphan'),
+					canonicalCwd: '/other-checkout',
+				});
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					const replacement = yield* daemon.request(start('replacement'));
+					expect(replacement).toMatchObject({ runId: 'replacement' });
+					expect((yield* state.registry.get('orphan')).state).toBe('orphaned');
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
 
 	it.live('ignores a finished run whose PID and PGID were reused', () =>
 		runTest(

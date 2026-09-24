@@ -101,22 +101,43 @@ describe('Registry', () => {
 		expect(refreshService(service, 'dead').signal).toBeUndefined();
 	});
 
-	it.effect('atomically reserves the project and preset identity', () =>
+	it.effect(
+		'atomically reserves the project, preset, and checkout identity',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const dataDirectory = yield* makeTempDir;
+					const registry = yield* Registry.pipe(
+						Effect.provide(Registry.layer({ dataDirectory })),
+					);
+					const exit = yield* Effect.exit(
+						Effect.all(
+							[registry.reserve(run('first')), registry.reserve(run('second'))],
+							{ concurrency: 'unbounded' },
+						),
+					);
+					expect(exit._tag).toBe('Failure');
+					expect((yield* registry.list).map((record) => record.runId)).toEqual([
+						'first',
+					]);
+				}),
+			),
+	);
+	it.effect('allows the same project and preset in another checkout', () =>
 		runTest(
 			Effect.gen(function* () {
 				const dataDirectory = yield* makeTempDir;
 				const registry = yield* Registry.pipe(
 					Effect.provide(Registry.layer({ dataDirectory })),
 				);
-				const exit = yield* Effect.exit(
-					Effect.all(
-						[registry.reserve(run('first')), registry.reserve(run('second'))],
-						{ concurrency: 'unbounded' },
-					),
-				);
-				expect(exit._tag).toBe('Failure');
+				yield* registry.reserve(run('first'));
+				yield* registry.reserve({
+					...run('second'),
+					canonicalCwd: '/other-checkout',
+				});
 				expect((yield* registry.list).map((record) => record.runId)).toEqual([
 					'first',
+					'second',
 				]);
 			}),
 		),
