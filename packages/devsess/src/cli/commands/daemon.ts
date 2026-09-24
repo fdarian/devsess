@@ -11,6 +11,7 @@ import {
 } from '../bootstrap';
 import { callDaemon } from '../client';
 import { DaemonLifecycle } from '../lifecycle';
+import { cancelPicker } from '../picker-cancellation';
 import { captureInvocation } from '../project-matching';
 import { isRunActive, type RunRecord, RunRecordSchema } from '../registry';
 import { shortRunId } from '../run-id';
@@ -30,6 +31,10 @@ export type CommandOptions = {
 	runId?: string;
 	allServices?: boolean;
 	force?: boolean;
+};
+
+export type ChosenRun = RunRecord & {
+	readonly selection: { readonly local: boolean; readonly label: string };
 };
 
 export type DaemonLocation = { dataDirectory: string; socketPath: string };
@@ -173,7 +178,7 @@ export const chooseRun = (
 	interactive = process.stdin.isTTY === true && process.stdout.isTTY === true,
 	local: ReadonlyArray<RunRecord> = runs,
 	finished: ReadonlyArray<RunRecord> = [],
-): Effect.Effect<RunRecord, CommandError, FileSystem | Path | Terminal> => {
+): Effect.Effect<ChosenRun, CommandError, FileSystem | Path | Terminal> => {
 	const active = runs.filter(isRunActive);
 	const parts = options.preset?.split('/');
 	if (
@@ -195,6 +200,17 @@ export const chooseRun = (
 	const projectName =
 		positionalProject === undefined ? options.project : positionalProject;
 	const knownRuns = [...active, ...finished.filter((run) => !isRunActive(run))];
+	const selected = (run: RunRecord): ChosenRun => ({
+		...run,
+		selection: {
+			local: local.some((candidate) => candidate.runId === run.runId),
+			label: `${run.projectName}/${run.presetName} [${shortRunId(run, knownRuns)}]`,
+		},
+	});
+	const explicit =
+		options.preset !== undefined ||
+		options.project !== undefined ||
+		options.runId !== undefined;
 	const positional = options.preset;
 	const positionalRunId =
 		positional !== undefined &&
@@ -245,17 +261,17 @@ export const chooseRun = (
 	const localMatches = matches.filter((run) =>
 		local.some((other) => other.runId === run.runId),
 	);
-	const candidates =
-		projectName === undefined && runId === undefined && localMatches.length > 0
-			? localMatches
-			: matches;
+	const preferLocal =
+		projectName === undefined && runId === undefined && localMatches.length > 0;
+	const candidates = !explicit || preferLocal ? localMatches : matches;
 	if (candidates.length === 0 && finished.length > 0) {
 		const matching = filterRuns(finished.filter((run) => !isRunActive(run)));
 		const nearby = matching.filter((run) =>
 			local.some((candidate) => candidate.runId === run.runId),
 		);
 		const recent =
-			projectName === undefined && runId === undefined && nearby.length > 0
+			!explicit ||
+			(projectName === undefined && runId === undefined && nearby.length > 0)
 				? nearby
 				: matching;
 		const latest = recent
@@ -273,11 +289,22 @@ export const chooseRun = (
 					)
 					.join('\n')}`,
 			});
-		if (latest !== undefined) return Effect.succeed(latest);
+		if (latest !== undefined) return Effect.succeed(selected(latest));
 	}
 	const run = candidates[0];
-	if (candidates.length === 1 && run !== undefined) return Effect.succeed(run);
+	if (candidates.length === 1 && run !== undefined)
+		return Effect.succeed(selected(run));
 	const choices = runChoices(candidates, knownRuns);
+	if (candidates.length === 0 && !explicit) {
+		const elsewhere = runChoices(active, knownRuns);
+		const first = elsewhere[0];
+		return new CommandError({
+			message:
+				first === undefined
+					? 'Nothing running in this project. See `devsess list` for available presets.'
+					: `Nothing running in this project. Running elsewhere: ${elsewhere.map((choice) => choice.label).join(', ')}. Use \`devsess ${command} ${first.run.projectName}/${first.run.presetName}\` or \`devsess ${command} ${shortRunId(first.run, knownRuns)}\`.`,
+		});
+	}
 	if (candidates.length === 0)
 		return new CommandError({
 			message: `Nothing running matches ${options.preset === undefined ? 'this command' : options.preset}. Running: ${
@@ -292,11 +319,11 @@ export const chooseRun = (
 				message: 'Choose a running preset',
 				choices: choices.map((choice) => ({
 					title: choice.label,
-					value: choice.run,
+					value: selected(choice.run),
 				})),
 			}),
 		).pipe(
-			Effect.catchTag('QuitError', () => Effect.interrupt),
+			Effect.catchTag('QuitError', cancelPicker),
 			Effect.mapError(
 				() => new CommandError({ message: 'Preset selection cancelled' }),
 			),

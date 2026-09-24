@@ -53,7 +53,12 @@ describe('stop command', () => {
 						localRuns: [run],
 					}),
 				);
-				vi.mocked(chooseRun).mockReturnValue(Effect.succeed(run));
+				vi.mocked(chooseRun).mockReturnValue(
+					Effect.succeed({
+						...run,
+						selection: { local: true, label: 'project/dev [run]' },
+					}),
+				);
 				let timeout: number | undefined;
 				vi.mocked(callDaemon).mockImplementation(
 					(_socketPath, _request, timeoutMs) => {

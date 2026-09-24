@@ -3,6 +3,7 @@ import { Prompt } from 'effect/unstable/cli';
 import { CommandError, type CommandOptions } from './commands/daemon';
 import type { ConfigPreset } from './config';
 import { readConfig, resolveDefaultConfigPath } from './config';
+import { cancelPicker } from './picker-cancellation';
 import {
 	captureInvocationWithGit,
 	type Invocation,
@@ -86,7 +87,7 @@ export const choosePreset = (
 			})),
 		}),
 	).pipe(
-		Effect.catchTag('QuitError', () => Effect.interrupt),
+		Effect.catchTag('QuitError', cancelPicker),
 		Effect.mapError(
 			() => new CommandError({ message: 'Preset selection cancelled' }),
 		),
