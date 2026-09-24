@@ -276,6 +276,7 @@ const fixture = () => {
 		),
 	);
 	const processes = Processes.of({
+		stopSampler: Effect.void,
 		capture,
 		captureLive,
 		terminate,
