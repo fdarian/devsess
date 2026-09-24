@@ -5,6 +5,7 @@ import { Cause, Deferred, Effect, Exit, Fiber, Layer, Schema } from 'effect';
 import { PlatformError, SystemError } from 'effect/PlatformError';
 import { vi } from 'vitest';
 import { callDaemon } from '../../src/cli/client';
+import { formatStatus } from '../../src/cli/commands/status';
 import { Daemon, makeDaemon } from '../../src/cli/daemon';
 import { type LogAddress, type LogEvent, Logs } from '../../src/cli/logs';
 import { ProcessError, Processes } from '../../src/cli/processes';
@@ -78,6 +79,20 @@ const orphanedRun = (runId: string): RunRecord => ({
 			cwd: '/tmp',
 			state: 'orphaned',
 			process: identity(98765),
+		},
+	],
+});
+const finishedRun = (runId: string): RunRecord => ({
+	...orphanedRun(runId),
+	state: 'failed',
+	services: [
+		{
+			name: 'web',
+			command: 'sleep 30',
+			cwd: '/tmp',
+			state: 'failed',
+			process: identity(98765),
+			exitCode: 1,
 		},
 	],
 });
@@ -711,13 +726,73 @@ describe('daemon lifetime and failure handling', () => {
 					expect(Exit.isFailure(result)).toBe(true);
 					if (Exit.isFailure(result)) {
 						const message = Cause.pretty(result.cause);
-						expect(message).toContain('Service web');
-						expect(message).toContain('kill -TERM -98765');
-						expect(message).toContain('devsess stop --force');
+						expect(message).toContain('service web');
+						expect(message).toContain('PID 98765 PGID 98765');
+						expect(message).toContain('devsess stop orphan --force');
 					}
 				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
 			}),
 		),
+	);
+
+	it.live('ignores a finished run whose PID and PGID were reused', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				state.records.set('old', finishedRun('old'));
+				state.owns.mockReturnValue(Effect.succeed(false));
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					const runs = (yield* daemon.request(
+						list,
+					)) as ReadonlyArray<RunRecord>;
+					expect(formatStatus(runs, true)[0]).toContain('Nothing running');
+					const replacement = yield* daemon.request(start('replacement'));
+					expect(replacement).toMatchObject({ runId: 'replacement' });
+					expect((yield* state.registry.get('old')).state).toBe('failed');
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live(
+		'reports a verified surviving process from a finished run in status and on start',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					state.records.set('old', finishedRun('old'));
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						const runs = (yield* daemon.request(
+							list,
+						)) as ReadonlyArray<RunRecord>;
+						expect(formatStatus(runs, true).join('\n')).toContain(
+							'web: orphaned pid 98765',
+						);
+						const result = yield* Effect.exit(
+							daemon.request(start('replacement')),
+						);
+						expect(Exit.isFailure(result)).toBe(true);
+						if (Exit.isFailure(result)) {
+							const message = Cause.pretty(result.cause);
+							expect(message).toContain(
+								'run old service web PID 98765 PGID 98765',
+							);
+							expect(message).toContain('process verified alive');
+							expect(message).toContain('devsess stop old --force');
+						}
+						const unrelated = start('unrelated');
+						const started = yield* daemon.request({
+							...unrelated,
+							params: { ...unrelated.params, presetName: 'other' },
+						});
+						expect(started).toMatchObject({ runId: 'unrelated' });
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
 	);
 
 	it.live('force stops an orphan and unblocks a replacement start', () =>
@@ -738,6 +813,7 @@ describe('daemon lifetime and failure handling', () => {
 					});
 					expect(result).toMatchObject({ state: 'exited' });
 					expect(state.terminate).toHaveBeenCalledWith(identity(98765), true);
+					state.owns.mockReturnValue(Effect.succeed(false));
 					const replacement = yield* daemon.request(start('replacement'));
 					expect(replacement).toMatchObject({ runId: 'replacement' });
 				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
@@ -875,6 +951,7 @@ describe('daemon lifetime and failure handling', () => {
 				yield* Effect.gen(function* () {
 					const daemon = yield* Daemon;
 					state.groupAlive.mockReturnValue(Effect.succeed(false));
+					state.owns.mockReturnValue(Effect.succeed(false));
 					const result = yield* daemon.request(start('replacement'));
 					expect(result).toMatchObject({ runId: 'replacement' });
 					expect(state.records.has('replacement')).toBe(true);
@@ -970,6 +1047,12 @@ describe('daemon lifetime and failure handling', () => {
 						const onExit = state.terminal.onExit.mock.calls[0]?.[0];
 						if (onExit === undefined)
 							return yield* Effect.die('Missing PTY exit callback');
+						state.terminate.mockImplementation(() =>
+							Effect.sync(() => {
+								state.owns.mockReturnValue(Effect.succeed(false));
+								return 15;
+							}),
+						);
 						onExit({ exitCode: 0 });
 						yield* daemon.request(list);
 						expect(state.terminate).toHaveBeenCalledWith(identity(98765));
@@ -1503,6 +1586,12 @@ describe('daemon lifetime and failure handling', () => {
 						const onExit = state.terminal.onExit.mock.calls[0]?.[0];
 						if (typeof onData !== 'function' || typeof onExit !== 'function')
 							return yield* Effect.die('Missing PTY callbacks');
+						state.terminate.mockImplementation(() =>
+							Effect.sync(() => {
+								state.owns.mockReturnValue(Effect.succeed(false));
+								return 15;
+							}),
+						);
 						onData('x'.repeat(1024 * 1024));
 						onExit({ exitCode: 0 });
 						const listed = (yield* daemon.request(list)) as Array<RunRecord>;

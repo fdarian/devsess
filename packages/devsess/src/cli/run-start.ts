@@ -12,7 +12,6 @@ import type { RegistryService, RunRecord } from './registry';
 import {
 	aggregateState,
 	type LiveService,
-	orphanRemedy,
 	type ServiceStateApi,
 	serviceKey,
 } from './service-state';
@@ -57,7 +56,10 @@ export const makeRunStart = (options: {
 				const refreshedServices = yield* Effect.forEach(
 					candidate.services,
 					(service) =>
-						options.serviceState.refreshServiceRecord(service, false),
+						options.serviceState.refreshServiceRecord(
+							service,
+							service.state === 'failed' || service.state === 'exited',
+						),
 				);
 				const refreshed = {
 					...candidate,
@@ -74,8 +76,15 @@ export const makeRunStart = (options: {
 						return yield* Effect.die(
 							'An orphaned service must retain its process identity',
 						);
+					if (
+						refreshed.services.some(
+							(service, index) => service !== candidate.services[index],
+						)
+					)
+						yield* options.registry.replace(refreshed);
+					const verified = yield* options.processes.owns(process);
 					return yield* new DaemonError({
-						message: `Cannot start ${candidate.projectName}/${candidate.presetName}: ${orphanRemedy(candidate, orphan, process.processGroupId)}`,
+						message: `Cannot start ${candidate.projectName}/${candidate.presetName}: run ${candidate.runId} service ${orphan.name} PID ${process.pid} PGID ${process.processGroupId} (${verified ? 'process verified alive' : 'process not verified alive; group may be reused'}). Run \`devsess stop ${candidate.runId} --force\` to clear it.`,
 					});
 				}
 				if (
@@ -90,18 +99,6 @@ export const makeRunStart = (options: {
 					return yield* new DaemonError({
 						message: `Run ${candidate.runId} still has an active service`,
 					});
-				}
-				for (const service of refreshed.services) {
-					if (
-						service.process !== undefined &&
-						(yield* options.processes.groupAlive(
-							service.process.processGroupId,
-						))
-					) {
-						return yield* new DaemonError({
-							message: `Run ${candidate.runId} still owns a service process`,
-						});
-					}
 				}
 				if (
 					refreshed.services.some(

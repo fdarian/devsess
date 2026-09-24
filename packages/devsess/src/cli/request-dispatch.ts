@@ -96,7 +96,10 @@ export const makeRequestDispatcher = (options: {
 			if (state === undefined || state.closed)
 				return Effect.fail(new DaemonError({ message: 'Socket is closed' }));
 		}
-		if (incoming.method === 'listRuns') return options.registry.list;
+		if (incoming.method === 'listRuns')
+			return options.serviceState.reconcileFinished.pipe(
+				Effect.andThen(options.registry.list),
+			);
 		if (incoming.method === 'info')
 			return options.info === undefined
 				? Effect.fail(
