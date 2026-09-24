@@ -5,6 +5,7 @@ import { Deferred, Effect } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { Path } from 'effect/Path';
 import { DevSessions } from '../dev-sessions';
+import { publishDaemonReadiness } from './daemon-readiness';
 
 const RUNNING_SIGNAL_FILE = '.data/running.json';
 
@@ -102,6 +103,7 @@ export const publishRunning = (value: unknown) =>
 	Effect.gen(function* () {
 		const sessions = yield* DevSessions;
 		yield* publishRunningSignal(runningSignalPath(sessions.dir), value);
+		yield* publishDaemonReadiness(value);
 	});
 
 /**
