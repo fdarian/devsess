@@ -34,7 +34,9 @@ const layer = (directory: string, socketPath: string) => {
 		makeDaemon({ dataDirectory: directory, socketPath }),
 	).pipe(Layer.provideMerge(dependencies));
 };
-const start = (command: string): DaemonRequest => ({
+const start = (
+	command: string,
+): Extract<DaemonRequest, { readonly method: 'startRun' }> => ({
 	version: 1,
 	requestId: 'start',
 	method: 'startRun',
@@ -103,6 +105,75 @@ const checkReplay = (marker: string) =>
 	});
 
 describe('real PTY startup events', () => {
+	for (const restartCount of [1, 2]) {
+		it.live(`stops every process after ${restartCount} restart(s)`, () =>
+			runTest(
+				Effect.gen(function* () {
+					const directory = yield* makeTempDir;
+					const socketPath = join(directory, 'daemon.sock');
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						const processes = yield* Processes;
+						const original = start('sleep 30 & wait');
+						const started = yield* daemon
+							.request({
+								...original,
+								params: {
+									...original.params,
+									canonicalCwd: directory,
+									invocationCwd: directory,
+									services: [
+										{ name: 'web', command: 'sleep 30 & wait', cwd: directory },
+									],
+								},
+							})
+							.pipe(
+								Effect.flatMap(Schema.decodeUnknownEffect(RunRecordSchema)),
+							);
+						const identities = [started.services[0]?.process];
+						expect(identities[0]).toBeDefined();
+						for (let index = 0; index < restartCount; index++) {
+							const restarted = yield* daemon
+								.request({
+									version: 1,
+									requestId: `restart-${index}`,
+									method: 'restartServices',
+									params: { runId: 'run', serviceNames: ['web'] },
+								})
+								.pipe(
+									Effect.flatMap(Schema.decodeUnknownEffect(RunRecordSchema)),
+								);
+							const identity = restarted.services[0]?.process;
+							expect(identity).toBeDefined();
+							expect(identity?.pid).not.toBe(identities.at(-1)?.pid);
+							if (identity === undefined)
+								return yield* Effect.die('Missing restarted process');
+							identities.push(identity);
+							expect(yield* processes.groupAlive(identity.processGroupId)).toBe(
+								true,
+							);
+						}
+						const stopped = yield* daemon.request({
+							version: 1,
+							requestId: 'stop',
+							method: 'stopRun',
+							params: { runId: 'run' },
+						});
+						expect(stopped).toMatchObject({
+							state: 'exited',
+							services: [{ state: 'exited' }],
+						});
+						for (const identity of identities) {
+							if (identity !== undefined)
+								expect(
+									yield* processes.groupAlive(identity.processGroupId),
+								).toBe(false);
+						}
+					}).pipe(Effect.provide(layer(directory, socketPath)));
+				}),
+			),
+		);
+	}
 	it.live(
 		'restarts one service with its original environment, clears readiness, and appends to its log',
 		() =>

@@ -1,8 +1,8 @@
-import { Effect, Exit } from 'effect';
+import { Cause, Effect, Exit, Option } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { Scope } from 'effect/Scope';
-import { DaemonError } from './daemon-errors';
+import { DaemonError, errorMessage } from './daemon-errors';
 import type { ServiceExit } from './exit-status';
 import type { LogAddress } from './logs';
 import type { OutputWorker } from './output-worker';
@@ -16,6 +16,12 @@ import {
 	stoppedExit,
 } from './service-state';
 import type { Subscriptions } from './subscriptions';
+
+const failureReason = (cause: Cause.Cause<unknown>) =>
+	Option.match(Cause.findErrorOption(cause), {
+		onNone: () => Cause.pretty(cause),
+		onSome: errorMessage,
+	});
 
 export type RunStop = {
 	readonly finishService: (
@@ -78,6 +84,10 @@ export const makeRunStop = (options: {
 			);
 			if (Exit.isFailure(persisted)) failures.push(persisted.cause);
 			const failureMessages: Array<string> = [];
+			if (Exit.isFailure(persisted))
+				failureMessages.push(
+					`Could not persist stopping state: ${failureReason(persisted.cause)}`,
+				);
 			const services = yield* Effect.forEach(stopping, (service) =>
 				Effect.gen(function* () {
 					if (serviceNames !== undefined && !serviceNames.has(service.name))
@@ -125,6 +135,9 @@ export const makeRunStop = (options: {
 					);
 					if (Exit.isFailure(result)) {
 						failures.push(result.cause);
+						failureMessages.push(
+							`Service ${service.name}: ${failureReason(result.cause)}`,
+						);
 						if (
 							!force &&
 							live === undefined &&
