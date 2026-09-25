@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { readFile } from 'node:fs/promises';
+import { posix } from 'node:path';
 import { NodeRuntime, NodeServices, NodeTerminal } from '@effect/platform-node';
 import { Effect, Layer, Option } from 'effect';
 import { Terminal } from 'effect/Terminal';
@@ -154,21 +155,59 @@ const listCommand = Command.make(
 			configPath: value(input.configPath),
 		}),
 ).pipe(Command.withDescription('List configured presets for this checkout.'));
-const docsCommand = Command.make('docs', {}, () =>
+const docTopics = [
+	'configuration',
+	'running',
+	'selecting',
+	'logs',
+	'attach',
+	'daemon',
+	'troubleshooting',
+] as const;
+const printDoc = (filename: string) =>
 	Effect.tryPromise({
-		try: () => readFile(new URL('../CLI.md', import.meta.url), 'utf8'),
+		try: () =>
+			readFile(new URL(`../docs/cli/${filename}`, import.meta.url), 'utf8'),
 		catch: (cause) =>
 			new CommandError({
-				message: 'Could not read the bundled CLI reference',
+				message: `Could not read the bundled CLI topic ${filename}`,
 				cause,
 			}),
 	}).pipe(
-		Effect.flatMap((reference) =>
-			Effect.sync(() => process.stdout.write(reference)),
+		Effect.flatMap((content) =>
+			Effect.sync(() =>
+				process.stdout.write(
+					filename === 'index.md'
+						? content
+								.replace('`devsess docs read <id>`', 'devsess docs read <id>')
+								.replace(/^- /gm, '')
+						: content,
+				),
+			),
 		),
-	),
-).pipe(
-	Command.withDescription('Print the complete CLI reference as Markdown.'),
+	);
+const docsReadCommand = Command.make(
+	'read',
+	{
+		id: Argument.string('id').pipe(
+			Argument.withDescription('Topic ID or relative Markdown filename.'),
+		),
+	},
+	(input) => {
+		const filename = posix.normalize(input.id);
+		const id = filename.endsWith('.md') ? filename.slice(0, -3) : filename;
+		return docTopics.some((topic) => topic === id)
+			? printDoc(`${id}.md`)
+			: Effect.fail(
+					new CommandError({
+						message: `Unknown docs topic ${input.id}. Valid IDs: ${docTopics.join(', ')}`,
+					}),
+				);
+	},
+).pipe(Command.withDescription('Print one CLI topic by ID or filename.'));
+const docsCommand = Command.make('docs', {}, () => printDoc('index.md')).pipe(
+	Command.withDescription('List CLI topics and the everyday workflow.'),
+	Command.withSubcommands([docsReadCommand]),
 );
 const app = Command.make('devsess', {}).pipe(
 	Command.withDescription(
@@ -194,7 +233,7 @@ const app = Command.make('devsess', {}).pipe(
 		{ command: 'devsess stop', description: 'Stop the selected run.' },
 		{
 			command: 'devsess docs',
-			description: 'Print the full CLI reference as Markdown.',
+			description: 'Find a CLI topic to read.',
 		},
 	]),
 	Command.withSubcommands([

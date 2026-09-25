@@ -59,6 +59,15 @@ export default defineConfig({
 				{
 					text: 'CLI',
 					link: '/reference/cli',
+					items: [
+						{ text: 'Configuration', link: '/reference/cli/configuration' },
+						{ text: 'Running services', link: '/reference/cli/running' },
+						{ text: 'Selecting runs', link: '/reference/cli/selecting' },
+						{ text: 'Reading logs', link: '/reference/cli/logs' },
+						{ text: 'Attaching', link: '/reference/cli/attach' },
+						{ text: 'Daemon', link: '/reference/cli/daemon' },
+						{ text: 'Troubleshooting', link: '/reference/cli/troubleshooting' },
+					],
 				},
 				{
 					text: 'devsess',
