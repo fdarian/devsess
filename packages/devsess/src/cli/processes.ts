@@ -702,7 +702,7 @@ export class Processes extends Context.Service<Processes>()(
 									[...groupMembers.values()],
 									ownsTreeProcess,
 								);
-								if (!verified.some(Boolean)) {
+								if (!verified.some(Boolean) && !(yield* owns(identity))) {
 									if (!(yield* groupAlive(identity.processGroupId))) {
 										valid = false;
 										return false;

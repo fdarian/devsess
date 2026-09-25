@@ -25,7 +25,11 @@ afterEach(() => {
 
 const missing = () =>
 	Object.assign(new Error('No such process'), { code: 'ESRCH' });
-const fakeGroup = (termKillsGroup = true, escaped = false) => {
+const fakeGroup = (
+	termKillsGroup = true,
+	escaped = false,
+	omitTree = false,
+) => {
 	const state = {
 		leaderAlive: true,
 		groupAlive: true,
@@ -39,7 +43,9 @@ const fakeGroup = (termKillsGroup = true, escaped = false) => {
 		if (commandArgs[0] === '-A') {
 			callback(
 				null,
-				`${state.groupAlive ? ' 98765 1 98765 S Wed Sep  9 00:00:00 2026\n 98766 98765 98765 S Wed Sep  9 00:00:00 2026\n' : ''}${escaped ? ` 99999 98765 99999 S ${state.childStart}\n` : ''}`,
+				omitTree
+					? ''
+					: `${state.groupAlive ? ' 98765 1 98765 S Wed Sep  9 00:00:00 2026\n 98766 98765 98765 S Wed Sep  9 00:00:00 2026\n' : ''}${escaped ? ` 99999 98765 99999 S ${state.childStart}\n` : ''}`,
 				'',
 			);
 			return {} as ReturnType<typeof execFile>;
@@ -94,6 +100,18 @@ const fakeGroup = (termKillsGroup = true, escaped = false) => {
 };
 
 describe('live process group ownership', () => {
+	it.live(
+		'signals a captured leader even when the tree sampler missed it',
+		() =>
+			Effect.gen(function* () {
+				const group = fakeGroup(true, false, true);
+				const processes = yield* Processes.make;
+				const owned = yield* processes.captureLive(98765);
+				yield* owned.terminate;
+				expect(group.kill).toHaveBeenCalledWith(-98765, 'SIGTERM');
+				expect(group.state.groupAlive).toBe(false);
+			}),
+	);
 	it.effect('reads one process tree per sample across multiple services', () =>
 		Effect.gen(function* () {
 			const read = vi.fn(() =>
