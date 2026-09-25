@@ -1,5 +1,11 @@
 # devsess
 
+## 0.3.2
+
+### Patch Changes
+
+- bb584ac: Keep managed subprocesses in the caller's process group so supervisors can stop them together.
+
 ## 0.3.1
 
 ### Patch Changes
