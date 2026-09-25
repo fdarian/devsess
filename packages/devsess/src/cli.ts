@@ -7,6 +7,7 @@ import { Effect, Layer, Option } from 'effect';
 import { Terminal } from 'effect/Terminal';
 import { Argument, Command, Flag } from 'effect/unstable/cli';
 import devsessPackageJson from '../package.json' with { type: 'json' };
+import { reportCliCause } from './cli/cli-errors';
 import { attach } from './cli/commands/attach';
 import { CommandError, daemonCommand } from './cli/commands/daemon';
 import { daemonControlCommand } from './cli/commands/daemon-control';
@@ -258,5 +259,10 @@ const services = Layer.mergeAll(
 NodeRuntime.runMain(
 	Command.runWith(app, { version: devsessPackageJson.version })(
 		process.argv.slice(2),
-	).pipe(Effect.scoped, Effect.provide(services)),
+	).pipe(
+		Effect.scoped,
+		Effect.provide(services),
+		Effect.tapCause(reportCliCause),
+	),
+	{ disableErrorReporting: true },
 );
