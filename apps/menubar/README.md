@@ -9,9 +9,11 @@ swift build
 swift test
 scripts/bundle.sh
 .build/release/Devsess --snapshot build/snapshots
+.build/release/Devsess --selftest-panel
 ```
 
 The ad-hoc signed app is `build/Devsess.app`. Open it manually to use the panel; it has no Dock icon. `Devsess --list` performs a read-only daemon check. Snapshots do not connect to the daemon.
+The self-test exercises the real status-item panel offscreen through repeated expand/collapse and run-list changes, checking its top anchor and fitted size.
 
 Snapshot mode writes the busy, empty, and daemon-down panels plus `icons.png` (2x) and `icons-1x.png` (actual 1x pixels) to the specified directory.
 It also captures `panel-live-busy.png` and `panel-live-single.png` from the native panel hierarchy in an offscreen window; neither capture polls the daemon.

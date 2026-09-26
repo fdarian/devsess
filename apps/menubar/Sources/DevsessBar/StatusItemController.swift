@@ -1,0 +1,181 @@
+import AppKit
+import Observation
+import SwiftUI
+
+@MainActor final class StatusItemController: NSObject {
+    let panel: PanelWindow
+    let host: SizingHostingView<PanelView>
+    let presentation: PanelPresentation
+    private let material: NSVisualEffectView
+    private let store: RunStore
+    private var statusItem: NSStatusItem?
+    private var globalMonitor: Any?
+    private var localMonitor: Any?
+    private var isHiding = false
+    private let testAnchor: NSRect?
+    private let testScreen: NSRect?
+
+    init(store: RunStore, showsStatusItem: Bool = true, testAnchor: NSRect? = nil, testScreen: NSRect? = nil) {
+        self.store = store
+        self.testAnchor = testAnchor
+        self.testScreen = testScreen
+        let presentation = PanelPresentation()
+        self.presentation = presentation
+        host = SizingHostingView(rootView: PanelView(store: store, presentation: presentation))
+        host.sizingOptions = [.intrinsicContentSize]
+        panel = PanelWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 160),
+            styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
+            backing: .buffered, defer: false
+        )
+        material = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 360, height: 160))
+        super.init()
+
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.hasShadow = true
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.isReleasedWhenClosed = false
+        material.material = .popover
+        material.blendingMode = .behindWindow
+        material.state = .active
+        material.wantsLayer = true
+        material.layer?.cornerRadius = 10
+        material.layer?.masksToBounds = true
+        host.frame = material.bounds
+        host.autoresizingMask = [.width, .height]
+        material.addSubview(host)
+        panel.contentView = material
+        panel.onDismiss = { [weak self] in self?.hide() }
+        host.onSizeChange = { [weak self] in self?.updateLayout() }
+
+        if showsStatusItem {
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            statusItem = item
+            item.button?.target = self
+            item.button?.action = #selector(toggle)
+            item.button?.imagePosition = .imageOnly
+            updateIcon()
+            store.start()
+        }
+        observeChanges()
+    }
+
+    @objc private func toggle() {
+        if panel.isVisible { hide() }
+        else { show() }
+    }
+
+    private func show() {
+        store.panelOpen = true
+        updateLayout()
+        panel.makeKeyAndOrderFront(nil)
+        installMonitors()
+        Task { await store.refresh() }
+    }
+
+    func hide() {
+        guard panel.isVisible, !isHiding else { return }
+        isHiding = true
+        store.panelOpen = false
+        panel.orderOut(nil)
+        removeMonitors()
+        isHiding = false
+    }
+
+    private func installMonitors() {
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.hide() }
+        }
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            if let self, event.window != self.panel, event.window != self.statusItem?.button?.window {
+                self.hide()
+            }
+            return event
+        }
+    }
+
+    private func removeMonitors() {
+        if let globalMonitor { NSEvent.removeMonitor(globalMonitor); self.globalMonitor = nil }
+        if let localMonitor { NSEvent.removeMonitor(localMonitor); self.localMonitor = nil }
+    }
+
+    private func observeChanges() {
+        withObservationTracking {
+            _ = store.runs
+            _ = store.daemonDown
+            _ = store.statusError
+            _ = store.actionErrors
+            _ = store.stopping
+            _ = presentation.finishedExpanded
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.observeChanges()
+                self.updateIcon()
+                self.host.invalidateIntrinsicContentSize()
+                self.updateLayout()
+            }
+        }
+    }
+
+    private func updateIcon() {
+        statusItem?.button?.image = MenuBarIcon.image(
+            states: store.groups.active.map(\.glyphState), daemonDown: store.daemonDown
+        )
+    }
+
+    func updateLayout() {
+        let anchor: NSRect
+        let screen: NSRect
+        if let testAnchor, let testScreen {
+            anchor = testAnchor
+            screen = testScreen
+        } else {
+            guard let button = statusItem?.button, let window = button.window,
+                  let visibleFrame = window.screen?.visibleFrame else { return }
+            anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
+            screen = visibleFrame
+        }
+        host.layoutSubtreeIfNeeded()
+        let fittingHeight = host.intrinsicContentSize.height
+        guard fittingHeight > 0, fittingHeight.isFinite else { return }
+        let top = anchor.minY - 4
+        let height = min(fittingHeight, 530, top - screen.minY)
+        let width: CGFloat = 360
+        let x = min(max(anchor.midX - width / 2, screen.minX), screen.maxX - width)
+        let frame = NSRect(x: x, y: top - height, width: width, height: height)
+        if abs(panel.frame.minX - frame.minX) > 0.5 || abs(panel.frame.minY - frame.minY) > 0.5
+            || abs(panel.frame.width - frame.width) > 0.5 || abs(panel.frame.height - frame.height) > 0.5 {
+            panel.setFrame(frame, display: panel.isVisible)
+        }
+        host.frame = material.bounds
+    }
+}
+
+@MainActor final class SizingHostingView<Content: View>: NSHostingView<Content> {
+    var onSizeChange: (() -> Void)?
+    private var reportQueued = false
+
+    override func invalidateIntrinsicContentSize() {
+        super.invalidateIntrinsicContentSize()
+        queueReport()
+    }
+
+    override func layout() {
+        super.layout()
+        queueReport()
+    }
+
+    private func queueReport() {
+        guard !reportQueued else { return }
+        reportQueued = true
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self else { return }
+            self.reportQueued = false
+            self.onSizeChange?()
+        }
+    }
+}
