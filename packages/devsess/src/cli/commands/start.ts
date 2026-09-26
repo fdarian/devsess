@@ -69,19 +69,9 @@ const observedRun = (socketPath: string, runId: string) =>
 	callDaemon(socketPath, {
 		version: 1,
 		requestId: requestId(),
-		method: 'listRuns',
-		params: {},
-	}).pipe(
-		Effect.flatMap(decodeRunListResponse),
-		Effect.flatMap((runs) => {
-			const run = runs.find((candidate) => candidate.runId === runId);
-			return run === undefined
-				? new CommandError({
-						message: `Started run ${runId} disappeared from the daemon`,
-					})
-				: Effect.succeed({ run, runs });
-		}),
-	);
+		method: 'getRun',
+		params: { runId },
+	}).pipe(Effect.flatMap(decodeRunResponse));
 
 export const watchStart = (
 	socketPath: string,
@@ -94,9 +84,13 @@ export const watchStart = (
 			const deadline = Date.now() + 2000;
 			const warningDeadline = Date.now() + 15000;
 			const seen = new Set<string>();
-			const observed = yield* observedRun(socketPath, initial.runId);
-			let run = observed.run;
-			let runs = observed.runs;
+			const runs = yield* callDaemon(socketPath, {
+				version: 1,
+				requestId: requestId(),
+				method: 'listRuns',
+				params: {},
+			}).pipe(Effect.flatMap(decodeRunListResponse));
+			let run = yield* observedRun(socketPath, initial.runId);
 			let warned = false;
 			while (true) {
 				for (const service of run.services) {
@@ -134,10 +128,8 @@ export const watchStart = (
 						);
 					}
 				}
-				yield* Effect.sleep('100 millis');
-				const next = yield* observedRun(socketPath, run.runId);
-				run = next.run;
-				runs = next.runs;
+				yield* Effect.sleep('500 millis');
+				run = yield* observedRun(socketPath, run.runId);
 			}
 		}),
 	).pipe(

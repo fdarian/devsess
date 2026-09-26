@@ -110,10 +110,9 @@ export const makeRequestDispatcher = (options: {
 			if (state === undefined || state.closed)
 				return Effect.fail(new DaemonError({ message: 'Socket is closed' }));
 		}
-		if (incoming.method === 'listRuns')
-			return options.serviceState.reconcileFinished.pipe(
-				Effect.andThen(options.registry.list),
-			);
+		if (incoming.method === 'listRuns') return options.registry.list;
+		if (incoming.method === 'getRun')
+			return options.registry.get(incoming.params.runId);
 		if (incoming.method === 'info')
 			return options.info === undefined
 				? Effect.fail(
@@ -141,7 +140,10 @@ export const makeRequestDispatcher = (options: {
 				}),
 			);
 		if (incoming.method === 'startRun')
-			return options.runStart.startRun(incoming);
+			return options.runStart.startRun(incoming).pipe(
+				Effect.tap(() => options.registry.prune),
+				Effect.tapError(() => options.registry.prune),
+			);
 		if (incoming.method === 'publish' || incoming.method === 'unpublish')
 			return Effect.gen(function* () {
 				const run = yield* options.registry.get(incoming.params.runId);
@@ -181,7 +183,10 @@ export const makeRequestDispatcher = (options: {
 		if (incoming.method === 'stopRun')
 			return options.runStop
 				.stopRun(incoming.params.runId, incoming.params.force === true)
-				.pipe(Effect.tap(() => forgetFinished(incoming.params.runId)));
+				.pipe(
+					Effect.tap(() => forgetFinished(incoming.params.runId)),
+					Effect.tap(() => options.registry.prune),
+				);
 		if (incoming.method === 'restartServices')
 			return Effect.gen(function* () {
 				const run = yield* options.registry.get(incoming.params.runId);
@@ -339,6 +344,7 @@ export const makeRequestDispatcher = (options: {
 				.stopRun(message.address.runId, false, message.address)
 				.pipe(
 					Effect.tap(() => forgetFinished(message.address.runId)),
+					Effect.tap(() => options.registry.prune),
 					Effect.catch((cause) => Effect.logError(cause)),
 					Effect.asVoid,
 				);
@@ -375,6 +381,7 @@ export const makeRequestDispatcher = (options: {
 									options.subscriptions.markPersisted(message.address),
 								),
 								Effect.andThen(forgetFinished(message.address.runId)),
+								Effect.andThen(options.registry.prune),
 							);
 					}),
 				),

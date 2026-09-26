@@ -49,6 +49,7 @@ const dispatcher = (runs: ReadonlyArray<RunRecord>) =>
 		};
 		const value = makeRequestDispatcher({
 			registry: {
+				prune: Effect.void,
 				list: Effect.succeed(runs),
 				get: () => Effect.succeed(activeRun),
 				reserve: () => Effect.void,
