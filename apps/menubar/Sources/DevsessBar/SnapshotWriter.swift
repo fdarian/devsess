@@ -6,11 +6,11 @@ enum SnapshotWriter {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let busy = RunStore()
         busy.runsForPreview(Fixtures.busy)
-        try save(PanelView(store: busy, snapshotMode: true).frame(height: 510, alignment: .top).background(Color(nsColor: .windowBackgroundColor)), as: "panel-busy.png", in: directory)
-        try save(PanelView(store: RunStore(), snapshotMode: true).frame(height: 155, alignment: .top).background(Color(nsColor: .windowBackgroundColor)), as: "panel-empty.png", in: directory)
+        try save(PanelView(store: busy, snapshotMode: true).background(Color(nsColor: .windowBackgroundColor)), as: "panel-busy.png", in: directory)
+        try save(PanelView(store: RunStore(), snapshotMode: true).background(Color(nsColor: .windowBackgroundColor)), as: "panel-empty.png", in: directory)
         let down = RunStore()
         down.downForPreview()
-        try save(PanelView(store: down, snapshotMode: true).frame(height: 155, alignment: .top).background(Color(nsColor: .windowBackgroundColor)), as: "panel-daemon-down.png", in: directory)
+        try save(PanelView(store: down, snapshotMode: true).background(Color(nsColor: .windowBackgroundColor)), as: "panel-daemon-down.png", in: directory)
 
         let variants: [(String, [JackState], Bool)] = [
             ("Idle", [], false), ("One", [.ready], false),
@@ -38,11 +38,12 @@ enum SnapshotWriter {
             }
         }
         try save(icons, as: "icons.png", in: directory)
+        try save(icons, as: "icons-1x.png", in: directory, scale: 1)
     }
 
-    @MainActor private static func save<V: View>(_ view: V, as name: String, in directory: URL) throws {
+    @MainActor private static func save<V: View>(_ view: V, as name: String, in directory: URL, scale: CGFloat = 2) throws {
         let renderer = ImageRenderer(content: view.environment(\.colorScheme, .light))
-        renderer.scale = 2
+        renderer.scale = scale
         renderer.isOpaque = true
         guard let image = renderer.nsImage,
               let tiff = image.tiffRepresentation,

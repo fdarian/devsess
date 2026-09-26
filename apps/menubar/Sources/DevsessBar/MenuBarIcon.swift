@@ -14,7 +14,7 @@ struct JackGlyph: View {
             let count = visible.isEmpty ? 1 : visible.count
             let radius: CGFloat = 4.1
             for index in 0..<count {
-                let x = CGFloat(index) * 12 + 6
+                let x = CGFloat(index) * 14 + 6
                 let center = CGPoint(x: x, y: size.height / 2)
                 let circle = Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
                 let state = visible.isEmpty ? JackState.starting : visible[index]
@@ -38,7 +38,7 @@ struct JackGlyph: View {
                 context.draw(text, at: CGPoint(x: size.width - 7, y: size.height / 2))
             }
         }
-        .frame(width: states.count >= 5 ? 52 : CGFloat(max(1, min(states.count, 4))) * 12, height: 18)
+        .frame(width: states.count >= 5 ? 56 : CGFloat(max(1, min(states.count, 4))) * 14 - 2, height: 18)
         .accessibilityLabel(states.isEmpty ? "No active devsess runs" : "\(states.count) active devsess runs")
     }
 }
