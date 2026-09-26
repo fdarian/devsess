@@ -207,7 +207,7 @@ export const makeRunStart = (options: {
 			let lifecycleReady = false;
 			yield* options.output.start(address, terminal);
 			terminal.onData((data) => {
-				options.output.enqueue(address, data);
+				options.output.enqueue(address, terminal, data);
 			});
 			terminal.onExit((event) => {
 				const exit: ServiceExit = {

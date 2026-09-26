@@ -79,7 +79,8 @@ export type ServiceStateApi = {
 		address: LogAddress,
 		state: ServiceState,
 		exit?: ServiceExit,
-	) => Effect.Effect<RunRecord, unknown, FileSystem | Path>;
+		expectedPid?: number,
+	) => Effect.Effect<RunRecord | undefined, unknown, FileSystem | Path>;
 	readonly refreshServiceRecord: (
 		service: ServiceRecord,
 		verifyOwnership: boolean,
@@ -96,6 +97,7 @@ export const makeServiceState = (options: {
 		address: LogAddress,
 		state: ServiceState,
 		exit?: ServiceExit,
+		expectedPid?: number,
 	) => {
 		const completionStatus =
 			state === 'exited' || state === 'failed'
@@ -103,6 +105,12 @@ export const makeServiceState = (options: {
 				: undefined;
 		return options.registry.get(address.runId).pipe(
 			Effect.flatMap((run) => {
+				if (
+					expectedPid !== undefined &&
+					run.services.find((service) => service.name === address.serviceName)
+						?.process?.pid !== expectedPid
+				)
+					return Effect.succeed(undefined);
 				const services = run.services.map((service) =>
 					service.name === address.serviceName
 						? exit === undefined
