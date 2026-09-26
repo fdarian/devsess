@@ -49,7 +49,12 @@ export class Daemon extends Context.Service<Daemon, DaemonService>()(
 		maxLogBytes: number;
 	}) => Layer.Layer<Daemon, unknown, FileSystem | Path> = (options) =>
 		Layer.effect(Daemon, makeDaemon(options)).pipe(
-			Layer.provide(Registry.layer({ dataDirectory: options.dataDirectory })),
+			Layer.provide(
+				Registry.layer({
+					dataDirectory: options.dataDirectory,
+					logsDirectory: options.logsDirectory,
+				}),
+			),
 			Layer.provide(
 				Logs.layer({
 					dataDirectory: options.dataDirectory,
@@ -261,6 +266,7 @@ export const makeDaemon = (options: {
 			fail,
 		});
 		yield* serviceState.reconcile;
+		yield* registry.prune;
 		const requestWorker = yield* Effect.forever(
 			Queue.take(requestQueue).pipe(Effect.flatMap(dispatcher.handleClient)),
 		).pipe(Effect.forkScoped);

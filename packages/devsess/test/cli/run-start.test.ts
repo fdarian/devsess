@@ -106,6 +106,7 @@ describe('run start registration ordering', () => {
 							return Effect.succeed(run);
 						},
 						list: Effect.succeed([]),
+						prune: Effect.void,
 					});
 					const output = {
 						start: () => Effect.succeed(undefined),

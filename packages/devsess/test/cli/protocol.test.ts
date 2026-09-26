@@ -7,6 +7,32 @@ import {
 } from '../../src/cli/protocol';
 
 describe('CLI protocol validation', () => {
+	it.effect(
+		'accepts an additive getRun request and rejects unsafe run IDs',
+		() =>
+			Effect.gen(function* () {
+				const request = yield* decodeRequest(
+					JSON.stringify({
+						version: 1,
+						requestId: 'get',
+						method: 'getRun',
+						params: { runId: 'run' },
+					}),
+				);
+				expect(request.method).toBe('getRun');
+				const invalid = yield* Effect.exit(
+					decodeRequest(
+						JSON.stringify({
+							version: 1,
+							requestId: 'get',
+							method: 'getRun',
+							params: { runId: '../escape' },
+						}),
+					),
+				);
+				expect(invalid._tag).toBe('Failure');
+			}),
+	);
 	it.effect('rejects empty and unsafe request identifiers', () =>
 		Effect.gen(function* () {
 			const invalidRequests = [

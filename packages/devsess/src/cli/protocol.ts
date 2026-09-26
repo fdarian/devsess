@@ -32,6 +32,12 @@ export const ListRunsRequest = Schema.Struct({
 	method: Schema.Literal('listRuns'),
 	params: Schema.Struct({}),
 });
+export const GetRunRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('getRun'),
+	params: Schema.Struct({ runId: Identifier }),
+});
 export const PublishRequest = Schema.Struct({
 	version: Schema.Literal(PROTOCOL_VERSION),
 	requestId: Identifier,
@@ -134,6 +140,7 @@ export const DetachRequest = Schema.Struct({
 export const DaemonRequest = Schema.Union([
 	StartRunRequest,
 	ListRunsRequest,
+	GetRunRequest,
 	PublishRequest,
 	UnpublishRequest,
 	InfoRequest,

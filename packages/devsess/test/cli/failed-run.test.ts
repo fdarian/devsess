@@ -91,8 +91,11 @@ describe('failed run diagnostics', () => {
 								: service,
 						),
 					};
-					vi.mocked(callDaemon).mockReturnValue(
-						Effect.succeed([ready]) as never,
+					vi.mocked(callDaemon).mockImplementation(
+						(_socket, request) =>
+							Effect.succeed(
+								request.method === 'listRuns' ? [ready] : ready,
+							) as never,
 					);
 					const output = vi
 						.spyOn(process.stdout, 'write')
@@ -104,6 +107,9 @@ describe('failed run diagnostics', () => {
 					).pipe(Effect.timeout('2 seconds'));
 					expect(result.seen.has('web')).toBe(true);
 					expect(result.seen.has('db')).toBe(false);
+					expect(
+						vi.mocked(callDaemon).mock.calls.map((call) => call[1].method),
+					).toEqual(['listRuns', 'getRun']);
 					expect(output).toHaveBeenCalledWith(
 						'web ready → http://localhost:5173\n',
 					);
@@ -141,8 +147,11 @@ describe('failed run diagnostics', () => {
 							},
 						],
 					};
-					vi.mocked(callDaemon).mockReturnValue(
-						Effect.succeed([exited]) as never,
+					vi.mocked(callDaemon).mockImplementation(
+						(_socket, request) =>
+							Effect.succeed(
+								request.method === 'listRuns' ? [exited] : exited,
+							) as never,
 					);
 					const result = yield* watchStart(
 						'/tmp/isolated.sock',

@@ -298,6 +298,7 @@ describe('subscription setup races', () => {
 								return run;
 							}),
 						list: Effect.succeed([run]),
+						prune: Effect.void,
 						reserve: (_run: RunRecord) => Effect.void,
 						replace: (_run: RunRecord) => Effect.succeed(run),
 					});

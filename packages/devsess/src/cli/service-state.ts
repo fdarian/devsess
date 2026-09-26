@@ -86,7 +86,6 @@ export type ServiceStateApi = {
 		verifyOwnership: boolean,
 	) => Effect.Effect<ServiceRecord, unknown, FileSystem | Path>;
 	readonly reconcile: Effect.Effect<void, unknown, FileSystem | Path>;
-	readonly reconcileFinished: Effect.Effect<void, unknown, FileSystem | Path>;
 };
 
 export const makeServiceState = (options: {
@@ -181,23 +180,12 @@ export const makeServiceState = (options: {
 				),
 			);
 	};
-	const reconcileRuns = (finished: boolean) =>
+	const reconcileRuns = () =>
 		options.registry.list.pipe(
 			Effect.flatMap((runs) =>
 				Effect.forEach(runs, (run) => {
-					if (
-						!run.services.some((service) =>
-							finished
-								? service.state === 'failed' || service.state === 'exited'
-								: isActive(service.state) || service.state === 'orphaned',
-						)
-					)
-						return Effect.void;
 					return Effect.forEach(run.services, (service) =>
-						finished ===
-						(service.state === 'failed' || service.state === 'exited')
-							? refreshServiceRecord(service, true)
-							: Effect.succeed(service),
+						refreshServiceRecord(service, true),
 					).pipe(
 						Effect.flatMap((services) => {
 							if (
@@ -218,12 +206,10 @@ export const makeServiceState = (options: {
 				}),
 			),
 		);
-	const reconcile = reconcileRuns(false);
-	const reconcileFinished = reconcileRuns(true);
+	const reconcile = reconcileRuns();
 	return {
 		replaceService,
 		refreshServiceRecord,
 		reconcile,
-		reconcileFinished,
 	};
 };

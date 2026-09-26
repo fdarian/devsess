@@ -31,6 +31,117 @@ const run = (runId: string): RunRecord => ({
 });
 
 describe('Registry', () => {
+	it.effect(
+		'keeps the latest finished run per project, preset, and checkout and removes older logs',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const dataDirectory = yield* makeTempDir;
+					const fileSystem = yield* FileSystem;
+					const path = yield* Path;
+					const logsDirectory = path.join(dataDirectory, 'external-logs');
+					const registry = yield* Registry.pipe(
+						Effect.provide(Registry.layer({ dataDirectory, logsDirectory })),
+					);
+					const old = crypto.randomUUID();
+					const current = crypto.randomUUID();
+					const differentPreset = crypto.randomUUID();
+					const differentCwd = crypto.randomUUID();
+					const active = crypto.randomUUID();
+					const orphan = crypto.randomUUID();
+					const finished = (id: string, startedAt: string): RunRecord => ({
+						...run(id),
+						startedAt,
+						state: 'exited',
+						services: [
+							{
+								name: 'web',
+								command: 'exit 0',
+								cwd: '/workspace',
+								state: 'exited',
+								exitCode: 0,
+							},
+						],
+					});
+					const records = [
+						finished(old, '2026-09-09T00:00:00.000Z'),
+						finished(current, '2026-09-10T00:00:00.000Z'),
+						{
+							...finished(differentPreset, '2026-09-09T00:00:00.000Z'),
+							presetName: 'other',
+						},
+						{
+							...finished(differentCwd, '2026-09-09T00:00:00.000Z'),
+							canonicalCwd: '/another',
+						},
+						{
+							...run(active),
+							presetName: 'active',
+							services: [
+								{
+									name: 'web',
+									command: 'sleep 30',
+									cwd: '/workspace',
+									state: 'running' as const,
+								},
+							],
+							state: 'running' as const,
+						},
+						{
+							...run(orphan),
+							services: [
+								{
+									name: 'web',
+									command: 'sleep 30',
+									cwd: '/workspace',
+									state: 'orphaned' as const,
+								},
+							],
+							state: 'orphaned' as const,
+						},
+					];
+					for (const record of records) {
+						yield* registry.reserve(record);
+						yield* fileSystem.makeDirectory(
+							path.join(logsDirectory, record.runId),
+							{ recursive: true },
+						);
+					}
+					yield* registry.prune;
+					expect((yield* registry.list).map((record) => record.runId)).toEqual([
+						current,
+						differentPreset,
+						differentCwd,
+						active,
+						orphan,
+					]);
+					expect(yield* fileSystem.exists(path.join(logsDirectory, old))).toBe(
+						false,
+					);
+					for (const id of [
+						current,
+						differentPreset,
+						differentCwd,
+						active,
+						orphan,
+					])
+						expect(yield* fileSystem.exists(path.join(logsDirectory, id))).toBe(
+							true,
+						);
+					const next = crypto.randomUUID();
+					yield* registry.reserve(run(next));
+					yield* registry.replace(finished(next, '2026-09-11T00:00:00.000Z'));
+					yield* registry.prune;
+					expect(
+						(yield* registry.list).map((record) => record.runId),
+					).not.toContain(current);
+					expect(
+						yield* fileSystem.exists(path.join(logsDirectory, current)),
+					).toBe(false);
+					expect((yield* registry.get(next)).state).toBe('exited');
+				}),
+			),
+	);
 	it('rejects unsafe persisted process identifiers', () => {
 		const exit = Effect.runSyncExit(
 			Schema.decodeUnknownEffect(RunRecordSchema)({

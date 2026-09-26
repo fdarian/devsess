@@ -253,6 +253,7 @@ const fixture = () => {
 				records.set(run.runId, run);
 			}),
 		list: Effect.sync(() => [...records.values()]),
+		prune: Effect.void,
 	});
 	const terminate = vi.fn(
 		(
@@ -882,7 +883,7 @@ describe('daemon lifetime and failure handling', () => {
 	);
 
 	it.live(
-		'defers inspection of historical finished processes until a run list is requested',
+		'verifies historical finished processes once at startup, not on listRuns',
 		() =>
 			runTest(
 				Effect.gen(function* () {
@@ -892,8 +893,20 @@ describe('daemon lifetime and failure handling', () => {
 						state.records.set(`old-${index}`, finishedRun(`old-${index}`));
 					state.owns.mockReturnValue(Effect.succeed(false));
 					yield* Effect.gen(function* () {
-						yield* Daemon;
+						const daemon = yield* Daemon;
+						expect(state.owns).toHaveBeenCalledTimes(30);
+						state.owns.mockClear();
+						yield* daemon.request(list);
+						yield* daemon.request(list);
+						const single = yield* daemon.request({
+							version: 1,
+							requestId: 'get',
+							method: 'getRun',
+							params: { runId: 'old-0' },
+						});
+						expect(single).toMatchObject({ runId: 'old-0' });
 						expect(state.owns).not.toHaveBeenCalled();
+						expect(state.groupAlive).not.toHaveBeenCalled();
 					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
 				}),
 			),

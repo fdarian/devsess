@@ -7,7 +7,11 @@ import { Daemon, makeDaemon } from '../../src/cli/daemon';
 import { Logs } from '../../src/cli/logs';
 import { Processes } from '../../src/cli/processes';
 import { DaemonInfo, type DaemonRequest } from '../../src/cli/protocol';
-import { Registry, RunRecordSchema } from '../../src/cli/registry';
+import {
+	Registry,
+	type RunRecord,
+	RunRecordSchema,
+} from '../../src/cli/registry';
 import { runTest } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
 
@@ -69,6 +73,106 @@ const shutdown: DaemonRequest = {
 	method: 'shutdown',
 	params: {},
 };
+
+it.live('prunes existing finished run history on daemon startup', () =>
+	runTest(
+		Effect.gen(function* () {
+			const directory = yield* makeTempDir;
+			const fileSystem = yield* FileSystem;
+			const registry = yield* Registry.pipe(
+				Effect.provide(Registry.layer({ dataDirectory: directory })),
+			);
+			const old = crypto.randomUUID();
+			const latest = crypto.randomUUID();
+			for (const id of [old, latest]) {
+				const record: RunRecord = {
+					runId: id,
+					projectName: 'project',
+					presetName: 'dev',
+					canonicalCwd: '/tmp',
+					invocationCwd: '/tmp',
+					configSnapshot: {},
+					startedAt: id === old ? '2026-09-09' : '2026-09-10',
+					state: 'exited',
+					daemon: { pid: 123, processGroupId: 123, startedAt: 'birth' },
+					services: [
+						{
+							name: 'web',
+							command: 'exit 0',
+							cwd: '/tmp',
+							state: 'exited',
+							exitCode: 0,
+						},
+					],
+				};
+				yield* registry.reserve(record);
+				yield* fileSystem.makeDirectory(join(directory, 'logs', id), {
+					recursive: true,
+				});
+			}
+			yield* Effect.gen(function* () {
+				const daemon = yield* Daemon;
+				const runs = (yield* daemon.request(list)) as ReadonlyArray<RunRecord>;
+				expect(runs.map((record) => record.runId)).toEqual([latest]);
+			}).pipe(Effect.provide(layer(directory, join(directory, 'daemon.sock'))));
+			expect(yield* fileSystem.exists(join(directory, 'logs', old))).toBe(
+				false,
+			);
+			expect(yield* fileSystem.exists(join(directory, 'logs', latest))).toBe(
+				true,
+			);
+		}),
+	),
+);
+
+it.live(
+	'keeps only the second finished start and removes the first run logs',
+	() =>
+		runTest(
+			Effect.gen(function* () {
+				const directory = yield* makeTempDir;
+				const fileSystem = yield* FileSystem;
+				const first = crypto.randomUUID();
+				const second = crypto.randomUUID();
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					for (const id of [first, second]) {
+						const request = start('printf "hello\\n"');
+						yield* daemon.request({
+							...request,
+							params: { ...request.params, runId: id },
+						});
+						const finished = Effect.gen(function* () {
+							while (true) {
+								const record = (yield* daemon.request({
+									version: 1,
+									requestId: 'get',
+									method: 'getRun',
+									params: { runId: id },
+								})) as RunRecord;
+								if (record.state === 'exited' || record.state === 'failed')
+									return;
+								yield* Effect.sleep('50 millis');
+							}
+						});
+						yield* finished.pipe(Effect.timeout('5 seconds'));
+					}
+					const records = (yield* daemon.request(
+						list,
+					)) as ReadonlyArray<RunRecord>;
+					expect(records.map((record) => record.runId)).toEqual([second]);
+				}).pipe(
+					Effect.provide(layer(directory, join(directory, 'daemon.sock'))),
+				);
+				expect(yield* fileSystem.exists(join(directory, 'logs', first))).toBe(
+					false,
+				);
+				expect(yield* fileSystem.exists(join(directory, 'logs', second))).toBe(
+					true,
+				);
+			}),
+		),
+);
 const tail = (socket: Socket, marker: string) =>
 	Effect.tryPromise({
 		try: () =>

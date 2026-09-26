@@ -31,6 +31,7 @@ describe('stop failures', () => {
 				};
 				const stop = makeRunStop({
 					registry: {
+						prune: Effect.void,
 						get: () => Effect.succeed(run),
 						replace: (updated) => Effect.succeed(updated),
 						list: Effect.succeed([run]),
