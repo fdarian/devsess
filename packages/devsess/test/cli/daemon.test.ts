@@ -245,6 +245,7 @@ const fixture = () => {
 				return run;
 			}),
 	);
+	const prune = vi.fn((): Effect.Effect<void, PlatformError> => Effect.void);
 	const registry = Registry.of({
 		get,
 		replace,
@@ -253,7 +254,7 @@ const fixture = () => {
 				records.set(run.runId, run);
 			}),
 		list: Effect.sync(() => [...records.values()]),
-		prune: Effect.void,
+		prune: Effect.suspend(prune),
 	});
 	const terminate = vi.fn(
 		(
@@ -315,6 +316,7 @@ const fixture = () => {
 		clear: vi.fn(),
 	};
 	vi.mocked(createPty).mockReturnValue(Effect.succeed(terminal));
+	vi.mocked(createPty).mockClear();
 	vi.mocked(terminatePty).mockClear();
 	const layerWithLogs = (socketPath: string, configuredLogs: typeof logs) =>
 		Layer.effect(Daemon, makeDaemon({ socketPath })).pipe(
@@ -327,6 +329,7 @@ const fixture = () => {
 		records,
 		registry,
 		replace,
+		prune,
 		terminate,
 		groupAlive,
 		capture,
@@ -346,6 +349,63 @@ const lastServer = () => {
 };
 
 describe('daemon lifetime and failure handling', () => {
+	it.live(
+		'keeps start and stop outcomes and a clean exit when pruning fails',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						state.prune.mockReturnValue(
+							Effect.fail(
+								new PlatformError(
+									new SystemError({
+										_tag: 'Unknown',
+										module: 'test',
+										method: 'remove',
+										description: 'cannot remove logs',
+									}),
+								),
+							),
+						);
+						yield* daemon.request(start('first'));
+						const blocked = yield* Effect.exit(
+							daemon.request(start('blocked')),
+						);
+						expect(Exit.isFailure(blocked)).toBe(true);
+						if (Exit.isFailure(blocked)) {
+							expect(Cause.pretty(blocked.cause)).toContain(
+								'Cannot start project/dev',
+							);
+							expect(Cause.pretty(blocked.cause)).not.toContain(
+								'cannot remove logs',
+							);
+						}
+						const stopped = (yield* daemon.request({
+							...stop,
+							params: { runId: 'first' },
+						})) as RunRecord;
+						expect(stopped.state).toBe('exited');
+						state.owns.mockReturnValue(Effect.succeed(false));
+						yield* daemon.request(start('second'));
+						const onExit = state.terminal.onExit.mock.calls.at(-1)?.[0];
+						if (onExit === undefined)
+							return yield* Effect.die('Missing PTY exit callback');
+						onExit({ exitCode: 0 });
+						yield* Effect.gen(function* () {
+							while ((yield* state.registry.get('second')).state !== 'exited')
+								yield* Effect.sleep('10 millis');
+						}).pipe(Effect.timeout('2 seconds'));
+						expect(
+							(yield* state.registry.get('second')).services[0]?.state,
+						).toBe('exited');
+						expect(state.prune).toHaveBeenCalled();
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
 	it.live(
 		'injects service identity and persists publish/unpublish until exit',
 		() =>

@@ -17,7 +17,10 @@ import { makeTempDir } from '../support/temp-dir';
 
 const layer = (directory: string, socketPath: string) => {
 	const dependencies = Layer.mergeAll(
-		Registry.layer({ dataDirectory: directory }),
+		Registry.layer({
+			dataDirectory: directory,
+			logsDirectory: join(directory, 'logs'),
+		}),
 		Logs.layer({ dataDirectory: directory, maxBytes: 4096 }),
 		Layer.effect(
 			Processes,
@@ -80,7 +83,12 @@ it.live('prunes existing finished run history on daemon startup', () =>
 			const directory = yield* makeTempDir;
 			const fileSystem = yield* FileSystem;
 			const registry = yield* Registry.pipe(
-				Effect.provide(Registry.layer({ dataDirectory: directory })),
+				Effect.provide(
+					Registry.layer({
+						dataDirectory: directory,
+						logsDirectory: join(directory, 'logs'),
+					}),
+				),
 			);
 			const old = crypto.randomUUID();
 			const latest = crypto.randomUUID();

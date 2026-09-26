@@ -61,7 +61,10 @@ describe('escaped service descendants', () => {
 					},
 				};
 				const dependencies = Layer.mergeAll(
-					Registry.layer({ dataDirectory: directory }),
+					Registry.layer({
+						dataDirectory: directory,
+						logsDirectory: join(directory, 'logs'),
+					}),
 					Logs.layer({ dataDirectory: directory, maxBytes: 4096 }),
 					Processes.layer,
 				);

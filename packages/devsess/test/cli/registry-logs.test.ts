@@ -218,8 +218,14 @@ describe('Registry', () => {
 			runTest(
 				Effect.gen(function* () {
 					const dataDirectory = yield* makeTempDir;
+					const path = yield* Path;
 					const registry = yield* Registry.pipe(
-						Effect.provide(Registry.layer({ dataDirectory })),
+						Effect.provide(
+							Registry.layer({
+								dataDirectory,
+								logsDirectory: path.join(dataDirectory, 'logs'),
+							}),
+						),
 					);
 					const exit = yield* Effect.exit(
 						Effect.all(
@@ -238,8 +244,14 @@ describe('Registry', () => {
 		runTest(
 			Effect.gen(function* () {
 				const dataDirectory = yield* makeTempDir;
+				const path = yield* Path;
 				const registry = yield* Registry.pipe(
-					Effect.provide(Registry.layer({ dataDirectory })),
+					Effect.provide(
+						Registry.layer({
+							dataDirectory,
+							logsDirectory: path.join(dataDirectory, 'logs'),
+						}),
+					),
 				);
 				yield* registry.reserve(run('first'));
 				yield* registry.reserve({

@@ -155,24 +155,20 @@ export class Registry extends Context.Service<
 >()('devsess/cli/Registry') {
 	static readonly layer = (options: {
 		dataDirectory: string;
-		logsDirectory?: string;
+		logsDirectory: string;
 	}) => Layer.effect(Registry, makeRegistry(options));
 }
 
 const makeRegistry = (options: {
 	dataDirectory: string;
-	logsDirectory?: string;
+	logsDirectory: string;
 }) =>
 	Effect.gen(function* () {
 		const fileSystem = yield* FileSystem;
 		const path = yield* Path;
 		const semaphore = yield* Semaphore.make(1);
 		const target = path.join(options.dataDirectory, 'running.json');
-		const logsDirectory = path.resolve(
-			options.logsDirectory === undefined
-				? path.join(options.dataDirectory, 'logs')
-				: options.logsDirectory,
-		);
+		const logsDirectory = path.resolve(options.logsDirectory);
 		const read = fileSystem
 			.exists(target)
 			.pipe(
@@ -300,3 +296,6 @@ const makeRegistry = (options: {
 	});
 
 export type RegistryService = Context.Service.Shape<typeof Registry>;
+
+export const bestEffortPrune = (registry: RegistryService) =>
+	registry.prune.pipe(Effect.catch((cause) => Effect.logError(cause)));
