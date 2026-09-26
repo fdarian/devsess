@@ -9,30 +9,34 @@ struct HoldToStopButton: View {
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: started == nil)) { timeline in
             let progress = started.map { min(1, timeline.date.timeIntervalSince($0) / 0.6) } ?? 0
             ZStack {
-                Circle().stroke(Color.secondary.opacity(0.25), lineWidth: 2)
-                Circle().trim(from: 0, to: progress).stroke(Theme.red, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                Image(systemName: "stop.fill").font(.system(size: 9))
-            }
-            .frame(width: 24, height: 24)
-            .foregroundStyle(.secondary)
-            .contentShape(Rectangle())
-            .onChange(of: progress) { _, value in
-                if value >= 1 && !fired {
-                    fired = true
-                    started = nil
-                    action()
+                if started != nil {
+                    Circle().trim(from: 0, to: progress)
+                        .stroke(Theme.red, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .frame(width: 19, height: 19)
                 }
+                Image(systemName: "stop")
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(.secondary.opacity(0.7))
             }
+            .frame(width: 22, height: 22)
+            .contentShape(Rectangle())
         }
         .onLongPressGesture(minimumDuration: 0.6, maximumDistance: 30, pressing: { pressing in
             if pressing { started = Date(); fired = false }
             else { started = nil }
         }, perform: {
-            if !fired { fired = true; action() }
+            fireOnce()
         })
-        .simultaneousGesture(TapGesture().modifiers(.option).onEnded { action() })
+        .simultaneousGesture(TapGesture().modifiers(.option).onEnded { fireOnce() })
         .help("Hold to stop. Option-click to stop immediately.")
         .accessibilityLabel("Hold to stop run")
+    }
+
+    private func fireOnce() {
+        guard !fired else { return }
+        fired = true
+        started = nil
+        action()
     }
 }

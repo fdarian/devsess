@@ -45,18 +45,23 @@ struct RunRow: View {
             }
             if !run.services.isEmpty {
                 VStack(alignment: .leading, spacing: 11) {
-                    ForEach(run.services) { service in
+                    ForEach(run.services.indices, id: \.self) { index in
+                        let service = run.services[index]
                         ServiceRow(service: service, active: active, snapshotMode: snapshotMode, restart: { restart(service) })
+                            .overlay(alignment: .topLeading) {
+                                if index < run.services.count - 1 {
+                                    GeometryReader { geometry in
+                                        Rectangle()
+                                            .fill(Theme.lamp(run.state).opacity(0.35))
+                                            .frame(width: 1, height: geometry.size.height + 11)
+                                            .offset(x: 3.5, y: 9)
+                                            .allowsHitTesting(false)
+                                    }
+                                }
+                            }
                     }
                 }
                 .padding(.leading, 15)
-                .overlay(alignment: .leading) {
-                    Rectangle().fill(Theme.lamp(run.state).opacity(0.35))
-                        .frame(width: 1)
-                        .padding(.leading, 18.5)
-                        .padding(.vertical, 8)
-                        .allowsHitTesting(false)
-                }
             }
             if let error {
                 Text(error).font(.caption).foregroundStyle(Theme.red)

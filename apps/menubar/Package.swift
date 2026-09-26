@@ -7,7 +7,15 @@ let package = Package(
     products: [.executable(name: "Devsess", targets: ["DevsessBar"])],
     targets: [
         .executableTarget(name: "DevsessBar"),
-        .testTarget(name: "DevsessBarTests", dependencies: ["DevsessBar"], resources: [.copy("list-runs.json")])
+        .testTarget(
+            name: "DevsessBarTests",
+            dependencies: ["DevsessBar"],
+            resources: [.copy("list-runs.json")],
+            // CLT's SwiftPM does not discover TestingMacros in its nested plugin directory.
+            swiftSettings: [.unsafeFlags([
+                "-plugin-path", "/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing"
+            ])]
+        )
     ],
     swiftLanguageModes: [.v6]
 )
