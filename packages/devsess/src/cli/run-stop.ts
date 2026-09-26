@@ -2,6 +2,7 @@ import { Cause, Effect, Exit, Option } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { Scope } from 'effect/Scope';
+import type { IPty } from 'node-pty';
 import { DaemonError, errorMessage } from './daemon-errors';
 import type { ServiceExit } from './exit-status';
 import type { LogAddress } from './logs';
@@ -27,6 +28,7 @@ export type RunStop = {
 	readonly finishService: (
 		address: LogAddress,
 		exit: ServiceExit,
+		terminal?: IPty,
 	) => Effect.Effect<void, unknown, FileSystem | Path | Scope>;
 	readonly stopRun: (
 		runId: string,
@@ -46,11 +48,15 @@ export const makeRunStop = (options: {
 	readonly output: OutputWorker;
 	readonly subscriptions: Subscriptions;
 }): RunStop => {
-	const finishService = (address: LogAddress, exit: ServiceExit) =>
+	const finishService = (
+		address: LogAddress,
+		exit: ServiceExit,
+		terminal?: IPty,
+	) =>
 		options.output
-			.awaitIdle(address)
+			.awaitIdle(address, terminal)
 			.pipe(
-				Effect.andThen(options.output.close(address)),
+				Effect.andThen(options.output.close(address, terminal)),
 				Effect.andThen(
 					options.subscriptions.finishSubscriptions(address, exit),
 				),
@@ -110,7 +116,7 @@ export const makeRunStop = (options: {
 						const exit = failed
 							? { exitCode: 1, signal: undefined }
 							: stoppedExit(live);
-						yield* finishService(address, exit);
+						yield* finishService(address, exit, live?.terminal);
 						return {
 							...service,
 							state: failed ? ('failed' as const) : ('exited' as const),
@@ -155,7 +161,8 @@ export const makeRunStop = (options: {
 									: ('stopping' as const),
 						};
 					}
-					options.terminals.delete(serviceKey(address));
+					if (options.terminals.get(serviceKey(address)) === live)
+						options.terminals.delete(serviceKey(address));
 					const terminationSignal = Exit.isSuccess(result)
 						? result.value
 						: undefined;
@@ -165,7 +172,7 @@ export const makeRunStop = (options: {
 					const exit = failed
 						? { exitCode: 1, signal: terminationSignal }
 						: stoppedExit(live, terminationSignal);
-					yield* finishService(address, exit);
+					yield* finishService(address, exit, live?.terminal);
 					return {
 						...service,
 						state: failed ? ('failed' as const) : ('exited' as const),
@@ -204,8 +211,9 @@ export const makeRunStop = (options: {
 		Effect.gen(function* () {
 			const terminationSignal = yield* live.ownership.terminate;
 			const exit = stoppedExit(live, terminationSignal);
-			options.terminals.delete(serviceKey(live.address));
-			yield* finishService(live.address, exit);
+			if (options.terminals.get(serviceKey(live.address)) === live)
+				options.terminals.delete(serviceKey(live.address));
+			yield* finishService(live.address, exit, live.terminal);
 			const run = yield* options.registry.get(live.address.runId);
 			const services = run.services.map((service) =>
 				service.name === live.address.serviceName

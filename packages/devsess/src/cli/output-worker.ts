@@ -27,9 +27,12 @@ export type OutputWorker = {
 		address: LogAddress,
 		terminal: IPty,
 	) => Effect.Effect<OutputState, never, FileSystem | Path | Scope>;
-	readonly enqueue: (address: LogAddress, data: string) => void;
-	readonly awaitIdle: (address: LogAddress) => Effect.Effect<void>;
-	readonly close: (address: LogAddress) => Effect.Effect<void>;
+	readonly enqueue: (address: LogAddress, terminal: IPty, data: string) => void;
+	readonly awaitIdle: (
+		address: LogAddress,
+		terminal?: IPty,
+	) => Effect.Effect<void>;
+	readonly close: (address: LogAddress, terminal?: IPty) => Effect.Effect<void>;
 	readonly appendMarker: (
 		address: LogAddress,
 		data: string,
@@ -54,11 +57,12 @@ export const makeOutputWorker = (options: {
 				{ discard: true },
 			);
 		};
-		const awaitIdle = (address: LogAddress) =>
+		const awaitIdle = (address: LogAddress, terminal?: IPty) =>
 			Effect.suspend(() => {
 				const output = outputs.get(serviceKey(address));
 				if (
 					output === undefined ||
+					(terminal !== undefined && output.terminal !== terminal) ||
 					(!output.processing && output.pendingBytes === 0)
 				)
 					return Effect.void;
@@ -69,11 +73,15 @@ export const makeOutputWorker = (options: {
 					yield* Deferred.await(waiter);
 				});
 			});
-		const close = (address: LogAddress) =>
+		const close = (address: LogAddress, terminal?: IPty) =>
 			Effect.suspend(() => {
 				const key = serviceKey(address);
 				const output = outputs.get(key);
-				if (output === undefined) return Effect.void;
+				if (
+					output === undefined ||
+					(terminal !== undefined && output.terminal !== terminal)
+				)
+					return Effect.void;
 				output.closed = true;
 				output.pending = '';
 				output.pendingBytes = 0;
@@ -85,14 +93,20 @@ export const makeOutputWorker = (options: {
 					),
 					Effect.tap(() =>
 						Effect.sync(() => {
-							outputs.delete(key);
+							if (outputs.get(key) === output) outputs.delete(key);
 						}),
 					),
 				);
 			});
-		const enqueue = (address: LogAddress, data: string) => {
+		const enqueue = (address: LogAddress, terminal: IPty, data: string) => {
 			const output = outputs.get(serviceKey(address));
-			if (output === undefined || output.closed || output.failed) return;
+			if (
+				output === undefined ||
+				output.terminal !== terminal ||
+				output.closed ||
+				output.failed
+			)
+				return;
 			output.pending += data;
 			output.pendingBytes += Buffer.byteLength(data);
 			if (output.pendingBytes > MAX_OUTPUT_BACKLOG_BYTES && !output.paused) {

@@ -542,6 +542,112 @@ describe('daemon lifetime and failure handling', () => {
 		),
 	);
 
+	it.live(
+		'keeps a restarted service alive when the old exit lifecycle resumes',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const oldExitEntered = yield* Deferred.make<void>();
+					const releaseOldExit = yield* Deferred.make<void>();
+					const appended: Array<string> = [];
+					const logs = Logs.of({
+						append: (_address, data) =>
+							Effect.sync(() => {
+								appended.push(data);
+								return { data, offset: appended.join('').length };
+							}),
+						replayAndSubscribe: () =>
+							Effect.succeed({
+								replay: [],
+								flush: Effect.void,
+								unsubscribe: Effect.void,
+							}),
+					});
+					const newTerminal = {
+						...state.terminal,
+						pid: 98766,
+						onData: vi.fn(state.terminal.onData.getMockImplementation()),
+						onExit: vi.fn(state.terminal.onExit.getMockImplementation()),
+					};
+					const thirdTerminal = {
+						...newTerminal,
+						pid: 98767,
+						onData: vi.fn(state.terminal.onData.getMockImplementation()),
+						onExit: vi.fn(state.terminal.onExit.getMockImplementation()),
+					};
+					vi.mocked(createPty)
+						.mockReturnValueOnce(Effect.succeed(state.terminal))
+						.mockReturnValueOnce(Effect.succeed(newTerminal))
+						.mockReturnValueOnce(Effect.succeed(thirdTerminal));
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						yield* daemon.request(start());
+						state.terminate.mockImplementationOnce(() =>
+							Deferred.succeed(oldExitEntered, undefined).pipe(
+								Effect.andThen(Deferred.await(releaseOldExit)),
+								Effect.as(15),
+							),
+						);
+						const onOldExit = state.terminal.onExit.mock.calls[0]?.[0];
+						if (onOldExit === undefined)
+							return yield* Effect.die('Missing old exit callback');
+						onOldExit({ exitCode: 143, signal: 15 });
+						yield* Deferred.await(oldExitEntered).pipe(
+							Effect.timeout('1 second'),
+						);
+						const restart = {
+							version: 1 as const,
+							requestId: 'restart',
+							method: 'restartServices' as const,
+							params: { runId: 'run', serviceNames: ['web'] },
+						};
+						yield* daemon.request(restart).pipe(Effect.timeout('1 second'));
+						yield* Deferred.succeed(releaseOldExit, undefined);
+						yield* Effect.sleep('10 millis');
+						yield* daemon.request(list);
+						const running = yield* state.registry.get('run');
+						expect(running.services[0]).toMatchObject({
+							state: 'running',
+							process: identity(98766),
+						});
+						expect(running.services[0]?.exitCode).toBeUndefined();
+						const onOldData = state.terminal.onData.mock.calls[0]?.[0];
+						if (onOldData === undefined)
+							return yield* Effect.die('Missing old output callback');
+						onOldData('late old output');
+						const onNewData = newTerminal.onData.mock.calls[0]?.[0];
+						if (onNewData === undefined)
+							return yield* Effect.die('Missing new output callback');
+						onNewData('new output after restart');
+						for (let attempt = 0; attempt < 100; attempt += 1) {
+							if (appended.join('').includes('new output after restart')) break;
+							yield* Effect.sleep('1 millis');
+						}
+						expect(appended.join('')).toContain(
+							'--- devsess: restarted web ---',
+						);
+						expect(appended.join('')).toContain('new output after restart');
+						expect(appended.join('')).not.toContain('late old output');
+						yield* daemon.request(restart);
+						const restarted = yield* state.registry.get('run');
+						expect(restarted.services[0]).toMatchObject({
+							state: 'running',
+							process: identity(98767),
+						});
+						expect(restarted.services[0]?.exitCode).toBeUndefined();
+						yield* daemon.request(stop);
+						expect(state.terminate).toHaveBeenCalledWith(identity(98767));
+					}).pipe(
+						Effect.provide(
+							state.layerWithLogs(join(root, 'daemon.sock'), logs),
+						),
+					);
+				}),
+			),
+	);
+
 	it.live('releases close churn without waiting for lifecycle work', () =>
 		runTest(
 			Effect.gen(function* () {

@@ -353,31 +353,54 @@ export const makeRequestDispatcher = (options: {
 				signal: message.signal,
 			};
 			return live.ownership.terminate.pipe(
-				Effect.andThen(
-					options.serviceState.replaceService(
-						message.address,
-						serviceExitCode(exit) === 0 ? 'exited' : 'failed',
-						exit,
-					),
+				Effect.flatMap(() =>
+					options.terminals.get(key) === live
+						? options.serviceState.replaceService(
+								message.address,
+								serviceExitCode(exit) === 0 ? 'exited' : 'failed',
+								exit,
+								live.ownership.identity.pid,
+							)
+						: Effect.succeed(undefined),
 				),
-				Effect.tap(() =>
-					Effect.sync(() => {
+				Effect.flatMap((updated) =>
+					Effect.suspend(() => {
+						if (updated === undefined || options.terminals.get(key) !== live)
+							return Effect.void;
 						options.terminals.delete(key);
+						return options.runStop
+							.finishService(message.address, exit, live.terminal)
+							.pipe(
+								Effect.andThen(
+									options.subscriptions.markPersisted(message.address),
+								),
+								Effect.andThen(forgetFinished(message.address.runId)),
+							);
 					}),
 				),
-				Effect.andThen(options.runStop.finishService(message.address, exit)),
-				Effect.andThen(options.subscriptions.markPersisted(message.address)),
-				Effect.andThen(forgetFinished(message.address.runId)),
 				Effect.asVoid,
 				Effect.catch((cause) =>
-					options.serviceState
-						.replaceService(message.address, 'orphaned', exit)
-						.pipe(
-							Effect.andThen(
-								options.runStop.finishService(message.address, exit),
-							),
-							Effect.andThen(Effect.logError(cause)),
-						),
+					(options.terminals.get(key) === live
+						? options.serviceState
+								.replaceService(
+									message.address,
+									'orphaned',
+									exit,
+									live.ownership.identity.pid,
+								)
+								.pipe(
+									Effect.flatMap((updated) =>
+										updated === undefined || options.terminals.get(key) !== live
+											? Effect.void
+											: options.runStop.finishService(
+													message.address,
+													exit,
+													live.terminal,
+												),
+									),
+								)
+						: Effect.void
+					).pipe(Effect.andThen(Effect.logError(cause))),
 				),
 			);
 		}
