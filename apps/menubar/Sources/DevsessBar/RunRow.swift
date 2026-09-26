@@ -30,7 +30,7 @@ struct RunRow: View {
                         Text((path as NSString).deletingLastPathComponent + "/")
                             .foregroundStyle(.tertiary)
                         Text((path as NSString).lastPathComponent)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.primary)
                     }
                     .font(.system(size: 10.5))
                     .lineLimit(1)
