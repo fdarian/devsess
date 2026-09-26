@@ -191,7 +191,7 @@ describe('daemon readiness publishing', () => {
 								expect(existsSync(runningSignalPath(root))).toBe(true);
 							}),
 						);
-						expect(Date.now() - started).toBeLessThan(1000);
+						expect(Date.now() - started).toBeLessThan(6000);
 						expect(requests.map((request) => request.method)).toEqual([
 							'publish',
 						]);
@@ -199,6 +199,39 @@ describe('daemon readiness publishing', () => {
 					}),
 				),
 			),
+		10_000,
+	);
+
+	it.live('waits for a daemon that is slow to acknowledge publish', () =>
+		runTest(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const socketPath = join(root, 'daemon.sock');
+					const requests: Array<ReadinessRequest> = [];
+					serviceEnvironment(socketPath);
+					yield* serve(socketPath, (request, socket) => {
+						requests.push(request);
+						setTimeout(
+							() =>
+								socket.end(
+									`${JSON.stringify({ version: 1, requestId: request.requestId, ok: true, result: {} })}\n`,
+								),
+							600,
+						);
+					});
+					yield* Effect.scoped(
+						publishRunning({ ready: true }).pipe(
+							Effect.provide(makeTestDevSessionsLayer(root)),
+						),
+					);
+					expect(requests.map((request) => request.method)).toEqual([
+						'publish',
+						'unpublish',
+					]);
+				}),
+			),
+		),
 	);
 
 	it.live('silently ignores a daemon that rejects publish', () =>
