@@ -16,6 +16,10 @@ struct ProtocolTests {
         #expect(Fixtures.busy.filter(\.isActive).map(\.glyphState) == [.ready, .starting, .failed])
         #expect(Fixtures.busy[0].canonicalCwd == NSHomeDirectory() + "/code/nisi")
         #expect(Fixtures.busy[2].canonicalCwd == NSHomeDirectory() + "/.worktrees/atlas/feat-auth")
+        #expect(Fixtures.stress.count == 41)
+        #expect(RunGroups(Fixtures.stress).active.count == 1)
+        #expect(RunGroups(Fixtures.stress).finished.count == 40)
+        #expect(Fixtures.stress[1].services[0].isFailure == false)
     }
 
     @Test func unknownStatesAndJSONValues() throws {
@@ -30,5 +34,23 @@ struct ProtocolTests {
         #expect(DaemonLocation.socketPath(environment: [:], uid: 501) == "/tmp/devsess-501/devsess.sock")
         #expect(DaemonLocation.socketPath(environment: ["XDG_RUNTIME_DIR": "/run/user/501"], uid: 501) == "/run/user/501/devsess/devsess.sock")
         #expect(DaemonLocation.logsPath(environment: ["XDG_STATE_HOME": "/state"]) == "/state/devsess/logs")
+    }
+
+    @Test func stoppedServicesAreNotFailures() {
+        let stopped = Fixtures.stress[1].services[0]
+        #expect(stopped.state == .exited)
+        #expect(stopped.signal == 15)
+        #expect(!stopped.isFailure)
+
+        let abnormal = ServiceRecord(
+            name: "worker", command: "bun worker", cwd: "/tmp", state: .exited,
+            exitCode: 2, signal: nil, published: nil
+        )
+        #expect(abnormal.isFailure)
+        let cleanButMarkedFailed = ServiceRecord(
+            name: "web", command: "bun dev", cwd: "/tmp", state: .failed,
+            exitCode: 0, signal: nil, published: nil
+        )
+        #expect(!cleanButMarkedFailed.isFailure)
     }
 }
