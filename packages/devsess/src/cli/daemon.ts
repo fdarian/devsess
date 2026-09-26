@@ -18,7 +18,7 @@ import {
 	PROTOCOL_VERSION,
 	splitFrames,
 } from './protocol';
-import { Registry } from './registry';
+import { bestEffortPrune, Registry } from './registry';
 import {
 	type ClientRequestMessage,
 	type LifecycleMessage,
@@ -45,7 +45,7 @@ export class Daemon extends Context.Service<Daemon, DaemonService>()(
 	static readonly layer: (options: {
 		socketPath: string;
 		dataDirectory: string;
-		logsDirectory?: string;
+		logsDirectory: string;
 		maxLogBytes: number;
 	}) => Layer.Layer<Daemon, unknown, FileSystem | Path> = (options) =>
 		Layer.effect(Daemon, makeDaemon(options)).pipe(
@@ -266,7 +266,7 @@ export const makeDaemon = (options: {
 			fail,
 		});
 		yield* serviceState.reconcile;
-		yield* registry.prune;
+		yield* bestEffortPrune(registry);
 		const requestWorker = yield* Effect.forever(
 			Queue.take(requestQueue).pipe(Effect.flatMap(dispatcher.handleClient)),
 		).pipe(Effect.forkScoped);

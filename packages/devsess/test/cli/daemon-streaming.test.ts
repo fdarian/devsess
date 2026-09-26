@@ -249,7 +249,10 @@ describe('daemon streaming integration', () => {
 				const root = yield* makeTempDir;
 				const socketPath = join(root, 'daemon.sock');
 				const dependencies = Layer.mergeAll(
-					Registry.layer({ dataDirectory: root }),
+					Registry.layer({
+						dataDirectory: root,
+						logsDirectory: join(root, 'logs'),
+					}),
 					Logs.layer({ dataDirectory: root, maxBytes: 1024 * 1024 }),
 					Processes.layer,
 				);
@@ -350,7 +353,10 @@ describe('daemon streaming integration', () => {
 				const gatePath = join(root, 'emit.ready');
 				const outputReadyPath = join(root, 'output.ready');
 				const dependencies = Layer.mergeAll(
-					Registry.layer({ dataDirectory: root }),
+					Registry.layer({
+						dataDirectory: root,
+						logsDirectory: join(root, 'logs'),
+					}),
 					Logs.layer({ dataDirectory: root, maxBytes: 1024 * 1024 }),
 					Processes.layer,
 				);
@@ -478,7 +484,10 @@ describe('daemon streaming integration', () => {
 						recursive: true,
 					});
 					const dependencies = Layer.mergeAll(
-						Registry.layer({ dataDirectory }),
+						Registry.layer({
+							dataDirectory,
+							logsDirectory: join(dataDirectory, 'logs'),
+						}),
 						Logs.layer({ dataDirectory, maxBytes: 1024 * 1024 }),
 						Processes.layer,
 					);
@@ -564,7 +573,10 @@ describe('daemon streaming integration', () => {
 						recursive: true,
 					});
 					const dependencies = Layer.mergeAll(
-						Registry.layer({ dataDirectory }),
+						Registry.layer({
+							dataDirectory,
+							logsDirectory: join(dataDirectory, 'logs'),
+						}),
 						Logs.layer({ dataDirectory, maxBytes: 1024 * 1024 }),
 						Processes.layer,
 					);
@@ -633,7 +645,10 @@ describe('daemon streaming integration', () => {
 				const root = yield* makeTempDir;
 				const socketPath = join(root, 'daemon.sock');
 				const dependencies = Layer.mergeAll(
-					Registry.layer({ dataDirectory: root }),
+					Registry.layer({
+						dataDirectory: root,
+						logsDirectory: join(root, 'logs'),
+					}),
 					Logs.layer({ dataDirectory: root, maxBytes: 1024 * 1024 }),
 					Processes.layer,
 				);
@@ -697,7 +712,10 @@ describe('daemon streaming integration', () => {
 					const root = yield* makeTempDir;
 					const socketPath = join(root, 'daemon.sock');
 					const dependencies = Layer.mergeAll(
-						Registry.layer({ dataDirectory: root }),
+						Registry.layer({
+							dataDirectory: root,
+							logsDirectory: join(root, 'logs'),
+						}),
 						Logs.layer({ dataDirectory: root, maxBytes: 1024 * 1024 }),
 						Processes.layer,
 					);

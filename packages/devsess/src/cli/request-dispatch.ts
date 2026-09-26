@@ -8,7 +8,7 @@ import { type ServiceExit, serviceExitCode } from './exit-status';
 import type { OutputWorker } from './output-worker';
 import { type DaemonRequest, decodeRequest, decodeRequestId } from './protocol';
 import { resizePty, writePty } from './pty';
-import { isRunActive, type RegistryService } from './registry';
+import { bestEffortPrune, isRunActive, type RegistryService } from './registry';
 import type { RunStart } from './run-start';
 import type { RunStop } from './run-stop';
 import {
@@ -141,8 +141,8 @@ export const makeRequestDispatcher = (options: {
 			);
 		if (incoming.method === 'startRun')
 			return options.runStart.startRun(incoming).pipe(
-				Effect.tap(() => options.registry.prune),
-				Effect.tapError(() => options.registry.prune),
+				Effect.tap(() => bestEffortPrune(options.registry)),
+				Effect.tapError(() => bestEffortPrune(options.registry)),
 			);
 		if (incoming.method === 'publish' || incoming.method === 'unpublish')
 			return Effect.gen(function* () {
@@ -185,7 +185,7 @@ export const makeRequestDispatcher = (options: {
 				.stopRun(incoming.params.runId, incoming.params.force === true)
 				.pipe(
 					Effect.tap(() => forgetFinished(incoming.params.runId)),
-					Effect.tap(() => options.registry.prune),
+					Effect.tap(() => bestEffortPrune(options.registry)),
 				);
 		if (incoming.method === 'restartServices')
 			return Effect.gen(function* () {
@@ -344,8 +344,8 @@ export const makeRequestDispatcher = (options: {
 				.stopRun(message.address.runId, false, message.address)
 				.pipe(
 					Effect.tap(() => forgetFinished(message.address.runId)),
-					Effect.tap(() => options.registry.prune),
 					Effect.catch((cause) => Effect.logError(cause)),
+					Effect.andThen(bestEffortPrune(options.registry)),
 					Effect.asVoid,
 				);
 		if (message._tag === 'exited') {
@@ -381,7 +381,6 @@ export const makeRequestDispatcher = (options: {
 									options.subscriptions.markPersisted(message.address),
 								),
 								Effect.andThen(forgetFinished(message.address.runId)),
-								Effect.andThen(options.registry.prune),
 							);
 					}),
 				),
@@ -409,6 +408,7 @@ export const makeRequestDispatcher = (options: {
 						: Effect.void
 					).pipe(Effect.andThen(Effect.logError(cause))),
 				),
+				Effect.andThen(bestEffortPrune(options.registry)),
 			);
 		}
 		return Effect.void;
