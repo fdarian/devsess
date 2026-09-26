@@ -2,7 +2,9 @@ import { createConnection } from 'node:net';
 import { StringDecoder } from 'node:string_decoder';
 import { Effect, Exit, Schema } from 'effect';
 
-const RESPONSE_TIMEOUT_MS = 200;
+// The daemon serves requests one at a time, so a readiness report can queue
+// behind slow ones (e.g. `devsess start` polling the run list while it waits).
+const RESPONSE_TIMEOUT_MS = 5_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 
 const DaemonResponse = Schema.fromJsonString(
