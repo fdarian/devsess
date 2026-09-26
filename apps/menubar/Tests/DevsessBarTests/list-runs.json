@@ -1,0 +1,67 @@
+[
+	{
+		"runId": "73d69a46-167e-499b-a4a4-126e8a73c530",
+		"projectName": "nisi",
+		"presetName": "desktop",
+		"canonicalCwd": "/Users/example/code/nisi",
+		"invocationCwd": "/Users/example/code/nisi",
+		"configSnapshot": {},
+		"startedAt": "2026-09-26T10:00:00.000Z",
+		"state": "running",
+		"daemon": {
+			"pid": 4312,
+			"processGroupId": 4312,
+			"startedAt": "2026-09-26T10:00:00.000Z"
+		},
+		"services": [
+			{
+				"name": "desktop",
+				"command": "bun run scripts/dev.ts",
+				"cwd": "/Users/example/code/nisi",
+				"state": "running",
+				"published": {
+					"value": { "url": "http://localhost:50016/", "port": 50016 },
+					"publishedAt": "2026-09-26T10:00:01.000Z"
+				}
+			}
+		]
+	},
+	{
+		"runId": "8237c065-51bf-43f9-a8a9-a036f4d7ffb9",
+		"projectName": "atlas",
+		"presetName": "api",
+		"canonicalCwd": "/Users/example/code/atlas",
+		"state": "running",
+		"services": [
+			{
+				"name": "api",
+				"command": "bun dev",
+				"cwd": "/Users/example/code/atlas",
+				"state": "running"
+			},
+			{
+				"name": "worker",
+				"command": "bun run worker",
+				"cwd": "/Users/example/code/atlas",
+				"state": "failed",
+				"exitCode": 1
+			}
+		]
+	},
+	{
+		"runId": "17c5ba7b-59e6-4fbc-8ddb-88e6219e586e",
+		"projectName": "docs",
+		"presetName": "dev",
+		"canonicalCwd": "/Users/example/code/docs",
+		"state": "exited",
+		"services": [
+			{
+				"name": "site",
+				"command": "bun docs",
+				"cwd": "/Users/example/code/docs",
+				"state": "exited",
+				"exitCode": 0
+			}
+		]
+	}
+]
