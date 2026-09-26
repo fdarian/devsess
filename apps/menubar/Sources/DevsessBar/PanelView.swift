@@ -4,6 +4,7 @@ import SwiftUI
 struct PanelView: View {
     @Bindable var store: RunStore
     var snapshotMode = false
+    var pollingEnabled = true
     @LegacyState private var showFinished = false
 
     private var summary: String {
@@ -22,9 +23,10 @@ struct PanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text(summary).font(.system(size: 13, weight: .medium))
-                Spacer()
+            HStack(spacing: 8) {
+                Text(summary)
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 if snapshotMode {
                     Image(systemName: "ellipsis").frame(width: 20, height: 20)
                 } else {
@@ -32,9 +34,13 @@ struct PanelView: View {
                         Button("Open logs folder") { NSWorkspace.shared.open(URL(fileURLWithPath: DaemonLocation.logsPath(), isDirectory: true)) }
                         Button("Quit") { NSApplication.shared.terminate(nil) }
                     } label: {
-                        Image(systemName: "ellipsis").frame(width: 20, height: 20)
+                        Image(systemName: "ellipsis")
+                            .frame(width: 20, height: 20)
                     }
                     .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize(horizontal: true, vertical: true)
+                    .frame(width: 22, height: 22)
                     .help("More options")
                 }
             }
@@ -44,12 +50,16 @@ struct PanelView: View {
             if snapshotMode {
                 content
             } else {
-                FittingScrollView(maxHeight: 480) { content }
+                ScrollView(.vertical) { content }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxHeight: 480)
             }
         }
         .frame(width: 360)
-        .onAppear { if !snapshotMode { store.panelOpen = true; store.start() } }
-        .onDisappear { if !snapshotMode { store.panelOpen = false } }
+        .fixedSize(horizontal: false, vertical: true)
+        .background(.regularMaterial)
+        .onAppear { if pollingEnabled { store.panelOpen = true; store.start() } }
+        .onDisappear { if pollingEnabled { store.panelOpen = false } }
     }
 
     private var content: some View {

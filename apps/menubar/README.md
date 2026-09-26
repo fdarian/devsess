@@ -14,3 +14,4 @@ scripts/bundle.sh
 The ad-hoc signed app is `build/Devsess.app`. Open it manually to use the panel; it has no Dock icon. `Devsess --list` performs a read-only daemon check. Snapshots do not connect to the daemon.
 
 Snapshot mode writes the busy, empty, and daemon-down panels plus `icons.png` (2x) and `icons-1x.png` (actual 1x pixels) to the specified directory.
+It also captures `panel-live-busy.png` and `panel-live-single.png` from the native panel hierarchy in an offscreen window; neither capture polls the daemon.
