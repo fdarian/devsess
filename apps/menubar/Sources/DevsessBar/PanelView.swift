@@ -7,6 +7,13 @@ struct PanelView: View {
     var pollingEnabled = true
     @LegacyState private var showFinished = false
 
+    init(store: RunStore, snapshotMode: Bool = false, pollingEnabled: Bool = true, initialFinishedExpanded: Bool = false) {
+        self.store = store
+        self.snapshotMode = snapshotMode
+        self.pollingEnabled = pollingEnabled
+        _showFinished = LegacyState(initialValue: initialFinishedExpanded)
+    }
+
     private var summary: String {
         let active = store.groups.active
         if active.isEmpty { return "Nothing running" }
@@ -21,42 +28,62 @@ struct PanelView: View {
         return parts.joined(separator: ", ")
     }
 
+    private var initialContentHeight: CGFloat {
+        let groups = store.groups
+        let activeHeight = groups.active.reduce(CGFloat(0)) { height, run in
+            height + estimatedHeight(for: run)
+                + (store.actionErrors[run.id] == nil ? 0 : 40)
+        }
+        let separators = CGFloat(max(0, groups.active.count - 1)) * 27
+        let empty = groups.active.isEmpty ? CGFloat(65) : 0
+        let disclosure = groups.finished.isEmpty ? CGFloat(0) : 30
+        let finished = showFinished
+            ? groups.finished.reduce(CGFloat(0)) { $0 + estimatedHeight(for: $1) + 10 }
+            : 0
+        return max(110, 34 + activeHeight + separators + empty + disclosure + finished)
+    }
+
+    private func estimatedHeight(for run: RunRecord) -> CGFloat {
+        45 + CGFloat(run.services.count) * 35
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Text(summary)
-                    .font(.system(size: 13, weight: .medium))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if snapshotMode {
-                    Image(systemName: "ellipsis").frame(width: 20, height: 20)
-                } else {
-                    Menu {
-                        Button("Open logs folder") { NSWorkspace.shared.open(URL(fileURLWithPath: DaemonLocation.logsPath(), isDirectory: true)) }
-                        Button("Quit") { NSApplication.shared.terminate(nil) }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .frame(width: 20, height: 20)
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Text(summary)
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if snapshotMode {
+                        Image(systemName: "ellipsis").frame(width: 20, height: 20)
+                    } else {
+                        Menu {
+                            Button("Open logs folder") { NSWorkspace.shared.open(URL(fileURLWithPath: DaemonLocation.logsPath(), isDirectory: true)) }
+                            Button("Quit") { NSApplication.shared.terminate(nil) }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .frame(width: 20, height: 20)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize(horizontal: true, vertical: true)
+                        .frame(width: 22, height: 22)
+                        .help("More options")
                     }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .fixedSize(horizontal: true, vertical: true)
-                    .frame(width: 22, height: 22)
-                    .help("More options")
                 }
+                .padding(.horizontal, 17)
+                .padding(.vertical, 14)
+                Divider()
             }
-            .padding(.horizontal, 17)
-            .padding(.vertical, 14)
-            Divider()
+            .background(.regularMaterial)
+            .zIndex(1)
             if snapshotMode {
                 content
             } else {
-                ScrollView(.vertical) { content }
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxHeight: 480)
+                FittingScrollView(maxHeight: 480, initialHeight: initialContentHeight) { content }
             }
         }
         .frame(width: 360)
-        .fixedSize(horizontal: false, vertical: true)
         .background(.regularMaterial)
         .onAppear { if pollingEnabled { store.panelOpen = true; store.start() } }
         .onDisappear { if pollingEnabled { store.panelOpen = false } }
@@ -76,16 +103,27 @@ struct PanelView: View {
                 if run.id != store.groups.active.last?.id { Divider() }
             }
             if !store.groups.finished.isEmpty {
-                DisclosureGroup("Recently stopped (\(store.groups.finished.count))", isExpanded: $showFinished) {
+                Button {
+                    showFinished.toggle()
+                } label: {
+                    Label {
+                        Text("Recently stopped (\(store.groups.finished.count))")
+                    } icon: {
+                        Image(systemName: showFinished ? "chevron.down" : "chevron.right")
+                    }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .padding(.top, 5)
+                if showFinished {
                     VStack(alignment: .leading, spacing: 10) {
                         ForEach(store.groups.finished) { run in
                             RunRow(run: run, active: false, stopping: false, error: nil, snapshotMode: snapshotMode, stop: {}, restart: { _ in })
                         }
-                    }.padding(.top, 7)
+                    }
+                    .padding(.top, 7)
                 }
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .padding(.top, 5)
             }
         }
         .padding(17)

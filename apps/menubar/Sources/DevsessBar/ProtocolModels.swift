@@ -34,6 +34,11 @@ struct ServiceRecord: Decodable, Sendable, Identifiable {
     let published: Published?
 
     var id: String { name }
+    var isFailure: Bool {
+        if state == .orphaned { return true }
+        if (state == .exited || state == .failed) && (exitCode == 0 || signal == 15) { return false }
+        return state == .failed || (state == .exited && exitCode.map { $0 != 0 } == true)
+    }
     var publishedURL: URL? {
         guard let text = published?.value.url, let url = URL(string: text),
               url.scheme == "http" || url.scheme == "https" else { return nil }
@@ -54,7 +59,7 @@ struct RunRecord: Decodable, Sendable, Identifiable {
         services.contains { [.starting, .running, .stopping, .orphaned].contains($0.state) }
     }
     var hasFailure: Bool {
-        services.contains { [.failed, .orphaned].contains($0.state) }
+        services.contains { $0.isFailure }
     }
     var glyphState: JackState {
         if hasFailure { return .failed }

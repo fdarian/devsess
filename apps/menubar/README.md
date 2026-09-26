@@ -15,3 +15,4 @@ The ad-hoc signed app is `build/Devsess.app`. Open it manually to use the panel;
 
 Snapshot mode writes the busy, empty, and daemon-down panels plus `icons.png` (2x) and `icons-1x.png` (actual 1x pixels) to the specified directory.
 It also captures `panel-live-busy.png` and `panel-live-single.png` from the native panel hierarchy in an offscreen window; neither capture polls the daemon.
+`panel-live-stress.png` and `panel-live-stress-expanded.png` exercise one active run and 40 finished runs with long paths and commands.

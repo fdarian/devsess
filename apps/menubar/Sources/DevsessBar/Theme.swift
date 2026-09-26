@@ -13,4 +13,10 @@ enum Theme {
         case .exited, .unknown: .secondary
         }
     }
+
+    static func lamp(_ service: ServiceRecord) -> Color {
+        if service.isFailure { return red }
+        if service.state == .exited || service.state == .failed { return .secondary }
+        return lamp(service.state)
+    }
 }

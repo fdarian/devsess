@@ -12,7 +12,7 @@ struct ServiceRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
             Circle()
-                .fill(Theme.lamp(service.state))
+                .fill(Theme.lamp(service))
                 .frame(width: 8, height: 8)
                 .opacity(service.state == .starting && !reduceMotion && breathing ? 0.45 : 1)
                 .padding(.top, 5)
@@ -35,7 +35,9 @@ struct ServiceRow: View {
                                 .lineLimit(1)
                         }
                     }
-                    if let exitCode = service.exitCode {
+                    if (service.state == .exited || service.state == .failed) && !service.isFailure {
+                        Text("stopped").foregroundStyle(.secondary)
+                    } else if let exitCode = service.exitCode {
                         Text("exit \(exitCode)").foregroundStyle(Theme.red)
                     } else if let signal = service.signal {
                         Text("signal \(signal)").foregroundStyle(Theme.red)
@@ -51,7 +53,7 @@ struct ServiceRow: View {
                     .font(.system(size: 10.5, design: .monospaced))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .truncationMode(.tail)
                     .help(service.command)
             }
         }

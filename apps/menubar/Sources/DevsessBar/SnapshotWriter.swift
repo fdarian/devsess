@@ -12,6 +12,10 @@ enum SnapshotWriter {
         let single = RunStore()
         single.runsForPreview([firstRun])
         try saveLivePanel(store: single, as: "panel-live-single.png", in: directory)
+        let stress = RunStore()
+        stress.runsForPreview(Fixtures.stress)
+        try saveLivePanel(store: stress, as: "panel-live-stress.png", in: directory)
+        try saveLivePanel(store: stress, expanded: true, as: "panel-live-stress-expanded.png", in: directory)
         try save(PanelView(store: RunStore(), snapshotMode: true, pollingEnabled: false).background(Color(nsColor: .windowBackgroundColor)), as: "panel-empty.png", in: directory)
         let down = RunStore()
         down.downForPreview()
@@ -46,7 +50,7 @@ enum SnapshotWriter {
         try save(icons, as: "icons-1x.png", in: directory, scale: 1)
     }
 
-    @MainActor private static func saveLivePanel(store: RunStore, as name: String, in directory: URL) throws {
+    @MainActor private static func saveLivePanel(store: RunStore, expanded: Bool = false, as name: String, in directory: URL) throws {
         let window = NSWindow(
             contentRect: CGRect(x: -10000, y: -10000, width: 360, height: 600),
             styleMask: [.borderless], backing: .buffered, defer: false
@@ -54,7 +58,7 @@ enum SnapshotWriter {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
-        let host = NSHostingView(rootView: PanelView(store: store, pollingEnabled: false)
+        let host = NSHostingView(rootView: PanelView(store: store, pollingEnabled: false, initialFinishedExpanded: expanded)
             .background(Color(nsColor: .windowBackgroundColor)))
         host.frame = CGRect(x: 0, y: 0, width: 360, height: 600)
         window.contentView = host
