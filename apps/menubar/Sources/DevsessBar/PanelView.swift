@@ -3,16 +3,8 @@ import SwiftUI
 
 struct PanelView: View {
     @Bindable var store: RunStore
+    @Bindable var presentation: PanelPresentation
     var snapshotMode = false
-    var pollingEnabled = true
-    @LegacyState private var showFinished = false
-
-    init(store: RunStore, snapshotMode: Bool = false, pollingEnabled: Bool = true, initialFinishedExpanded: Bool = false) {
-        self.store = store
-        self.snapshotMode = snapshotMode
-        self.pollingEnabled = pollingEnabled
-        _showFinished = LegacyState(initialValue: initialFinishedExpanded)
-    }
 
     private var summary: String {
         let active = store.groups.active
@@ -37,7 +29,7 @@ struct PanelView: View {
         let separators = CGFloat(max(0, groups.active.count - 1)) * 27
         let empty = groups.active.isEmpty ? CGFloat(65) : 0
         let disclosure = groups.finished.isEmpty ? CGFloat(0) : 30
-        let finished = showFinished
+        let finished = presentation.finishedExpanded
             ? groups.finished.reduce(CGFloat(0)) { $0 + estimatedHeight(for: $1) + 10 }
             : 0
         return max(110, 34 + activeHeight + separators + empty + disclosure + finished)
@@ -80,13 +72,12 @@ struct PanelView: View {
             if snapshotMode {
                 content
             } else {
-                FittingScrollView(maxHeight: 480, initialHeight: initialContentHeight) { content }
+                ScrollView(.vertical) { content }
+                    .frame(height: min(initialContentHeight, 480))
+                    .clipped()
             }
         }
         .frame(width: 360)
-        .background(.regularMaterial)
-        .onAppear { if pollingEnabled { store.panelOpen = true; store.start() } }
-        .onDisappear { if pollingEnabled { store.panelOpen = false } }
     }
 
     private var content: some View {
@@ -104,19 +95,19 @@ struct PanelView: View {
             }
             if !store.groups.finished.isEmpty {
                 Button {
-                    showFinished.toggle()
+                    presentation.finishedExpanded.toggle()
                 } label: {
                     Label {
                         Text("Recently stopped (\(store.groups.finished.count))")
                     } icon: {
-                        Image(systemName: showFinished ? "chevron.down" : "chevron.right")
+                        Image(systemName: presentation.finishedExpanded ? "chevron.down" : "chevron.right")
                     }
                 }
                 .buttonStyle(.plain)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .padding(.top, 5)
-                if showFinished {
+                if presentation.finishedExpanded {
                     VStack(alignment: .leading, spacing: 10) {
                         ForEach(store.groups.finished) { run in
                             RunRow(run: run, active: false, stopping: false, error: nil, snapshotMode: snapshotMode, stop: {}, restart: { _ in })

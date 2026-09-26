@@ -1,0 +1,50 @@
+import AppKit
+
+enum PanelSelfTest {
+    @MainActor static func run() throws {
+        let store = RunStore()
+        store.runsForPreview(Fixtures.stress)
+        let anchor = NSRect(x: -11500, y: -11100, width: 22, height: 22)
+        let screen = NSRect(x: -12000, y: -12000, width: 1000, height: 1000)
+        let controller = StatusItemController(store: store, showsStatusItem: false,
+            testAnchor: anchor, testScreen: screen)
+        defer { controller.panel.close() }
+
+        try check("collapsed", controller: controller, top: anchor.minY - 4)
+        for (index, expanded) in [true, false, true, false].enumerated() {
+            controller.presentation.finishedExpanded = expanded
+            try check("toggle \(index + 1) \(expanded ? "expanded" : "collapsed")",
+                controller: controller, top: anchor.minY - 4)
+        }
+        store.runsForPreview(Fixtures.busy)
+        try check("runs removed", controller: controller, top: anchor.minY - 4)
+        store.runsForPreview(Fixtures.stress)
+        try check("runs restored", controller: controller, top: anchor.minY - 4)
+    }
+
+    @MainActor private static func check(_ name: String, controller: StatusItemController, top: CGFloat) throws {
+        for _ in 0..<4 {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+            controller.updateLayout()
+        }
+        let panel = controller.panel
+        guard let content = panel.contentView else { throw PanelTestFailure("Missing panel content") }
+        let frame = panel.frame
+        let expectedHeight = min(controller.host.intrinsicContentSize.height, 530)
+        guard abs(frame.maxY - top) < 1 else { throw PanelTestFailure("\(name): top moved to \(frame.maxY)") }
+        guard abs(frame.height - expectedHeight) < 1 else {
+            throw PanelTestFailure("\(name): height \(frame.height) differs from fitting \(expectedHeight)")
+        }
+        guard abs(controller.host.frame.minY - content.bounds.minY) < 1,
+              abs(controller.host.frame.height - content.bounds.height) < 1,
+              abs(controller.host.frame.width - content.bounds.width) < 1 else {
+            throw PanelTestFailure("\(name): hosting view does not fill the material content view")
+        }
+        print("\(name): \(NSStringFromRect(frame)) fitting=\(expectedHeight)")
+    }
+}
+
+private struct PanelTestFailure: Error, CustomStringConvertible {
+    let description: String
+    init(_ description: String) { self.description = description }
+}
