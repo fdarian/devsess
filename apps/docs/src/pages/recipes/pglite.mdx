@@ -70,7 +70,7 @@ bun scripts/dev.ts --lite
 prepareSessionPglite(
 	session: DevSession,
 	opts: { migrationsFolder: string; migrationsTable?: string; migrationsSchema?: string },
-): Effect<{ client: PGlite; dataDir: string; dumpPath: string }>
+): Effect<{ dataDir: string; dumpPath: string }>
 ```
 
 | | |
@@ -78,11 +78,10 @@ prepareSessionPglite(
 | `session` | The session to scope the database to — `yield* CurrentSession`. |
 | `opts.migrationsFolder` | Path to your Drizzle migrations folder. |
 | `opts.migrationsTable` / `opts.migrationsSchema` | Optional — only set these if your `drizzle.config.ts` overrides Drizzle's default migration bookkeeping location. See the [reference](/reference/pglite) for defaults. |
-| → `client` | A live PGlite connection, usable in this process. |
 | → `dataDir` | `<session>/pglite` — the on-disk path other processes point at. |
 | → `dumpPath` | `<session>/pglite.dump` — the migration snapshot, see below. |
 
-It resolves once the database is fully ready: dump built if it needed to be, migrations applied. The example above forwards `dataDir` to `vite` as `DATABASE_LITE_PATH`, since `vite` is a separate process and can't use `client`.
+It resolves once the database is fully ready: dump built if needed, migrations applied, and its connection closed. The example passes `dataDir` to `vite` as `DATABASE_LITE_PATH`. Only one process may have a PGlite data directory open at a time; use `openLitePglite` if you need a client in this process instead.
 
 ## Why it's fast on the second run
 

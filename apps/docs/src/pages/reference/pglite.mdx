@@ -26,13 +26,13 @@ function prepareSessionPglite(
 	session: DevSession,
 	opts: PgliteMigrations
 ): Effect.Effect<
-	{ client: PGlite, dataDir: string, dumpPath: string },
+	{ dataDir: string, dumpPath: string },
 	PgliteError | PlatformError,
 	FileSystem | Path
 >
 ```
 
-Session-scoped entry point. Resolves `dataDir` to `<session>/pglite` and `dumpPath` to `<session>/pglite.dump`, then delegates to `openLitePglite`. Returns the open client plus the resolved paths — e.g. pass `dataDir` to the app as `DATABASE_LITE_PATH`.
+Session-scoped entry point. Resolves `dataDir` to `<session>/pglite` and `dumpPath` to `<session>/pglite.dump`, then delegates to `openLitePglite`. Closes its connection before returning the paths, so `dataDir` is safe to pass to another process (e.g. as `DATABASE_LITE_PATH`). Only one process may have a PGlite data directory open at a time; use `openLitePglite` for an in-process client.
 
 Because the dump lives inside the session directory, it isn't shared across sessions — a brand-new session pays the full migration-replay cost again.
 
