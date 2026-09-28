@@ -1,0 +1,23 @@
+---
+title: devsess/services
+---
+
+`Service.make(def)` defines a Docker-backed service without starting it. `Service.run(session, def)` starts or reuses its container, waits for health when configured, and returns `{ ports, container }`. It requires an Effect scope and the `DevSessions`, `FileSystem`, `Path`, and `ChildProcessSpawner` platform services. See the [Postgres recipe](/recipes/postgres-service).
+
+```ts
+const cache = Service.make({
+	name: 'redis', image: 'redis:7',
+	ports: { redis: 6379 },
+	volumes: { data: '/data' },
+	env: { MY_SETTING: 'value' },
+	healthcheck: { test: ['CMD', 'redis-cli', 'ping'], interval: '1 second', timeout: '2 seconds', retries: 30, startPeriod: '1 second' },
+})
+const running = yield* Service.run(session, cache)
+running.ports.redis // number, inferred from the definition
+```
+
+`ports` maps names to container ports; host ports come from `getStickyPort(session, { name: '<service>:<portName>' })` and bind only to `127.0.0.1`. `volumes` maps names to container paths; host directories are `<session>/services/<service>/<volume>`. Healthcheck `test` accepts compose-style `['CMD', ...]` or `['CMD-SHELL', '...']`; durations accept Effect Duration inputs. The container runs as your host UID:GID, with no root override. Images requiring root may fail; `ServiceError` includes a hint if they exit before healthy.
+
+On each run, devsess removes containers labelled with this project root whose session directory no longer exists. On scope close it removes the active container but leaves all data directories intact. A cold image pull prints progress. Docker Desktop, OrbStack, or a running Docker daemon is required; [PGlite](/reference/pglite) needs no Docker.
+
+The existing [Wiring Services Together](/recipes/wiring-services) recipe concerns communication between Effect dev processes, not Docker containers.

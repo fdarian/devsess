@@ -1,0 +1,61 @@
+---
+title: Postgres per session with Docker
+---
+
+Use `devsess/services` when you need a real Postgres server per dev session. Docker Desktop, OrbStack, or another running Docker daemon is required. For environments without Docker, use [PGlite](/recipes/pglite) instead.
+
+```ts
+// scripts/dev.ts
+import { CurrentSession, DevSessions, getStickyPort, runManagedSubprocess } from 'devsess'
+import { Service } from 'devsess/services'
+import { NodeRuntime, NodeServices } from '@effect/platform-node'
+import { Effect } from 'effect'
+import { Command } from 'effect/unstable/cli'
+
+const postgres = Service.make({
+	name: 'postgres',
+	image: 'postgres:17',
+	ports: { sql: 5432 },
+	volumes: { data: '/var/lib/postgresql/data' },
+	env: { POSTGRES_PASSWORD: 'dev', POSTGRES_DB: 'app' },
+	healthcheck: {
+		test: ['CMD', 'pg_isready', '-U', 'postgres'],
+		interval: '1 second',
+		retries: 30,
+	},
+})
+
+const web = Command.make('web', {}, () =>
+	Effect.gen(function* () {
+		const session = yield* CurrentSession
+		const port = yield* getStickyPort(session)
+		const pg = yield* Service.run(session, postgres)
+
+		yield* runManagedSubprocess('bunx', ['vite'], {
+			env: {
+				PORT: String(port),
+				DATABASE_URL: `postgres://postgres:dev@127.0.0.1:${pg.ports.sql}/app`,
+			},
+		})
+	}).pipe(Effect.provide(CurrentSession.layer)),
+)
+
+Command.run(web, { version: '0.1.0' }).pipe(
+	Effect.provide(DevSessions.layer),
+	Effect.provide(NodeServices.layer),
+	Effect.scoped,
+	NodeRuntime.runMain,
+)
+```
+
+`Service.run` returns only once the container is healthy. It stops and removes the container when the scope closes; the bind-mounted database directory remains at `<session>/services/postgres/data`. The mount path above is for `postgres:17`; image versions can use different paths.
+
+## Branch the data
+
+Stop the source session first. Copy the entire service directory **before the target session has ever started its Postgres service**:
+
+```bash
+cp -r <sessionA>/services/postgres <sessionB>/services/postgres
+```
+
+Never copy a live data directory. devsess does not copy data automatically or delete session directories. See the [services reference](/reference/services) for the generic API.
