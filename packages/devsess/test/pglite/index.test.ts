@@ -401,16 +401,16 @@ describe('prepareSessionPglite', () => {
 				);
 				const session = yield* devSessions.createSession;
 
-				const { client, dataDir, dumpPath } = yield* prepareSessionPglite(
-					session,
-					{
-						migrationsFolder,
-					},
+				const prepared = yield* prepareSessionPglite(session, {
+					migrationsFolder,
+				});
+
+				expect(prepared.dataDir).toBe(join(storageDir, session.name, 'pglite'));
+				expect(prepared.dumpPath).toBe(
+					join(storageDir, session.name, 'pglite.dump'),
 				);
 
-				expect(dataDir).toBe(join(storageDir, session.name, 'pglite'));
-				expect(dumpPath).toBe(join(storageDir, session.name, 'pglite.dump'));
-
+				const client = new PGlite(prepared.dataDir);
 				const count = yield* getDbMigrationCount(client);
 				expect(count).toBe(1);
 

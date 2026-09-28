@@ -283,8 +283,8 @@ export const openLitePglite = (
  * Prepares a PGlite database scoped to a dev session: the data dir lives at
  * `<session>/pglite` and the migration dump at `<session>/pglite.dump`. Builds
  * the dump from `migrationsFolder` if missing, hydrates the client, and runs
- * pending migrations. Returns the open client plus the resolved paths so the
- * caller can pass them to the app (e.g. as `DATABASE_LITE_PATH`).
+ * pending migrations. Closes the client before returning paths for another
+ * process (e.g. `DATABASE_LITE_PATH`). Use `openLitePglite` for an in-process client.
  */
 export const prepareSessionPglite = (
 	session: DevSession,
@@ -298,5 +298,6 @@ export const prepareSessionPglite = (
 			dataDir,
 			dumpPath,
 		});
-		return { client, dataDir, dumpPath };
+		yield* closePglite(client);
+		return { dataDir, dumpPath };
 	});
