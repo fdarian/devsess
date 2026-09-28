@@ -1,13 +1,22 @@
 import { describe, expect, it } from '@effect/vitest';
-import { buildRunArgs, Service, selectOrphans } from '../../src/services';
+import { buildRunArgs, selectOrphans } from '../../src/services/docker-args';
 
 describe('Docker service arguments', () => {
 	it('builds loopback ports, bind mounts, user, labels, env and health flags', () => {
-		const def = Service.make({
-			name: 'postgres',
+		const args = buildRunArgs({
 			image: 'postgres:17',
-			ports: { sql: 5432 },
-			volumes: { data: '/var/lib/postgresql/data' },
+			container: 'devsess-walrus-postgres',
+			root: '/project',
+			session: 'walrus',
+			uid: 501,
+			gid: 20,
+			ports: [{ host: 59000, container: 5432 }],
+			volumes: [
+				{
+					source: '/project/.data/sessions/walrus/services/postgres/data',
+					target: '/var/lib/postgresql/data',
+				},
+			],
 			env: { POSTGRES_PASSWORD: 'dev' },
 			healthcheck: {
 				test: ['CMD', 'pg_isready', '-U', 'postgres'],
@@ -15,17 +24,6 @@ describe('Docker service arguments', () => {
 				timeout: '2 seconds',
 				retries: 30,
 				startPeriod: '3 seconds',
-			},
-		});
-		const args = buildRunArgs(def, {
-			container: 'devsess-walrus-postgres',
-			root: '/project',
-			session: 'walrus',
-			uid: 501,
-			gid: 20,
-			ports: { sql: 59000 },
-			volumes: {
-				data: '/project/.data/sessions/walrus/services/postgres/data',
 			},
 		});
 		expect(args).toEqual([
