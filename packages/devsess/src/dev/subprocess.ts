@@ -29,16 +29,18 @@ export const runManagedSubprocess = (
 			}),
 			(proc) =>
 				Effect.gen(function* () {
+					if (!(yield* proc.isRunning.pipe(Effect.orDie))) return;
 					yield* Effect.logInfo(`[dev] stopping: ${label} (pid=${proc.pid})`);
-					yield* proc
-						.kill()
-						.pipe(
-							Effect.catch((err) =>
-								Effect.logError(
-									`[dev] failed to stop ${label} (pid=${proc.pid}): ${err}`,
-								),
-							),
-						);
+					yield* proc.kill().pipe(
+						Effect.catch((err) =>
+							Effect.gen(function* () {
+								if (yield* proc.isRunning.pipe(Effect.orDie))
+									yield* Effect.logError(
+										`[dev] failed to stop ${label} (pid=${proc.pid}): ${err}`,
+									);
+							}),
+						),
+					);
 				}),
 		);
 

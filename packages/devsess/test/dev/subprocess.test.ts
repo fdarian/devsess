@@ -140,7 +140,7 @@ describe('runManagedSubprocess', () => {
 		),
 	);
 
-	it.live('logs a failing kill instead of throwing it', () =>
+	it.live('does not try to stop a child that already exited', () =>
 		runTest(
 			Effect.gen(function* () {
 				const messages: string[] = [];
@@ -148,12 +148,7 @@ describe('runManagedSubprocess', () => {
 					messages.push(String(options.message));
 				});
 
-				// The child exits on its own, so by the time the scope's release
-				// runs and tries to kill it, the process is already gone — the
-				// kill fails, and that failure should be logged, not thrown.
-				// Wrapped in `Effect.scoped` (as above) so the release — and its
-				// log message — happens before the assertion below runs, rather
-				// than whenever the test's own ambient scope happens to close.
+				// Close the scope before asserting on the finalizer's logs.
 				const code = yield* Effect.scoped(
 					runManagedSubprocess('node', ['-e', 'process.exit(0)']),
 				).pipe(
@@ -163,8 +158,11 @@ describe('runManagedSubprocess', () => {
 
 				expect(code).toBe(0);
 				expect(
+					messages.some((message) => message.includes('[dev] stopping:')),
+				).toBe(false);
+				expect(
 					messages.some((message) => message.includes('failed to stop')),
-				).toBe(true);
+				).toBe(false);
 			}),
 		),
 	);
