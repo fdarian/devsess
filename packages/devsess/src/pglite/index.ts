@@ -1,4 +1,5 @@
 import { PGlite } from '@electric-sql/pglite';
+import { readMigrationFiles } from 'drizzle-orm/migrator';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import { Data, Effect } from 'effect';
@@ -113,7 +114,7 @@ export const dumpPgliteToFile = (client: PGlite, dest: string) =>
 export const migratePglite = (client: PGlite, migrations: PgliteMigrations) =>
 	Effect.tryPromise({
 		try: () =>
-			migrate(drizzle(client), {
+			migrate(drizzle({ client }), {
 				migrationsFolder: migrations.migrationsFolder,
 				migrationsTable: migrations.migrationsTable,
 				migrationsSchema: migrations.migrationsSchema,
@@ -200,35 +201,13 @@ export const getDbMigrationCount = (
 	});
 
 export const getExpectedMigrationCount = (migrationsFolder: string) =>
-	Effect.gen(function* () {
-		const fs = yield* FileSystem;
-		const path = yield* Path;
-		const journalPath = path.join(migrationsFolder, 'meta/_journal.json');
-		const journalExists = yield* fs.exists(journalPath);
-		if (!journalExists) {
-			return yield* Effect.fail(
-				new PgliteError({
-					message: `Migration journal not found at ${journalPath}`,
-				}),
-			);
-		}
-		const content = yield* fs.readFileString(journalPath);
-		const journal = yield* Effect.try({
-			try: () => JSON.parse(content) as { entries: unknown[] },
-			catch: (cause) =>
-				new PgliteError({
-					message: `Failed to parse migration journal at ${journalPath}`,
-					cause,
-				}),
-		});
-		if (!Array.isArray(journal.entries)) {
-			return yield* Effect.fail(
-				new PgliteError({
-					message: `Migration journal at ${journalPath} is missing an "entries" array`,
-				}),
-			);
-		}
-		return journal.entries.length;
+	Effect.try({
+		try: () => readMigrationFiles({ migrationsFolder }).length,
+		catch: (cause) =>
+			new PgliteError({
+				message: `Failed to read migrations from ${migrationsFolder}`,
+				cause,
+			}),
 	});
 
 export const buildPgliteDump = (
