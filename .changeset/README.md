@@ -5,7 +5,7 @@ This folder is managed by [Changesets](https://github.com/changesets/changesets)
 To record a change for the next release:
 
 ```bash
-bun changeset
+pnpm changeset
 ```
 
 Pick the affected package(s) and a semver bump, then commit the generated

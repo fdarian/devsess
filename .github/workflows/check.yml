@@ -15,7 +15,7 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
       - uses: ./.github/actions/setup
-      - run: bun run format
+      - run: pnpm run format
       - uses: stefanzweifel/git-auto-commit-action@v7
         with:
           commit_message: 'style: apply formatting'
@@ -34,9 +34,9 @@ jobs:
           key: turbo-${{ github.sha }}
           restore-keys: turbo-
       - uses: ./.github/actions/setup
-      - run: bun turbo run check --affected
+      - run: pnpm turbo run check --affected
         env:
           TURBO_SCM_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-      - run: bun turbo run test --affected
+      - run: pnpm turbo run test --affected
         env:
           TURBO_SCM_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}

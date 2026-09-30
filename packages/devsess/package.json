@@ -56,7 +56,7 @@
 		"check:type": "tsc --noEmit",
 		"check:lint": "biome check",
 		"test": "vitest run",
-		"prepack": "bun run build"
+		"prepack": "pnpm run build"
 	},
 	"dependencies": {
 		"get-port": "^7.2.0",

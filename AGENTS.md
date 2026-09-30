@@ -8,11 +8,11 @@ Monorepo for the `devsess` library — Effect-based dev-session scaffolding plus
 - `apps/docs` — vocs documentation site
 
 ## Commands
-- `bun run build` — build the library (tsup JS + tsc declarations)
-- `bun run check` — typecheck + lint across workspaces (turbo)
-- `bun run format` — biome format
-- `bun run docs` — run the docs site locally
-- `bun changeset` — record a release bump
+- `pnpm run build` — build the library (tsup JS + tsc declarations)
+- `pnpm run check` — typecheck + lint across workspaces (turbo)
+- `pnpm run format` — biome format
+- `pnpm run docs` — run the docs site locally
+- `pnpm changeset` — record a release bump
 
 ## Releasing
 Push to `main` drives Changesets; publishing is OIDC trusted publishing (no npm token). See `.github/workflows/release.yml`.

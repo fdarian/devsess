@@ -9,7 +9,7 @@ import * as pkgPglite from 'devsess/pglite';
  * `devsess/pglite`) rather than relative `src` paths, so a broken `tsup` entry or a stale
  * `package.json` `exports` map shows up here — a relative import would silently keep
  * working even if the built output drifted. Requires `dist/` to be up to date
- * (`bun run build`).
+ * (`pnpm run build`).
  */
 describe('the root entrypoint (.)', () => {
 	it('exports the Effect-based API', () => {

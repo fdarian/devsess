@@ -3,8 +3,8 @@
 Documentation site for `devsess`, built with [vocs](https://vocs.dev) (v2, on waku + vite).
 
 ## Dev
-- `bun dev` — local dev server
-- `bun build` — static build
+- `pnpm dev` — local dev server
+- `pnpm build` — static build
 
 ## Layout
 - vocs.config.ts — site config + sidebar

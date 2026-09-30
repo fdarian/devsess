@@ -11,14 +11,14 @@ Monorepo for [`devsess`](packages/devsess) — scaffold dev scripts with reusabl
 
 ## Development
 
-This is a [Bun](https://bun.sh) workspace.
+This is a [pnpm](https://pnpm.io) workspace. Install [Bun](https://bun.sh) separately when using Bun; CI installs it with `oven-sh/setup-bun`.
 
 ```bash
-bun install        # install all workspaces
-bun run build      # build the library (tsup + tsc declarations)
-bun run check      # typecheck + lint (turbo)
-bun run format     # biome format
-bun run docs       # run the docs site locally
+pnpm install       # install all workspaces
+pnpm run build     # build the library (tsup + tsc declarations)
+pnpm run check     # typecheck + lint (turbo)
+pnpm run format    # biome format
+pnpm run docs      # run the docs site locally
 ```
 
 ## Releasing

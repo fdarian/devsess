@@ -5,15 +5,10 @@
 	"description": "Monorepo for devsess: scaffold dev scripts with reusable dev sessions and a PGlite + Drizzle adapter.",
 	"license": "Apache-2.0",
 	"type": "module",
-	"packageManager": "bun@1.3.14",
-	"workspaces": [
-		"packages/*",
-		"apps/*"
-	],
+	"packageManager": "pnpm@12.6.0",
 	"scripts": {
-		"build": "bun --filter devsess build",
-		"dev": "bun --filter '*' dev",
-		"docs": "bun --filter docs dev",
+		"build": "pnpm --filter devsess build",
+		"docs": "pnpm --filter docs dev",
 		"check": "turbo run check",
 		"test": "turbo run test",
 		"format": "biome check --write",
