@@ -11,10 +11,12 @@ A shared local database can't tell your worktrees apart. What one instance does 
 On top of the [core install](/getting-started), `devsess/pglite` needs two peer dependencies:
 
 ```bash
-bun add @electric-sql/pglite drizzle-orm
+pnpm add @electric-sql/pglite 'drizzle-orm@^1.0.0-rc.4'
 ```
 
 Both are optional peers of `devsess` — nothing else pulls them in.
+
+Drizzle v1 RC (`drizzle-orm@^1.0.0-rc.4`) is required; v0 is no longer supported. Upgrade your project's `drizzle-kit` to v1 RC and run `pnpm exec drizzle-kit up` to convert existing migration folders before using this helper. If you wrap a PGlite client in Drizzle yourself, use `drizzle({ client })`.
 
 ## Wire it into your dev script
 
