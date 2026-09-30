@@ -6,6 +6,7 @@ enum SnapshotWriter {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let busy = RunStore()
         busy.runsForPreview(Fixtures.busy)
+        busy.claudeSessionsForPreview(Fixtures.claudeSessions)
         try save(PanelView(store: busy, presentation: PanelPresentation(), snapshotMode: true).background(Color(nsColor: .windowBackgroundColor)), as: "panel-busy.png", in: directory)
         try saveLivePanel(store: busy, as: "panel-live-busy.png", in: directory)
         guard let firstRun = Fixtures.busy.first else { throw DaemonError.invalidResponse }

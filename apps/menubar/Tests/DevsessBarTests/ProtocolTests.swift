@@ -15,7 +15,7 @@ struct ProtocolTests {
         #expect(groups.active.map(\.glyphState) == [.ready, .failed])
         #expect(Fixtures.busy.filter(\.isActive).map(\.glyphState) == [.ready, .starting, .failed])
         #expect(Fixtures.busy[0].canonicalCwd == NSHomeDirectory() + "/code/nisi")
-        #expect(Fixtures.busy[2].canonicalCwd == NSHomeDirectory() + "/.worktrees/atlas/feat-auth")
+        #expect(Fixtures.busy[2].canonicalCwd == NSHomeDirectory() + "/.claude/worktrees/atlas/feat-auth")
         #expect(Fixtures.stress.count == 41)
         #expect(RunGroups(Fixtures.stress).active.count == 1)
         #expect(RunGroups(Fixtures.stress).finished.count == 40)
