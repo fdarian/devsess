@@ -7,13 +7,15 @@ Per-session [PGlite](https://pglite.dev) database seeded from your Drizzle migra
 Optional peers — only needed if you use this entry point.
 
 ```bash
-bun add @electric-sql/pglite drizzle-orm
+pnpm add @electric-sql/pglite 'drizzle-orm@^1.0.0-rc.4'
 ```
 
 | Peer | Version |
 |---|---|
 | `@electric-sql/pglite` | `>=0.2.0` |
-| `drizzle-orm` | `>=0.30.0` |
+| `drizzle-orm` | `^1.0.0-rc.4` (Drizzle v1 RC) |
+
+Drizzle v0 is no longer supported. Upgrade your project's `drizzle-kit` to v1 RC and run `pnpm exec drizzle-kit up` to convert existing migration folders. The adapter uses Drizzle's own migration reader, not `meta/_journal.json`. When creating a Drizzle database yourself, use `drizzle({ client })`.
 
 `PGlite` below refers to `@electric-sql/pglite`'s client type. `PgliteMigrations` below refers to `{ migrationsFolder: string, migrationsTable?: string, migrationsSchema?: string }` — `migrationsTable`/`migrationsSchema` default to Drizzle's own defaults (`__drizzle_migrations` in the `drizzle` schema) and only need setting if your `drizzle.config.ts`'s `migrations.table`/`migrations.schema` does.
 
@@ -52,6 +54,8 @@ Same ensure-dump → hydrate → migrate flow as `prepareSessionPglite`, against
 3. Staleness guard — if migrations are expected (`getExpectedMigrationCount` > 0) but the opened database has no Drizzle migration bookkeeping at all (`getDbMigrationCount` is 0), fails with a `PgliteError` naming the `rm -rf <dataDir> <dumpPath>` recovery command. `getDbMigrationCount` looks in the same `migrationsTable`/`migrationsSchema` you passed in — if your `drizzle.config.ts` sets a custom `migrations.table`/`migrations.schema` and you don't pass the matching override here, this guard checks the wrong (empty) table and fails against a database that's actually fully migrated.
 4. `migratePglite` always runs afterward — Drizzle's `migrate()` is idempotent, so this only applies migrations added since the dump/`dataDir` was built.
 
+Drizzle v1 tracks applied migrations by folder name and adds `name`/`applied_at` to its bookkeeping table. Its migrator upgrades existing v0 bookkeeping automatically by matching timestamps or SQL hashes; unmatched rows cause migration to fail. The staleness guard still counts rows and does not compare hashes.
+
 Restarting within an existing session costs nothing: `dataDir` already exists, so the dump is never read. The dump only earns its keep the first time a session opens a database with no `dataDir` yet.
 
 ## `PgliteError`
@@ -77,4 +81,4 @@ Every `devsess/pglite` export fails with this tagged error (`_tag: 'PgliteError'
 | `dumpPgliteToFile` | `(client: PGlite, dest: string) => Effect<void, PgliteError \| PlatformError, FileSystem \| Path>` | Serializes an open client's data dir to `dest`, creating parent directories as needed |
 | `migratePglite` | `(client: PGlite, migrations: PgliteMigrations) => Effect<void, PgliteError, never>` | Runs Drizzle's `migrate()` against the client |
 | `getDbMigrationCount` | `(client: PGlite, migrations?: Pick<PgliteMigrations, 'migrationsTable' \| 'migrationsSchema'>) => Effect<number, PgliteError, never>` | Counts rows in the migrations table — `drizzle.__drizzle_migrations` by default, or `migrations.migrationsSchema`/`migrations.migrationsTable` if passed; `0` if the table doesn't exist yet |
-| `getExpectedMigrationCount` | `(migrationsFolder: string) => Effect<number, PgliteError \| PlatformError, FileSystem \| Path>` | Counts entries in `<migrationsFolder>/meta/_journal.json`; fails if the journal is missing, unparseable, or has no `entries` array |
+| `getExpectedMigrationCount` | `(migrationsFolder: string) => Effect<number, PgliteError, never>` | Counts migrations returned by Drizzle's `readMigrationFiles({ migrationsFolder })`; an empty folder returns `0`, and reader failures (including v0 folders) are wrapped with their cause |

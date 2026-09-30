@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 import { PGlite } from '@electric-sql/pglite';
+import { readMigrationFiles } from 'drizzle-orm/migrator';
 import { Effect } from 'effect';
 import { DevSessions } from '../../src/dev-sessions';
 import {
@@ -205,6 +206,48 @@ describe('ensurePgliteDump', () => {
 
 describe('migratePglite', () => {
 	it.effect(
+		'upgrades v0 bookkeeping by SQL hash without replaying applied migrations',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const rootDir = yield* makeTempDir;
+					const migrationsFolder = join(rootDir, 'migrations');
+					yield* writeMigrationsFixture(migrationsFolder, { count: 1 });
+					const localMigrations = yield* Effect.try(() =>
+						readMigrationFiles({ migrationsFolder }),
+					);
+					const client = new PGlite(IN_MEMORY_DATA_DIR);
+					yield* migratePglite(client, { migrationsFolder });
+					yield* Effect.promise(() =>
+						client.exec(`
+					ALTER TABLE drizzle.__drizzle_migrations DROP COLUMN name, DROP COLUMN applied_at;
+					UPDATE drizzle.__drizzle_migrations SET created_at = 1;
+				`),
+					);
+					yield* writeMigrationsFixture(migrationsFolder, { count: 2 });
+					yield* migratePglite(client, { migrationsFolder });
+					yield* migratePglite(client, { migrationsFolder });
+					expect(yield* getDbMigrationCount(client)).toBe(2);
+					const rows = yield* Effect.promise(() =>
+						client.query<{
+							name: string;
+							hash: string;
+							applied_at: string | null;
+						}>(
+							'SELECT name, hash, applied_at FROM drizzle.__drizzle_migrations ORDER BY id',
+						),
+					);
+					expect(rows.rows[0]).toEqual({
+						name: localMigrations[0]?.name,
+						hash: localMigrations[0]?.hash,
+						applied_at: null,
+					});
+					yield* closeClient(client);
+				}),
+			),
+	);
+
+	it.effect(
 		'applies migrations added to the folder after the dump was built',
 		() =>
 			runTest(
@@ -279,22 +322,17 @@ describe('migratePglite', () => {
 });
 
 describe('getExpectedMigrationCount', () => {
-	it.effect('fails with PgliteError when meta/_journal.json is missing', () =>
+	it.effect('returns 0 for an empty migrations folder', () =>
 		runTest(
 			Effect.gen(function* () {
 				const rootDir = yield* makeTempDir;
 
-				const error = yield* getExpectedMigrationCount(rootDir).pipe(
-					Effect.flip,
-				);
-
-				expect(error).toBeInstanceOf(PgliteError);
-				expect(error.message).toContain('Migration journal not found');
+				expect(yield* getExpectedMigrationCount(rootDir)).toBe(0);
 			}),
 		),
 	);
 
-	it.effect('fails with PgliteError when the journal is unparseable JSON', () =>
+	it.effect('rejects a v0 journal with Drizzle’s upgrade guidance', () =>
 		runTest(
 			Effect.gen(function* () {
 				const rootDir = yield* makeTempDir;
@@ -310,61 +348,43 @@ describe('getExpectedMigrationCount', () => {
 				);
 
 				expect(error).toBeInstanceOf(PgliteError);
-				expect(error.message).toContain('Failed to parse migration journal');
+				expect(error.message).toContain(
+					`Failed to read migrations from ${rootDir}`,
+				);
+				expect(String(error.cause)).toContain('drizzle-kit up');
 			}),
 		),
 	);
 
 	it.effect(
-		'fails with PgliteError when the journal has no entries field',
+		'counts v1 migrations without a journal and ignores unrelated files',
 		() =>
 			runTest(
 				Effect.gen(function* () {
 					const rootDir = yield* makeTempDir;
+					yield* writeMigrationsFixture(rootDir, { count: 3 });
 					yield* Effect.promise(() =>
-						mkdir(join(rootDir, 'meta'), { recursive: true }),
+						writeFile(join(rootDir, 'README.md'), 'Not a migration'),
 					);
-					yield* Effect.promise(() =>
-						writeFile(
-							join(rootDir, 'meta/_journal.json'),
-							JSON.stringify({ version: '7', dialect: 'postgresql' }),
-						),
-					);
-
-					const error = yield* getExpectedMigrationCount(rootDir).pipe(
-						Effect.flip,
-					);
-
-					expect(error).toBeInstanceOf(PgliteError);
-					expect(error.message).toContain('missing an "entries" array');
+					expect(yield* getExpectedMigrationCount(rootDir)).toBe(3);
 				}),
 			),
 	);
 
-	it.effect('fails with PgliteError when entries is not an array', () =>
+	it.effect('wraps a missing migrations folder in PgliteError', () =>
 		runTest(
 			Effect.gen(function* () {
 				const rootDir = yield* makeTempDir;
-				yield* Effect.promise(() =>
-					mkdir(join(rootDir, 'meta'), { recursive: true }),
-				);
-				yield* Effect.promise(() =>
-					writeFile(
-						join(rootDir, 'meta/_journal.json'),
-						JSON.stringify({
-							version: '7',
-							dialect: 'postgresql',
-							entries: 'nope',
-						}),
-					),
-				);
-
-				const error = yield* getExpectedMigrationCount(rootDir).pipe(
+				const migrationsFolder = join(rootDir, 'missing');
+				const error = yield* getExpectedMigrationCount(migrationsFolder).pipe(
 					Effect.flip,
 				);
 
 				expect(error).toBeInstanceOf(PgliteError);
-				expect(error.message).toContain('missing an "entries" array');
+				expect(error.message).toContain(
+					`Failed to read migrations from ${migrationsFolder}`,
+				);
+				expect(String(error.cause)).toContain('ENOENT');
 			}),
 		),
 	);
