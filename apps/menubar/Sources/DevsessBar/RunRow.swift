@@ -6,6 +6,7 @@ struct RunRow: View {
     let active: Bool
     let stopping: Bool
     let error: String?
+    let claudeSessions: [ClaudeSession]
     var snapshotMode = false
     let stop: () -> Void
     let restart: (ServiceRecord) -> Void
@@ -25,6 +26,9 @@ struct RunRow: View {
                         Text(run.presetName)
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
+                        if !claudeSessions.isEmpty {
+                            ClaudeSessionBadge(sessions: claudeSessions, snapshotMode: snapshotMode)
+                        }
                     }
                     HStack(spacing: 0) {
                         Text((path as NSString).deletingLastPathComponent + "/")

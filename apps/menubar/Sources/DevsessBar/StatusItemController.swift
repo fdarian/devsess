@@ -108,6 +108,7 @@ import SwiftUI
             _ = store.statusError
             _ = store.actionErrors
             _ = store.stopping
+            _ = store.claudeByCwd
             _ = presentation.finishedExpanded
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in

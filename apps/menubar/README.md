@@ -1,6 +1,7 @@
 # Devsess menu bar
 
 Native macOS 14+ menu bar companion for the devsess daemon. Shows runs and their services, published links, restart controls, and a hold-to-stop button. It never starts the daemon; launching `dev start` does that.
+Runs in `.claude/worktrees` also show matching Claude Code sessions: coral for live or open, grey for archived. Click the badge to continue a session or choose among several.
 
 Requires Swift 6 and macOS Command Line Tools (no Xcode). From this directory:
 

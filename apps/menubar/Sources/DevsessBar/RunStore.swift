@@ -9,11 +9,16 @@ import SwiftUI
     private(set) var statusError: String?
     private(set) var actionErrors: [String: String] = [:]
     private(set) var stopping: Set<String> = []
+    private(set) var claudeByCwd: [String: [ClaudeSession]] = [:]
     var panelOpen = false
     private let client: DaemonClient
+    private let claudeScanner: ClaudeSessionScanner
     private var polling: Task<Void, Never>?
 
-    init(client: DaemonClient = DaemonClient()) { self.client = client }
+    init(client: DaemonClient = DaemonClient(), claudeScanner: ClaudeSessionScanner = ClaudeSessionScanner()) {
+        self.client = client
+        self.claudeScanner = claudeScanner
+    }
 
     var groups: RunGroups { RunGroups(runs) }
 
@@ -30,11 +35,13 @@ import SwiftUI
     func refresh() async {
         do {
             runs = try await client.listRuns()
+            claudeByCwd = await claudeScanner.sessions(for: Set(runs.map(\.canonicalCwd)))
             daemonDown = false
             statusError = nil
             stopping = stopping.filter { id in runs.contains { $0.id == id && $0.state != .stopping } }
         } catch {
             runs = []
+            claudeByCwd = [:]
             let nsError = error as NSError
             daemonDown = (nsError.domain == NSPOSIXErrorDomain && [2, 61].contains(nsError.code))
                 || (error as? NWError).map { networkError in
@@ -72,5 +79,6 @@ import SwiftUI
     }
 
     func runsForPreview(_ value: [RunRecord]) { runs = value }
+    func claudeSessionsForPreview(_ value: [String: [ClaudeSession]]) { claudeByCwd = value }
     func downForPreview() { daemonDown = true }
 }

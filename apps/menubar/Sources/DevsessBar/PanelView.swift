@@ -90,7 +90,7 @@ struct PanelView: View {
                 message("Nothing running. Start a server with `dev start` in a project.")
             }
             ForEach(store.groups.active) { run in
-                RunRow(run: run, active: true, stopping: store.stopping.contains(run.id), error: store.actionErrors[run.id], snapshotMode: snapshotMode, stop: { store.stop(run) }, restart: { store.restart($0, in: run) })
+                RunRow(run: run, active: true, stopping: store.stopping.contains(run.id), error: store.actionErrors[run.id], claudeSessions: store.claudeByCwd[run.canonicalCwd] ?? [], snapshotMode: snapshotMode, stop: { store.stop(run) }, restart: { store.restart($0, in: run) })
                 if run.id != store.groups.active.last?.id { Divider() }
             }
             if !store.groups.finished.isEmpty {
@@ -110,7 +110,7 @@ struct PanelView: View {
                 if presentation.finishedExpanded {
                     VStack(alignment: .leading, spacing: 10) {
                         ForEach(store.groups.finished) { run in
-                            RunRow(run: run, active: false, stopping: false, error: nil, snapshotMode: snapshotMode, stop: {}, restart: { _ in })
+                            RunRow(run: run, active: false, stopping: false, error: nil, claudeSessions: store.claudeByCwd[run.canonicalCwd] ?? [], snapshotMode: snapshotMode, stop: {}, restart: { _ in })
                         }
                     }
                     .padding(.top, 7)

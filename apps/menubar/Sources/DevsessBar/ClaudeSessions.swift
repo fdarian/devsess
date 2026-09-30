@@ -117,7 +117,7 @@ actor ClaudeSessionScanner {
     func sessions(for cwds: Set<String>, now: Date = Date()) -> [String: [ClaudeSession]] {
         let eligible = Set(cwds.filter { $0.contains("/.claude/worktrees/") })
         guard !eligible.isEmpty else { return [:] }
-        if let lastRefresh, now.timeIntervalSince(lastRefresh) < 5 {
+        if let lastRefresh, now >= lastRefresh, now.timeIntervalSince(lastRefresh) < 5 {
             return lastResult.filter { eligible.contains($0.key) }
         }
         lastRefresh = now
