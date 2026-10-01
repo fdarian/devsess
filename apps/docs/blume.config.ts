@@ -75,6 +75,7 @@ export default defineConfig({
 							'/reference/cli/selecting',
 							'/reference/cli/logs',
 							'/reference/cli/attach',
+							'/reference/cli/completions',
 							'/reference/cli/daemon',
 							'/reference/cli/troubleshooting',
 						],
