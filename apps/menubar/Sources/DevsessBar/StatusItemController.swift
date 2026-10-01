@@ -5,7 +5,7 @@ import SwiftUI
 @MainActor final class StatusItemController: NSObject {
     let panel: PanelWindow
     let host: SizingHostingView<PanelView>
-    private let material: NSVisualEffectView
+    private let background: NSView
     private let store: RunStore
     private var statusItem: NSStatusItem?
     private var globalMonitor: Any?
@@ -26,7 +26,24 @@ import SwiftUI
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered, defer: false
         )
-        material = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 300, height: 160))
+        let background: NSView
+        if #available(macOS 26, *) {
+            let glass = NSGlassEffectView(frame: NSRect(x: 0, y: 0, width: 300, height: 160))
+            glass.cornerRadius = 12
+            glass.contentView = host
+            background = glass
+        } else {
+            let material = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 300, height: 160))
+            material.material = .menu
+            material.blendingMode = .behindWindow
+            material.state = .active
+            material.maskImage = Self.roundedMask(radius: 12)
+            host.frame = material.bounds
+            host.autoresizingMask = [.width, .height]
+            material.addSubview(host)
+            background = material
+        }
+        self.background = background
         super.init()
 
         panel.isFloatingPanel = true
@@ -35,16 +52,7 @@ import SwiftUI
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.isReleasedWhenClosed = false
-        material.material = .menu
-        material.blendingMode = .behindWindow
-        material.state = .active
-        material.wantsLayer = true
-        material.layer?.cornerRadius = 12
-        material.layer?.masksToBounds = true
-        host.frame = material.bounds
-        host.autoresizingMask = [.width, .height]
-        material.addSubview(host)
-        panel.contentView = material
+        panel.contentView = background
         panel.onDismiss = { [weak self] in self?.hide() }
         host.onSizeChange = { [weak self] in self?.updateLayout() }
 
@@ -171,8 +179,25 @@ import SwiftUI
         if abs(panel.frame.minX - frame.minX) > 0.5 || abs(panel.frame.minY - frame.minY) > 0.5
             || abs(panel.frame.width - frame.width) > 0.5 || abs(panel.frame.height - frame.height) > 0.5 {
             panel.setFrame(frame, display: panel.isVisible)
+            panel.invalidateShadow()
         }
-        host.frame = material.bounds
+        if #available(macOS 26, *) {
+            background.layoutSubtreeIfNeeded()
+        } else {
+            host.frame = background.bounds
+        }
+    }
+
+    private static func roundedMask(radius: CGFloat) -> NSImage {
+        let side = radius * 2 + 1
+        let mask = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            NSColor.white.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            return true
+        }
+        mask.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        mask.resizingMode = .stretch
+        return mask
     }
 }
 
