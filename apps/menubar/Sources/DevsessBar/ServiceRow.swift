@@ -58,24 +58,15 @@ struct ServiceRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: ServiceRowGeometry.spacing) {
             if selected {
-                Button(action: stop) {
-                    RoundedRectangle(cornerRadius: 1.5)
-                        .fill(armed ? Color(nsColor: .systemRed) : .white)
-                        .frame(width: 7, height: 7)
-                        .frame(width: 14, height: 18)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Stop \(run.projectName)")
-                .disabled(stopping)
-                .onHover { setStopArmed($0 && !snapshotMode && !stopping) }
-                .frame(width: 7)
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(armed ? Color(nsColor: .systemRed) : .white)
+                    .frame(width: ServiceRowGeometry.indicatorSize, height: ServiceRowGeometry.indicatorSize)
             } else {
                 Circle()
                     .fill(statusColor)
-                    .frame(width: 7, height: 7)
+                    .frame(width: ServiceRowGeometry.indicatorSize, height: ServiceRowGeometry.indicatorSize)
             }
             Text(armed ? "Stop \(service.name)" : service.name)
                 .foregroundStyle(armed ? Color(nsColor: .systemRed) : selected ? .white : Color(nsColor: .labelColor))
@@ -90,25 +81,41 @@ struct ServiceRow: View {
             }
         }
         .font(.system(size: 13))
-        .frame(height: 24)
-        .padding(.horizontal, 9)
+        .frame(height: ServiceRowGeometry.height)
+        .padding(.horizontal, ServiceRowGeometry.horizontalInset)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(armed ? Color(nsColor: .quaternaryLabelColor)
                     : selected ? Color(nsColor: .selectedContentBackgroundColor) : .clear,
                     in: RoundedRectangle(cornerRadius: 5))
-        .background {
-            Button {
-                if let url = service.publishedURL { NSWorkspace.shared.open(url) }
-            } label: {
-                Color.clear.contentShape(Rectangle())
+        .overlay {
+            HStack(spacing: 0) {
+                Button(action: stop) {
+                    Color.clear.contentShape(Rectangle())
+                }
+                .frame(width: ServiceRowGeometry.stopZoneWidth)
+                .disabled(stopping || snapshotMode)
+                .help("Stop \(run.projectName)")
+                .accessibilityLabel("Stop \(run.projectName)")
+                Button {
+                    if let url = service.publishedURL { NSWorkspace.shared.open(url) }
+                } label: {
+                    Color.clear.contentShape(Rectangle())
+                }
+                .disabled(service.publishedURL == nil || snapshotMode)
+                .accessibilityLabel("Open \(service.name)")
             }
             .buttonStyle(.plain)
-            .disabled(service.publishedURL == nil)
         }
         .contentShape(Rectangle())
-        .onHover {
-            hovered = $0 && !snapshotMode
-            if !$0 { setStopArmed(false) }
+        .onContinuousHover { phase in
+            switch phase {
+            case .active(let location):
+                hovered = !snapshotMode
+                setStopArmed(ServiceRowGeometry.shouldArm(at: location, stopping: stopping, snapshotMode: snapshotMode))
+            case .ended:
+                hovered = false
+                setStopArmed(false)
+            }
         }
         .onDisappear { setStopArmed(false) }
         .help("\(run.canonicalCwd)\n\(service.command)")
