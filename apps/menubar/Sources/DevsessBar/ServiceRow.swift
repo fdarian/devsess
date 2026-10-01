@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 enum RowPreviewState {
-    case normal, hovered, stopArmed
+    case normal, hovered, stopArmed, headerHovered, headerArmed
 }
 
 struct ServiceRow: View {
@@ -11,14 +11,15 @@ struct ServiceRow: View {
     let stopping: Bool
     var snapshotMode = false
     var previewState: RowPreviewState = .normal
-    let stopArmed: Bool
-    let setStopArmed: (Bool) -> Void
+    var headerHovered = false
+    var headerArmed = false
     let stop: () -> Void
     let restart: () -> Void
     var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
     @LegacyState private var hovered = false
+    @LegacyState private var stopArmed = false
 
-    private var armed: Bool { stopArmed }
+    private var armed: Bool { stopArmed || previewState == .stopArmed }
     private var selected: Bool { armed || hovered || previewState == .hovered }
 
     private var statusColor: Color {
@@ -35,10 +36,7 @@ struct ServiceRow: View {
 
     private var detail: String? {
         if stopping { return "Stopping…" }
-        if let url = service.publishedURL {
-            let host = url.host(percentEncoded: false) ?? url.absoluteString
-            return url.port.map { "\(host):\($0)" } ?? host
-        }
+        if let url = service.publishedURL { return ServiceRowLabels.port(for: url) }
         if service.isFailure || service.state == .failed || service.state == .orphaned {
             if let code = service.exitCode { return "exit \(code)" }
             if let signal = service.signal { return "signal \(signal)" }
@@ -64,11 +62,21 @@ struct ServiceRow: View {
         return Color(nsColor: .labelColor)
     }
 
+    private var memoryLabel: String? {
+        ServiceRowLabels.memory(for: service, stopping: stopping)
+    }
+
+    private var stopColor: Color {
+        if armed || headerArmed { return Color(nsColor: .systemRed) }
+        if headerHovered { return Color(nsColor: .secondaryLabelColor) }
+        return .white
+    }
+
     private var indicator: some View {
         ZStack {
-            if selected {
+            if selected || headerHovered || headerArmed {
                 RoundedRectangle(cornerRadius: 1.5)
-                    .fill(armed ? Color(nsColor: .systemRed) : .white)
+                    .fill(stopColor)
             } else {
                 Circle().fill(statusColor)
             }
@@ -78,17 +86,30 @@ struct ServiceRow: View {
     }
 
     private var urlLabel: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: ServiceRowGeometry.spacing) {
             Text(armed ? "Stop \(service.name)" : service.name)
                 .foregroundStyle(nameColor)
                 .lineLimit(1)
-            Spacer(minLength: 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let memoryLabel {
+                Text(memoryLabel)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .frame(width: ServiceRowGeometry.columnWidth, alignment: .trailing)
+                    .padding(.trailing, ServiceRowGeometry.memoryTrailingGap)
+            }
             if let detail {
                 Text(detail)
                     .foregroundStyle(detailColor)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .monospacedDigit()
+                    .frame(width: service.publishedURL != nil && !stopping ? ServiceRowGeometry.columnWidth : nil,
+                        alignment: .trailing)
+            } else if memoryLabel != nil {
+                Color.clear.frame(width: ServiceRowGeometry.columnWidth).allowsHitTesting(false)
             }
         }
         .padding(.trailing, ServiceRowGeometry.horizontalInset)
@@ -108,8 +129,8 @@ struct ServiceRow: View {
             }
             .buttonStyle(.plain)
             .disabled(stopping || snapshotMode)
-            .help("Stop \(run.projectName)")
-            .accessibilityLabel("Stop \(run.projectName)")
+            .help("Stop \(service.name)")
+            .accessibilityLabel("Stop \(service.name)")
             Button {
                 if let url = service.publishedURL { openURL(url) }
             } label: {
@@ -133,13 +154,12 @@ struct ServiceRow: View {
             switch phase {
             case .active(let location):
                 hovered = !snapshotMode
-                setStopArmed(ServiceRowGeometry.shouldArm(at: location, stopping: stopping, snapshotMode: snapshotMode))
+                stopArmed = ServiceRowGeometry.shouldArm(at: location, stopping: stopping, snapshotMode: snapshotMode)
             case .ended:
                 hovered = false
-                setStopArmed(false)
+                stopArmed = false
             }
         }
-        .onDisappear { setStopArmed(false) }
         .help("\(run.canonicalCwd)\n\(service.command)")
         .contextMenu {
             Button("Restart service", action: restart)

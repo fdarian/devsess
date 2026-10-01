@@ -7,6 +7,7 @@ struct PanelView: View {
     var previewState: RowPreviewState = .normal
     var maximumHeight: CGFloat = 530
     var stopRun: ((RunRecord) -> Void)?
+    var stopService: ((RunRecord, ServiceRecord) -> Void)?
     var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
 
     private var sectionsHeight: CGFloat {
@@ -37,6 +38,11 @@ struct PanelView: View {
                             stop: {
                                 if let stopRun { stopRun(run) } else { store.stop(run) }
                             },
+                            stopService: { service in
+                                if let stopService { stopService(run, service) }
+                                else { store.stop(service, in: run) }
+                            },
+                            isServiceStopping: { store.isStopping($0, in: run) },
                             restart: { store.restart($0, in: run) }, openURL: openURL)
                     }
                 }

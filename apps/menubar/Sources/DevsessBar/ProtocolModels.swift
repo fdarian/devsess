@@ -32,6 +32,36 @@ struct ServiceRecord: Decodable, Sendable, Identifiable {
     let exitCode: Int?
     let signal: Int?
     let published: Published?
+    let memoryBytes: Double?
+
+    init(name: String, command: String, cwd: String, state: ServiceState, exitCode: Int?, signal: Int?,
+         published: Published?, memoryBytes: Double? = nil) {
+        self.name = name
+        self.command = command
+        self.cwd = cwd
+        self.state = state
+        self.exitCode = exitCode
+        self.signal = signal
+        self.published = published
+        self.memoryBytes = memoryBytes
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        name = try values.decode(String.self, forKey: .name)
+        command = try values.decode(String.self, forKey: .command)
+        cwd = try values.decode(String.self, forKey: .cwd)
+        state = try values.decode(ServiceState.self, forKey: .state)
+        exitCode = try values.decodeIfPresent(Int.self, forKey: .exitCode)
+        signal = try values.decodeIfPresent(Int.self, forKey: .signal)
+        published = try values.decodeIfPresent(Published.self, forKey: .published)
+        // Invalid optional telemetry must not hide an otherwise valid service.
+        memoryBytes = try? values.decodeIfPresent(Double.self, forKey: .memoryBytes)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name, command, cwd, state, exitCode, signal, published, memoryBytes
+    }
 
     var id: String { name }
     var isFailure: Bool {

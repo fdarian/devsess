@@ -2,7 +2,8 @@ import AppKit
 
 enum ServiceRowClickSelfTest {
     @MainActor static func run() throws {
-        guard let run = Fixtures.busy.first, let service = run.services.first,
+        let run = Fixtures.twoServices
+        guard let service = run.services.first,
               let expectedURL = service.publishedURL else { throw Failure("Missing URL fixture") }
         let store = RunStore()
         store.runsForPreview([run])
@@ -12,8 +13,11 @@ enum ServiceRowClickSelfTest {
         defer { controller.close() }
         var opened: [URL] = []
         var stopped: [String] = []
+        var stoppedServices: [ServiceStop] = []
         controller.host.rootView = PanelView(store: store,
-            stopRun: { stopped.append($0.id) }, openURL: { opened.append($0) })
+            stopRun: { stopped.append($0.id) },
+            stopService: { stoppedServices.append(ServiceStop(runId: $0.id, name: $1.name)) },
+            openURL: { opened.append($0) })
         controller.updateLayout()
         controller.orderBackForCapture()
         for _ in 0..<4 {
@@ -26,13 +30,29 @@ enum ServiceRowClickSelfTest {
             throw Failure("First-click admission or window mouse routing is incorrect")
         }
         try click(x: 220, controller: controller)
-        guard opened == [expectedURL], stopped.isEmpty else {
+        guard opened == [expectedURL], stopped.isEmpty, stoppedServices.isEmpty else {
             throw Failure("URL-area click did not exclusively open the URL")
         }
         try click(x: 17, controller: controller)
-        guard opened == [expectedURL], stopped == [run.id] else {
-            throw Failure("Row clicks did not reach their independent actions")
+        let firstStop = ServiceStop(runId: run.id, name: service.name)
+        guard opened == [expectedURL], stopped.isEmpty, stoppedServices == [firstStop] else {
+            throw Failure("Service stop did not exclusively stop the clicked service")
         }
+        try click(x: 17, fromTop: 5 + 20 + 24 + 12, controller: controller)
+        let secondStop = ServiceStop(runId: run.id, name: run.services[1].name)
+        guard stopped.isEmpty, stoppedServices == [firstStop, secondStop] else {
+            throw Failure("Second service stop targeted the wrong service")
+        }
+        controller.host.rootView.previewState = .headerHovered
+        controller.updateLayout()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+        try click(x: 40, fromTop: 15, controller: controller)
+        guard stopped.isEmpty else { throw Failure("Header text unexpectedly stops the run") }
+        try click(x: 280, fromTop: 15, controller: controller)
+        guard stopped == [run.id], stoppedServices == [firstStop, secondStop], opened == [expectedURL] else {
+            throw Failure("Header stop did not exclusively stop the whole run")
+        }
+        controller.host.rootView.previewState = .normal
         guard let noURLRun = Fixtures.busy.first(where: { $0.services.first?.publishedURL == nil }) else {
             throw Failure("Missing no-URL fixture")
         }
@@ -42,20 +62,21 @@ enum ServiceRowClickSelfTest {
             controller.updateLayout()
         }
         try click(x: 220, controller: controller)
-        guard opened == [expectedURL], stopped == [run.id] else {
+        guard opened == [expectedURL], stopped == [run.id], stoppedServices == [firstStop, secondStop] else {
             throw Failure("Row without a URL did not ignore its URL-area click")
         }
         try click(x: 17, controller: controller)
-        guard opened == [expectedURL], stopped == [run.id, noURLRun.id] else {
+        guard opened == [expectedURL], stopped == [run.id],
+              stoppedServices == [firstStop, secondStop, ServiceStop(runId: noURLRun.id, name: noURLRun.services[0].name)] else {
             throw Failure("Row without a URL did not retain its stop action")
         }
-        print("service row: synthetic URL, stop, and no-URL clicks passed")
+        print("synthetic clicks: URLs, independent per-service stops, header whole-run stop, and no-URL rows passed")
     }
 
-    @MainActor private static func click(x: CGFloat, controller: StatusItemController) throws {
+    @MainActor private static func click(x: CGFloat, fromTop: CGFloat = 5 + 20 + 12,
+                                        controller: StatusItemController) throws {
         let host = controller.host
-        let rowCenterFromTop: CGFloat = 5 + 20 + ServiceRowGeometry.height / 2
-        let point = NSPoint(x: x, y: host.isFlipped ? rowCenterFromTop : host.bounds.height - rowCenterFromTop)
+        let point = NSPoint(x: x, y: host.isFlipped ? fromTop : host.bounds.height - fromTop)
         let location = host.convert(point, to: nil)
         for type: NSEvent.EventType in [.leftMouseDown, .leftMouseUp] {
             guard let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
@@ -69,6 +90,11 @@ enum ServiceRowClickSelfTest {
             controller.panel.sendEvent(event)
         }
         RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+    }
+
+    private struct ServiceStop: Equatable {
+        let runId: String
+        let name: String
     }
 
     private struct Failure: Error, CustomStringConvertible {
