@@ -9,6 +9,9 @@ struct ClaudeBadgeTests {
         let hovered = ClaudeSessionBadge(sessions: sessions, previewHovered: true)
         #expect(resting.countColor == .tertiaryLabelColor)
         #expect(hovered.countColor == .secondaryLabelColor)
+        let headerHighlighted = ClaudeSessionBadge(sessions: sessions, headerHighlighted: true)
+        #expect(headerHighlighted.countColor == .secondaryLabelColor)
+        #expect(resting.restingSize == headerHighlighted.restingSize)
         #expect(resting.restingSize == hovered.restingSize)
         let live = [session("live", .live)]
         #expect(ClaudeSessionBadge(sessions: live).countColor == .secondaryLabelColor)
