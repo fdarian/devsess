@@ -34,6 +34,10 @@ enum SnapshotWriter {
                           as: "panel-header-hovered-\(suffix).png", in: directory)
             try savePanel(store: twoServices, appearance: appearance, previewState: .headerArmed,
                           as: "panel-header-armed-\(suffix).png", in: directory)
+            try savePanel(store: twoServices, appearance: appearance, previewState: .badgeHovered,
+                          as: "panel-badge-hovered-\(suffix).png", in: directory)
+            try savePanel(store: single, appearance: appearance, previewState: .badgeHovered,
+                          as: "panel-badge-hovered-live-\(suffix).png", in: directory)
             try savePanel(store: twoServices, appearance: appearance, previewState: .stopArmed,
                           as: "panel-service-armed-\(suffix).png", in: directory)
         }
