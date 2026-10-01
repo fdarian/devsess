@@ -5,12 +5,12 @@ import SwiftUI
 @MainActor final class StatusItemController: NSObject {
     let panel: PanelWindow
     let host: SizingHostingView<PanelView>
-    let presentation: PanelPresentation
     private let material: NSVisualEffectView
     private let store: RunStore
     private var statusItem: NSStatusItem?
     private var globalMonitor: Any?
     private var localMonitor: Any?
+    private var keyMonitor: Any?
     private var isHiding = false
     private let testAnchor: NSRect?
     private let testScreen: NSRect?
@@ -19,16 +19,14 @@ import SwiftUI
         self.store = store
         self.testAnchor = testAnchor
         self.testScreen = testScreen
-        let presentation = PanelPresentation()
-        self.presentation = presentation
-        host = SizingHostingView(rootView: PanelView(store: store, presentation: presentation))
+        host = SizingHostingView(rootView: PanelView(store: store))
         host.sizingOptions = [.intrinsicContentSize]
         panel = PanelWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 160),
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 160),
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered, defer: false
         )
-        material = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 360, height: 160))
+        material = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 300, height: 160))
         super.init()
 
         panel.isFloatingPanel = true
@@ -37,11 +35,11 @@ import SwiftUI
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.isReleasedWhenClosed = false
-        material.material = .popover
+        material.material = .menu
         material.blendingMode = .behindWindow
         material.state = .active
         material.wantsLayer = true
-        material.layer?.cornerRadius = 10
+        material.layer?.cornerRadius = 12
         material.layer?.masksToBounds = true
         host.frame = material.bounds
         host.autoresizingMask = [.width, .height]
@@ -71,6 +69,7 @@ import SwiftUI
         store.panelOpen = true
         updateLayout()
         panel.makeKeyAndOrderFront(nil)
+        statusItem?.button?.highlight(true)
         installMonitors()
         Task { await store.refresh() }
     }
@@ -80,6 +79,7 @@ import SwiftUI
         isHiding = true
         store.panelOpen = false
         panel.orderOut(nil)
+        statusItem?.button?.highlight(false)
         removeMonitors()
         isHiding = false
     }
@@ -94,11 +94,20 @@ import SwiftUI
             }
             return event
         }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+               event.charactersIgnoringModifiers?.lowercased() == "q" {
+                NSApplication.shared.terminate(nil)
+                return nil
+            }
+            return event
+        }
     }
 
     private func removeMonitors() {
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor); self.globalMonitor = nil }
         if let localMonitor { NSEvent.removeMonitor(localMonitor); self.localMonitor = nil }
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
     }
 
     private func observeChanges() {
@@ -109,7 +118,6 @@ import SwiftUI
             _ = store.actionErrors
             _ = store.stopping
             _ = store.claudeByCwd
-            _ = presentation.finishedExpanded
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -122,9 +130,17 @@ import SwiftUI
     }
 
     private func updateIcon() {
-        statusItem?.button?.image = MenuBarIcon.image(
-            states: store.groups.active.map(\.glyphState), daemonDown: store.daemonDown
-        )
+        let count = store.groups.active.count
+        statusItem?.button?.image = MenuBarIcon.image(idle: store.daemonDown || count == 0)
+        if let displayedCount = MenuBarIcon.count(for: count, daemonDown: store.daemonDown) {
+            statusItem?.button?.attributedTitle = NSAttributedString(string: "\(displayedCount)", attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+            ])
+            statusItem?.button?.imagePosition = .imageLeading
+        } else {
+            statusItem?.button?.title = ""
+            statusItem?.button?.imagePosition = .imageOnly
+        }
     }
 
     func updateLayout() {
@@ -140,11 +156,16 @@ import SwiftUI
             screen = visibleFrame
         }
         host.layoutSubtreeIfNeeded()
+        let top = anchor.minY - 4
+        let availableHeight = max(90, min(530, top - screen.minY))
+        if abs(host.rootView.maximumHeight - availableHeight) > 0.5 {
+            host.rootView = PanelView(store: store, maximumHeight: availableHeight)
+            host.layoutSubtreeIfNeeded()
+        }
         let fittingHeight = host.intrinsicContentSize.height
         guard fittingHeight > 0, fittingHeight.isFinite else { return }
-        let top = anchor.minY - 4
-        let height = min(fittingHeight, 530, top - screen.minY)
-        let width: CGFloat = 360
+        let height = min(fittingHeight, availableHeight)
+        let width: CGFloat = 300
         let x = min(max(anchor.midX - width / 2, screen.minX), screen.maxX - width)
         let frame = NSRect(x: x, y: top - height, width: width, height: height)
         if abs(panel.frame.minX - frame.minX) > 0.5 || abs(panel.frame.minY - frame.minY) > 0.5

@@ -3,7 +3,6 @@ import SwiftUI
 
 struct RunRow: View {
     let run: RunRecord
-    let active: Bool
     let stopping: Bool
     let error: String?
     let claudeSessions: [ClaudeSession]
@@ -11,80 +10,32 @@ struct RunRow: View {
     let stop: () -> Void
     let restart: (ServiceRecord) -> Void
 
-    private var path: String {
-        let home = NSHomeDirectory()
-        return run.canonicalCwd.hasPrefix(home + "/") ? "~" + run.canonicalCwd.dropFirst(home.count) : run.canonicalCwd
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .top, spacing: 9) {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(run.projectName)
-                            .font(.system(size: 14, weight: .semibold).width(.expanded))
-                        Text(run.presetName)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                        if !claudeSessions.isEmpty {
-                            ClaudeSessionBadge(sessions: claudeSessions, snapshotMode: snapshotMode)
-                        }
-                    }
-                    HStack(spacing: 0) {
-                        Text((path as NSString).deletingLastPathComponent + "/")
-                            .foregroundStyle(.tertiary)
-                        Text((path as NSString).lastPathComponent)
-                            .foregroundStyle(.primary)
-                    }
-                    .font(.system(size: 10.5))
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 7) {
+                Text("\(run.projectName) — \((run.canonicalCwd as NSString).lastPathComponent)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .help(run.canonicalCwd)
-                }
-                Spacer(minLength: 4)
-                if active {
-                    if stopping { Text("Stopping…").font(.caption).foregroundStyle(.secondary) }
-                    else { HoldToStopButton(action: stop) }
+                Spacer(minLength: 0)
+                if !claudeSessions.isEmpty {
+                    ClaudeSessionBadge(sessions: claudeSessions, snapshotMode: snapshotMode)
                 }
             }
-            if !run.services.isEmpty {
-                VStack(alignment: .leading, spacing: 11) {
-                    ForEach(run.services.indices, id: \.self) { index in
-                        let service = run.services[index]
-                        ServiceRow(service: service, active: active, snapshotMode: snapshotMode, restart: { restart(service) })
-                            .overlay(alignment: .topLeading) {
-                                if index < run.services.count - 1 {
-                                    GeometryReader { geometry in
-                                        Rectangle()
-                                            .fill(Theme.lamp(run.state).opacity(0.35))
-                                            .frame(width: 1, height: geometry.size.height + 11)
-                                            .offset(x: 3.5, y: 9)
-                                            .allowsHitTesting(false)
-                                    }
-                                }
-                            }
-                    }
-                }
-                .padding(.leading, 15)
+            .frame(height: 20)
+            .padding(.horizontal, 9)
+            ForEach(run.services.indices, id: \.self) { index in
+                ServiceRow(service: run.services[index], run: run, stopping: stopping,
+                    snapshotMode: snapshotMode, stop: stop, restart: { restart(run.services[index]) })
             }
             if let error {
-                Text(error).font(.caption).foregroundStyle(Theme.red)
-            }
-        }
-        .padding(.vertical, 5)
-        .opacity(active ? 1 : 0.6)
-        .contextMenu {
-            Button("Copy path") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(run.canonicalCwd, forType: .string) }
-            Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: run.canonicalCwd)]) }
-            Button("Open in Terminal") {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-                process.arguments = ["-a", "Terminal", run.canonicalCwd]
-                try? process.run()
-            }
-            Button("Copy devsess tail command") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString("devsess tail \(run.runId)", forType: .string)
+                Text(error)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(nsColor: .systemRed))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 3)
             }
         }
     }

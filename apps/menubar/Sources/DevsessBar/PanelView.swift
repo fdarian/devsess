@@ -3,126 +3,99 @@ import SwiftUI
 
 struct PanelView: View {
     @Bindable var store: RunStore
-    @Bindable var presentation: PanelPresentation
     var snapshotMode = false
+    var maximumHeight: CGFloat = 530
 
-    private var summary: String {
-        let active = store.groups.active
-        if active.isEmpty { return "Nothing running" }
-        let running = active.filter { $0.glyphState == .ready }.count
-        let starting = active.filter { $0.glyphState == .starting }.count
-        let failed = active.filter { $0.glyphState == .failed }.count
-        let parts = [
-            running > 0 ? "\(running) \(running == 1 ? "server" : "servers") running" : nil,
-            starting > 0 ? "\(starting) starting" : nil,
-            failed > 0 ? "\(failed) \(failed == 1 ? "needs" : "need") attention" : nil
-        ].compactMap { $0 }
-        return parts.joined(separator: ", ")
-    }
-
-    private var initialContentHeight: CGFloat {
-        let groups = store.groups
-        let activeHeight = groups.active.reduce(CGFloat(0)) { height, run in
-            height + estimatedHeight(for: run)
-                + (store.actionErrors[run.id] == nil ? 0 : 40)
-        }
-        let separators = CGFloat(max(0, groups.active.count - 1)) * 27
-        let empty = groups.active.isEmpty ? CGFloat(65) : 0
-        let disclosure = groups.finished.isEmpty ? CGFloat(0) : 30
-        let finished = presentation.finishedExpanded
-            ? groups.finished.reduce(CGFloat(0)) { $0 + estimatedHeight(for: $1) + 10 }
-            : 0
-        return max(110, 34 + activeHeight + separators + empty + disclosure + finished)
-    }
-
-    private func estimatedHeight(for run: RunRecord) -> CGFloat {
-        45 + CGFloat(run.services.count) * 35
+    private var sectionsHeight: CGFloat {
+        let runs = store.groups.active
+        if runs.isEmpty { return 30 }
+        return runs.reduce(0) { height, run in
+            height + 20 + CGFloat(run.services.count) * 24
+                + (store.actionErrors[run.id] == nil ? 0 : 28)
+        } + CGFloat(max(0, runs.count - 1)) * 6
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    Text(summary)
-                        .font(.system(size: 13, weight: .medium))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if snapshotMode {
-                        Image(systemName: "ellipsis").frame(width: 20, height: 20)
-                    } else {
-                        Menu {
-                            Button("Open logs folder") { NSWorkspace.shared.open(URL(fileURLWithPath: DaemonLocation.logsPath(), isDirectory: true)) }
-                            Button("Quit") { NSApplication.shared.terminate(nil) }
-                        } label: {
-                            Image(systemName: "ellipsis")
-                                .frame(width: 20, height: 20)
-                        }
-                        .menuStyle(.borderlessButton)
-                        .menuIndicator(.hidden)
-                        .fixedSize(horizontal: true, vertical: true)
-                        .frame(width: 22, height: 22)
-                        .help("More options")
+        VStack(spacing: 0) {
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 6) {
+                    if store.daemonDown {
+                        message("The devsess daemon isn't running")
+                    } else if let error = store.statusError {
+                        message(error)
+                    } else if store.groups.active.isEmpty {
+                        message("No servers running")
+                    }
+                    ForEach(store.groups.active) { run in
+                        RunRow(run: run, stopping: store.stopping.contains(run.id),
+                            error: store.actionErrors[run.id],
+                            claudeSessions: store.claudeByCwd[run.canonicalCwd] ?? [],
+                            snapshotMode: snapshotMode, stop: { store.stop(run) },
+                            restart: { store.restart($0, in: run) })
                     }
                 }
-                .padding(.horizontal, 17)
-                .padding(.vertical, 14)
-                Divider()
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .background(.regularMaterial)
-            .zIndex(1)
-            if snapshotMode {
-                content
-            } else {
-                ScrollView(.vertical) { content }
-                    .frame(height: min(initialContentHeight, 480))
-                    .clipped()
+            .frame(height: min(sectionsHeight, max(30, maximumHeight - 84)))
+            .scrollIndicators(.automatic)
+
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(height: 1)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+            action("Stop All Servers", enabled: !store.groups.active.isEmpty) {
+                for run in store.groups.active where !store.stopping.contains(run.id) { store.stop(run) }
             }
+            action("Open Logs Folder") {
+                NSWorkspace.shared.open(URL(fileURLWithPath: DaemonLocation.logsPath(), isDirectory: true))
+            }
+            action("Quit devsess", shortcut: "⌘Q") { NSApplication.shared.terminate(nil) }
         }
-        .frame(width: 360)
+        .padding(5)
+        .frame(width: 300)
     }
 
-    private var content: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            if store.daemonDown {
-                message("The devsess daemon isn't running. It starts with your next `dev start`.")
-            } else if let error = store.statusError {
-                message(error)
-            } else if store.groups.active.isEmpty {
-                message("Nothing running. Start a server with `dev start` in a project.")
-            }
-            ForEach(store.groups.active) { run in
-                RunRow(run: run, active: true, stopping: store.stopping.contains(run.id), error: store.actionErrors[run.id], claudeSessions: store.claudeByCwd[run.canonicalCwd] ?? [], snapshotMode: snapshotMode, stop: { store.stop(run) }, restart: { store.restart($0, in: run) })
-                if run.id != store.groups.active.last?.id { Divider() }
-            }
-            if !store.groups.finished.isEmpty {
-                Button {
-                    presentation.finishedExpanded.toggle()
-                } label: {
-                    Label {
-                        Text("Recently stopped (\(store.groups.finished.count))")
-                    } icon: {
-                        Image(systemName: presentation.finishedExpanded ? "chevron.down" : "chevron.right")
-                    }
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .padding(.top, 5)
-                if presentation.finishedExpanded {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(store.groups.finished) { run in
-                            RunRow(run: run, active: false, stopping: false, error: nil, claudeSessions: store.claudeByCwd[run.canonicalCwd] ?? [], snapshotMode: snapshotMode, stop: {}, restart: { _ in })
-                        }
-                    }
-                    .padding(.top, 7)
-                }
-            }
-        }
-        .padding(17)
-        .frame(maxWidth: .infinity, alignment: .leading)
+    private func message(_ value: String) -> some View {
+        Text(value)
+            .font(.system(size: 13))
+            .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: 30)
+            .padding(.horizontal, 9)
     }
 
-    private func message(_ text: String) -> some View {
-        Text(text).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            .padding(.vertical, 15)
+    private func action(_ title: String, shortcut: String? = nil, enabled: Bool = true,
+                        perform: @escaping () -> Void) -> some View {
+        MenuActionRow(title: title, shortcut: shortcut, enabled: enabled, snapshotMode: snapshotMode, perform: perform)
+    }
+}
+
+private struct MenuActionRow: View {
+    let title: String
+    let shortcut: String?
+    let enabled: Bool
+    let snapshotMode: Bool
+    let perform: () -> Void
+    @LegacyState private var hovered = false
+
+    var body: some View {
+        Button(action: perform) {
+            HStack {
+                Text(title)
+                Spacer()
+                if let shortcut { Text(shortcut).foregroundStyle(hovered ? .white : Color(nsColor: .secondaryLabelColor)) }
+            }
+            .font(.system(size: 13))
+            .foregroundStyle(hovered ? .white : Color(nsColor: .labelColor))
+            .padding(.horizontal, 9)
+            .frame(height: 22)
+            .background(hovered ? Color(nsColor: .selectedContentBackgroundColor) : .clear,
+                        in: RoundedRectangle(cornerRadius: 5))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled || snapshotMode)
+        .onHover { hovered = $0 && enabled && !snapshotMode }
     }
 }

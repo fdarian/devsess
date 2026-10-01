@@ -10,16 +10,13 @@ enum PanelSelfTest {
             testAnchor: anchor, testScreen: screen)
         defer { controller.panel.close() }
 
-        try check("collapsed", controller: controller, top: anchor.minY - 4)
-        for (index, expanded) in [true, false, true, false].enumerated() {
-            controller.presentation.finishedExpanded = expanded
-            try check("toggle \(index + 1) \(expanded ? "expanded" : "collapsed")",
-                controller: controller, top: anchor.minY - 4)
-        }
+        try check("many runs", controller: controller, top: anchor.minY - 4)
         store.runsForPreview(Fixtures.busy)
-        try check("runs removed", controller: controller, top: anchor.minY - 4)
+        try check("few runs", controller: controller, top: anchor.minY - 4)
+        store.runsForPreview([])
+        try check("empty", controller: controller, top: anchor.minY - 4)
         store.runsForPreview(Fixtures.stress)
-        try check("runs restored", controller: controller, top: anchor.minY - 4)
+        try check("many runs restored", controller: controller, top: anchor.minY - 4)
     }
 
     @MainActor private static func check(_ name: String, controller: StatusItemController, top: CGFloat) throws {
@@ -35,6 +32,7 @@ enum PanelSelfTest {
         guard abs(frame.height - expectedHeight) < 1 else {
             throw PanelTestFailure("\(name): height \(frame.height) differs from fitting \(expectedHeight)")
         }
+        guard abs(frame.width - 300) < 1 else { throw PanelTestFailure("\(name): wrong panel width") }
         guard abs(controller.host.frame.minY - content.bounds.minY) < 1,
               abs(controller.host.frame.height - content.bounds.height) < 1,
               abs(controller.host.frame.width - content.bounds.width) < 1 else {

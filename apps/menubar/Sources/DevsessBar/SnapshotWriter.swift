@@ -7,35 +7,39 @@ enum SnapshotWriter {
         let busy = RunStore()
         busy.runsForPreview(Fixtures.busy)
         busy.claudeSessionsForPreview(Fixtures.claudeSessions)
-        try save(PanelView(store: busy, presentation: PanelPresentation(), snapshotMode: true).background(Color(nsColor: .windowBackgroundColor)), as: "panel-busy.png", in: directory)
-        try saveLivePanel(store: busy, as: "panel-live-busy.png", in: directory)
         guard let firstRun = Fixtures.busy.first else { throw DaemonError.invalidResponse }
         let single = RunStore()
         single.runsForPreview([firstRun])
-        try saveLivePanel(store: single, as: "panel-live-single.png", in: directory)
         let stress = RunStore()
         stress.runsForPreview(Fixtures.stress)
-        try saveLivePanel(store: stress, as: "panel-live-stress.png", in: directory)
-        try saveLivePanel(store: stress, expanded: true, as: "panel-live-stress-expanded.png", in: directory)
-        try save(PanelView(store: RunStore(), presentation: PanelPresentation(), snapshotMode: true).background(Color(nsColor: .windowBackgroundColor)), as: "panel-empty.png", in: directory)
         let down = RunStore()
         down.downForPreview()
-        try save(PanelView(store: down, presentation: PanelPresentation(), snapshotMode: true).background(Color(nsColor: .windowBackgroundColor)), as: "panel-daemon-down.png", in: directory)
 
-        let variants: [(String, [JackState], Bool)] = [
-            ("Idle", [], false), ("One", [.ready], false),
-            ("Three", [.ready, .starting, .failed], false),
-            ("Six", [.ready, .ready, .ready, .starting, .failed, .ready], false),
-            ("Starting", [.starting], false), ("Failed", [.failed], false),
-            ("Daemon down", [], true)
+        for appearance: NSAppearance.Name in [.aqua, .darkAqua] {
+            let suffix = appearance == .aqua ? "light" : "dark"
+            try savePanel(store: busy, appearance: appearance, as: "panel-busy-\(suffix).png", in: directory)
+            try savePanel(store: single, appearance: appearance, as: "panel-single-\(suffix).png", in: directory)
+            try savePanel(store: stress, appearance: appearance, as: "panel-stress-\(suffix).png", in: directory)
+            try savePanel(store: RunStore(), appearance: appearance, as: "panel-empty-\(suffix).png", in: directory)
+            try savePanel(store: down, appearance: appearance, as: "panel-daemon-down-\(suffix).png", in: directory)
+        }
+
+        let variants: [(String, Int, Bool)] = [
+            ("Idle", 0, false), ("One", 1, false), ("Two", 2, false),
+            ("Three", 3, false), ("Twelve", 12, false), ("Daemon down", 0, true)
         ]
         let icons = VStack(spacing: 0) {
             ForEach([Color.white, Color.black], id: \.self) { background in
                 HStack(spacing: 18) {
                     ForEach(variants.indices, id: \.self) { index in
                         VStack(spacing: 8) {
-                            JackGlyph(states: variants[index].1, daemonDown: variants[index].2)
-                                .frame(width: 56, height: 22)
+                            HStack(spacing: 4) {
+                                TerminalGlyph(idle: variants[index].1 == 0 || variants[index].2)
+                                if let count = MenuBarIcon.count(for: variants[index].1, daemonDown: variants[index].2) {
+                                    Text("\(count)").font(.system(size: 12, weight: .medium)).monospacedDigit()
+                                }
+                            }
+                            .frame(width: 52, height: 22)
                             Text(variants[index].0).font(.system(size: 10))
                         }
                     }
@@ -51,11 +55,12 @@ enum SnapshotWriter {
         try save(icons, as: "icons-1x.png", in: directory, scale: 1)
     }
 
-    @MainActor private static func saveLivePanel(store: RunStore, expanded: Bool = false, as name: String, in directory: URL) throws {
+    @MainActor private static func savePanel(store: RunStore, appearance: NSAppearance.Name,
+                                             as name: String, in directory: URL) throws {
         let controller = StatusItemController(store: store, showsStatusItem: false,
             testAnchor: NSRect(x: -11500, y: -11100, width: 22, height: 22),
             testScreen: NSRect(x: -12000, y: -12000, width: 1000, height: 1000))
-        controller.presentation.finishedExpanded = expanded
+        controller.panel.appearance = NSAppearance(named: appearance)
         controller.updateLayout()
         controller.panel.orderBack(nil)
         defer { controller.panel.orderOut(nil); controller.panel.close() }
@@ -75,7 +80,7 @@ enum SnapshotWriter {
     }
 
     @MainActor private static func save<V: View>(_ view: V, as name: String, in directory: URL, scale: CGFloat = 2) throws {
-        let renderer = ImageRenderer(content: view.environment(\.colorScheme, .light))
+        let renderer = ImageRenderer(content: view)
         renderer.scale = scale
         renderer.isOpaque = true
         guard let image = renderer.nsImage,

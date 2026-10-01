@@ -13,10 +13,10 @@ struct ClaudeSessionBadge: View {
         Group {
             if let session = sessions.first {
                 if snapshotMode {
-                    mark(for: session)
+                    mark()
                 } else if sessions.count == 1 {
                     Button { NSWorkspace.shared.open(session.continuationURL) } label: {
-                        mark(for: session)
+                        mark()
                     }
                     .buttonStyle(.plain)
                 } else {
@@ -28,8 +28,7 @@ struct ClaudeSessionBadge: View {
                         }
                     } label: {
                         HStack(spacing: 2) {
-                            mark(for: session)
-                            Text("\(sessions.count)").font(.system(size: 9))
+                            mark()
                         }
                     }
                     .menuStyle(.borderlessButton)
@@ -42,21 +41,35 @@ struct ClaudeSessionBadge: View {
         .accessibilityLabel(tooltip)
     }
 
-    private func mark(for session: ClaudeSession) -> some View {
+    private func mark() -> some View {
         HStack(spacing: 3) {
-            Image(systemName: "asterisk")
-                .font(.system(size: 10, weight: .semibold))
-                .overlay {
-                    if session.state == .archived {
-                        Circle().stroke(.secondary, lineWidth: 0.8).frame(width: 14, height: 14)
-                    }
-                }
-            if session.state == .live {
-                Circle().frame(width: 4, height: 4)
-            }
+            Sparkle().frame(width: 9, height: 9)
+            Text("\(sessions.count)")
+                .font(.system(size: 11, weight: .medium))
+                .monospacedDigit()
         }
-        .foregroundStyle(session.state == .archived
-            ? Color.secondary : Color(red: 0.851, green: 0.467, blue: 0.341))
-        .frame(height: 16)
+        .foregroundStyle(sessions.contains { $0.state == .live }
+            ? Color(nsColor: .systemOrange) : Color(nsColor: .tertiaryLabelColor))
+        .frame(height: 20)
+    }
+}
+
+private struct Sparkle: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addCurve(to: CGPoint(x: rect.maxX, y: rect.midY),
+                      control1: CGPoint(x: rect.midX + rect.width * 0.03, y: rect.minY + rect.height * 0.28),
+                      control2: CGPoint(x: rect.maxX - rect.width * 0.28, y: rect.midY - rect.height * 0.03))
+        path.addCurve(to: CGPoint(x: rect.midX, y: rect.maxY),
+                      control1: CGPoint(x: rect.maxX - rect.width * 0.28, y: rect.midY + rect.height * 0.03),
+                      control2: CGPoint(x: rect.midX + rect.width * 0.03, y: rect.maxY - rect.height * 0.28))
+        path.addCurve(to: CGPoint(x: rect.minX, y: rect.midY),
+                      control1: CGPoint(x: rect.midX - rect.width * 0.03, y: rect.maxY - rect.height * 0.28),
+                      control2: CGPoint(x: rect.minX + rect.width * 0.28, y: rect.midY + rect.height * 0.03))
+        path.addCurve(to: CGPoint(x: rect.midX, y: rect.minY),
+                      control1: CGPoint(x: rect.minX + rect.width * 0.28, y: rect.midY - rect.height * 0.03),
+                      control2: CGPoint(x: rect.midX - rect.width * 0.03, y: rect.minY + rect.height * 0.28))
+        return path
     }
 }
