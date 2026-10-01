@@ -50,32 +50,33 @@ struct ClaudeSessionBadge: View {
         sessions.contains { $0.state == .live } ? .systemOrange : .secondaryLabelColor
     }
 
-    private var markImage: NSImage {
+    private var badgeImage: NSImage {
         let color = markColor
-        // Native Menu labels bridge images and text, not arbitrary SwiftUI shapes.
-        return NSImage(size: NSSize(width: 10, height: 10), flipped: false) { rect in
+        let count = NSAttributedString(string: "\(sessions.count)", attributes: [
+            .foregroundColor: color,
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        ])
+        let countSize = count.size()
+        // Native Menu labels override text styling; preserve both colors in an original image.
+        return NSImage(size: NSSize(width: 13 + countSize.width, height: 18), flipped: false) { rect in
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            context.saveGState()
             color.setFill()
-            context.translateBy(x: 0, y: rect.height)
+            context.translateBy(x: 0, y: (rect.height + 10) / 2)
             context.scaleBy(x: 1, y: -1)
-            context.addPath(ClaudeMark().path(in: rect).cgPath)
+            context.addPath(ClaudeMark().path(in: CGRect(x: 0, y: 0, width: 10, height: 10)).cgPath)
             context.fillPath()
+            context.restoreGState()
+            count.draw(at: NSPoint(x: 13, y: (rect.height - countSize.height) / 2))
             return true
         }
     }
 
     private func mark() -> some View {
-        HStack(spacing: 3) {
-            Image(nsImage: markImage)
-                .renderingMode(.original)
-                .frame(width: 10, height: 10)
-            Text("\(sessions.count)")
-                .font(.system(size: 11, weight: .medium))
-                .monospacedDigit()
-        }
-        .foregroundStyle(Color(nsColor: markColor))
-        .padding(.horizontal, 6)
-        .frame(height: 18)
-        .contentShape(Capsule())
+        Image(nsImage: badgeImage)
+            .renderingMode(.original)
+            .padding(.horizontal, 6)
+            .frame(height: 18)
+            .contentShape(Capsule())
     }
 }
