@@ -2,6 +2,20 @@ import AppKit
 
 enum PanelSelfTest {
     @MainActor static func run() throws {
+        for point in [CGPoint(x: 0, y: 0), CGPoint(x: 12, y: 12), CGPoint(x: 23.99, y: 23.99)] {
+            guard ServiceRowGeometry.shouldArm(at: point, stopping: false, snapshotMode: false) else {
+                throw PanelTestFailure("Stop zone does not arm at \(point)")
+            }
+        }
+        for point in [CGPoint(x: 24, y: 12), CGPoint(x: 100, y: 12), CGPoint(x: 12, y: 24)] {
+            guard !ServiceRowGeometry.shouldArm(at: point, stopping: false, snapshotMode: false) else {
+                throw PanelTestFailure("Stop zone arms outside its bounds at \(point)")
+            }
+        }
+        guard !ServiceRowGeometry.shouldArm(at: CGPoint(x: 12, y: 12), stopping: true, snapshotMode: false) else {
+            throw PanelTestFailure("Disabled stop zone arms")
+        }
+        print("stop zone: \(ServiceRowGeometry.stopZoneWidth) × \(ServiceRowGeometry.height), pointer arming passed")
         let store = RunStore()
         store.runsForPreview(Fixtures.stress)
         let anchor = NSRect(x: -11500, y: -11100, width: 22, height: 22)

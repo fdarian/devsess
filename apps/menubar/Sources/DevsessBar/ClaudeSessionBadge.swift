@@ -41,15 +41,32 @@ struct ClaudeSessionBadge: View {
         .accessibilityLabel(tooltip)
     }
 
+    private var markColor: NSColor {
+        sessions.contains { $0.state == .live } ? .systemOrange : .secondaryLabelColor
+    }
+
+    private var sparkleImage: NSImage {
+        let color = markColor
+        // Native Menu labels bridge images and text, not arbitrary SwiftUI shapes.
+        return NSImage(size: NSSize(width: 9, height: 9), flipped: false) { rect in
+            guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            color.setFill()
+            context.addPath(Sparkle().path(in: rect).cgPath)
+            context.fillPath()
+            return true
+        }
+    }
+
     private func mark() -> some View {
         HStack(spacing: 3) {
-            Sparkle().frame(width: 9, height: 9)
+            Image(nsImage: sparkleImage)
+                .renderingMode(.original)
+                .frame(width: 9, height: 9)
             Text("\(sessions.count)")
                 .font(.system(size: 11, weight: .medium))
                 .monospacedDigit()
         }
-        .foregroundStyle(sessions.contains { $0.state == .live }
-            ? Color(nsColor: .systemOrange) : Color(nsColor: .tertiaryLabelColor))
+        .foregroundStyle(Color(nsColor: markColor))
         .frame(height: 20)
     }
 }

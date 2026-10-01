@@ -26,7 +26,12 @@ enum Fixtures {
         let modifiedAt = Date(timeIntervalSince1970: 1_790_000_000)
         return [
             busy[1].canonicalCwd: [ClaudeSession(id: "local_docs-live", title: "Polish docs navigation", state: .live, modifiedAt: modifiedAt)],
-            busy[2].canonicalCwd: [ClaudeSession(id: "local_api-archived", title: "API worker investigation", state: .archived, modifiedAt: modifiedAt)]
+            busy[2].canonicalCwd: [
+                ClaudeSession(id: "local_api-archived", title: "API worker investigation", state: .archived, modifiedAt: modifiedAt),
+                ClaudeSession(id: "local_auth-archived", title: "Review authentication", state: .archived, modifiedAt: modifiedAt),
+                ClaudeSession(id: "local_queue-archived", title: "Check background queue", state: .archived, modifiedAt: modifiedAt),
+                ClaudeSession(id: "local_tests-archived", title: "Add service tests", state: .archived, modifiedAt: modifiedAt)
+            ]
         ]
     }()
 
