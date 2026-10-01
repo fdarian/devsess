@@ -5,6 +5,7 @@ struct ClaudeSessionBadge: View {
     let sessions: [ClaudeSession]
     var snapshotMode = false
     var previewHovered = false
+    var headerHighlighted = false
     @LegacyState private var pointerHovered = false
     private var hovered: Bool { pointerHovered || previewHovered }
 
@@ -16,7 +17,7 @@ struct ClaudeSessionBadge: View {
     }
 
     var countColor: NSColor {
-        state.archivedOnly && !hovered ? .tertiaryLabelColor : .secondaryLabelColor
+        state.archivedOnly && !hovered && !headerHighlighted ? .tertiaryLabelColor : .secondaryLabelColor
     }
 
     private var countText: NSAttributedString {

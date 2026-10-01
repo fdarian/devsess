@@ -19,7 +19,8 @@ struct RunRow: View {
     private var headerSelected: Bool { headerHovered || runArmed || previewState == .headerHovered || previewState == .badgeHovered }
     private var runArmed: Bool { headerArmed || previewState == .headerArmed }
     private var badge: ClaudeSessionBadge {
-        ClaudeSessionBadge(sessions: claudeSessions, snapshotMode: snapshotMode, previewHovered: previewState == .badgeHovered)
+        ClaudeSessionBadge(sessions: claudeSessions, snapshotMode: snapshotMode,
+            previewHovered: previewState == .badgeHovered, headerHighlighted: headerSelected)
     }
 
     private var header: some View {
