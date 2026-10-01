@@ -9,6 +9,7 @@ Install with `npm install -g devsess`. In a configured checkout, start a preset 
 - selecting  Choose a project, preset, run, or service when commands are ambiguous.
 - logs  Read recent or live output and understand retention.
 - attach  Send terminal input to a running service.
+- completions  Install shell completion for commands, flags, and local presets.
 - daemon  Manage the shared daemon and find its files.
 - troubleshooting  Diagnose exit statuses, failed runs, and orphaned processes.
 

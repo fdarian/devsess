@@ -3,7 +3,7 @@
 Read this when you want to start, inspect, restart, or stop services in a checkout.
 
 ```text
-devsess list [--config path] [--project name]
+devsess list [--names] [--config path] [--project name]
 devsess start [options] [preset]
 devsess status [-a|--all] [--project name]
 devsess restart [options] [--service name | --all-services] [preset|run-id]
@@ -11,6 +11,8 @@ devsess stop [options] [--force] [preset|run-id]
 ```
 
 `list` reads the config and reports presets matched by the current directory, each service command and resolved working directory, and which presets await publication. It does not start the daemon. If the daemon is reachable, it marks active presets as running. Its bare-start summary explains whether `start` would choose one preset, offer a picker, or fail without a terminal.
+
+`list --names` prints only selectors accepted by `start`, one per line: bare preset names for one matched project, or `project/preset` for multiple projects. It honours `--project` and `--config` and never contacts or starts the daemon. Shell completion uses this mode; see `devsess docs read completions`.
 
 `start` captures the current environment and starts the selected preset through the detached daemon. It waits for a daemon handshake and acknowledgment, then observes the run for about two seconds and prints readiness publications as they arrive. If a service exits during that window, it prints the exit status, recent output, and an exact `tail` command; if every service fails, `start` exits nonzero. Otherwise it prints the run ID and returns to the shell while services continue. The run records the invocation directory.
 

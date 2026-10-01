@@ -65,6 +65,7 @@ export default defineConfig({
 						{ text: 'Selecting runs', link: '/reference/cli/selecting' },
 						{ text: 'Reading logs', link: '/reference/cli/logs' },
 						{ text: 'Attaching', link: '/reference/cli/attach' },
+						{ text: 'Shell completion', link: '/reference/cli/completions' },
 						{ text: 'Daemon', link: '/reference/cli/daemon' },
 						{ text: 'Troubleshooting', link: '/reference/cli/troubleshooting' },
 					],
