@@ -6,9 +6,16 @@ import type { Scope } from 'effect/Scope';
 import { DaemonError, errorMessage } from './daemon-errors';
 import { type ServiceExit, serviceExitCode } from './exit-status';
 import type { OutputWorker } from './output-worker';
+import { makeMemorySampler, serviceMemoryBytes } from './processes';
 import { type DaemonRequest, decodeRequest, decodeRequestId } from './protocol';
 import { resizePty, writePty } from './pty';
-import { bestEffortPrune, isRunActive, type RegistryService } from './registry';
+import {
+	bestEffortPrune,
+	isActive,
+	isRunActive,
+	type RegistryService,
+	type RunRecord,
+} from './registry';
 import type { RunStart } from './run-start';
 import type { RunStop } from './run-stop';
 import {
@@ -77,6 +84,7 @@ export const makeRequestDispatcher = (options: {
 	readonly subscriptions: Subscriptions;
 	readonly runStart: RunStart;
 	readonly runStop: RunStop;
+	readonly memorySample?: ReturnType<typeof makeMemorySampler>;
 	readonly info?: () => Effect.Effect<unknown, unknown, FileSystem | Path>;
 	readonly requestShutdown?: Effect.Effect<void>;
 	readonly reply: (
@@ -91,6 +99,35 @@ export const makeRequestDispatcher = (options: {
 	) => Effect.Effect<void>;
 }): RequestDispatcher => {
 	const restartingRuns = new Set<string>();
+	const memorySample =
+		options.memorySample === undefined
+			? makeMemorySampler()
+			: options.memorySample;
+	const withMemory = (runs: ReadonlyArray<RunRecord>) =>
+		Effect.gen(function* () {
+			if (
+				!runs.some((run) =>
+					run.services.some(
+						(service) =>
+							isActive(service.state) && service.process !== undefined,
+					),
+				)
+			)
+				return runs;
+			const tree = yield* memorySample;
+			if (tree === undefined) return runs;
+			return runs.map((run) => ({
+				...run,
+				services: run.services.map((service) => {
+					if (!isActive(service.state) || service.process === undefined)
+						return service;
+					const memoryBytes = serviceMemoryBytes(tree, service.process);
+					return memoryBytes === undefined
+						? service
+						: { ...service, memoryBytes };
+				}),
+			}));
+		});
 	const forgetFinished = (runId: string) =>
 		options.registry.get(runId).pipe(
 			Effect.tap((run) =>
@@ -110,9 +147,13 @@ export const makeRequestDispatcher = (options: {
 			if (state === undefined || state.closed)
 				return Effect.fail(new DaemonError({ message: 'Socket is closed' }));
 		}
-		if (incoming.method === 'listRuns') return options.registry.list;
+		if (incoming.method === 'listRuns')
+			return options.registry.list.pipe(Effect.flatMap(withMemory));
 		if (incoming.method === 'getRun')
-			return options.registry.get(incoming.params.runId);
+			return options.registry.get(incoming.params.runId).pipe(
+				Effect.flatMap((run) => withMemory([run])),
+				Effect.map((runs) => runs[0]),
+			);
 		if (incoming.method === 'info')
 			return options.info === undefined
 				? Effect.fail(

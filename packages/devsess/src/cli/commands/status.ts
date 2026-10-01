@@ -3,8 +3,9 @@ import { FileSystem } from 'effect/FileSystem';
 import { callDaemon } from '../client';
 import { serviceExitCode } from '../exit-status';
 import { captureInvocation } from '../project-matching';
+import type { RunResponse, ServiceResponse } from '../protocol';
 import { formatPublishedValue } from '../published-value';
-import { isRunActive, type RunRecord, type ServiceRecord } from '../registry';
+import { isActive, isRunActive, type RunRecord } from '../registry';
 import { runSelector, shortRunId } from '../run-id';
 import {
 	CommandError,
@@ -26,7 +27,16 @@ const elapsed = (startedAt: string, now: number) => {
 	return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m ${duration % 60}s`;
 };
 
-export const formatService = (service: ServiceRecord) => {
+const formatMemory = (bytes: number) => {
+	const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+	const index = Math.min(
+		bytes === 0 ? 0 : Math.floor(Math.log(bytes) / Math.log(1024)),
+		units.length - 1,
+	);
+	return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+};
+
+export const formatService = (service: ServiceResponse) => {
 	const state =
 		service.state === 'failed' &&
 		service.exitCode === 0 &&
@@ -48,11 +58,15 @@ export const formatService = (service: ServiceRecord) => {
 		service.published === undefined
 			? ''
 			: ` — ${formatPublishedValue(service.published.value)}`;
-	return `  ${service.name}: ${state}${readiness}${pid}${exit}${signal} — ${service.command} (cwd: ${service.cwd})${value}`;
+	const memory =
+		isActive(service.state) && service.memoryBytes !== undefined
+			? ` ${formatMemory(service.memoryBytes)}`
+			: '';
+	return `  ${service.name}: ${state}${readiness}${pid}${memory}${exit}${signal} — ${service.command} (cwd: ${service.cwd})${value}`;
 };
 
 export const formatStatus = (
-	runs: ReadonlyArray<RunRecord>,
+	runs: ReadonlyArray<RunResponse>,
 	all: boolean,
 	now = Date.now(),
 	currentCwd?: string,
@@ -116,7 +130,7 @@ const formatRunLine = (
 };
 
 const formatRun = (
-	run: RunRecord,
+	run: RunResponse,
 	now: number,
 	knownRuns: ReadonlyArray<RunRecord>,
 	location: string,

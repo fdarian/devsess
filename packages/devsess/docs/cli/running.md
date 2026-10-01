@@ -2,6 +2,10 @@
 
 Read this when you want to start, inspect, restart, or stop services in a checkout.
 
+Expanded `status` output includes compact resident memory next to live service PIDs when available. Memory sums RSS across the service's process group and descendants that left it, counting each PID once. It is sampled on demand and cached for two seconds, never persisted, and omitted when unavailable; a sampling failure does not prevent status reporting. Displayed KB/MB/GB use powers of 1024.
+
+For protocol-v1 clients, `stopServices` accepts `{ runId, serviceNames: string[], force?: boolean }` and returns the updated run record, just like `stopRun`. Names must be non-empty, distinct, and exist in the run. `listRuns` and `getRun` may include `memoryBytes: number` on each live service (RSS in bytes); finished services and unavailable samples omit the field. Clients must tolerate its absence, including responses from older daemons.
+
 ```text
 devsess list [--names] [--config path] [--project name]
 devsess start [options] [preset]

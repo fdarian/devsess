@@ -13,7 +13,8 @@ import { callDaemon } from '../client';
 import { DaemonLifecycle } from '../lifecycle';
 import { cancelPicker } from '../picker-cancellation';
 import { captureInvocation } from '../project-matching';
-import { isRunActive, type RunRecord, RunRecordSchema } from '../registry';
+import { RunResponseSchema } from '../protocol';
+import { isRunActive, type RunRecord } from '../registry';
 import { shortRunId } from '../run-id';
 
 export class CommandError extends Schema.TaggedErrorClass<CommandError>()(
@@ -101,7 +102,7 @@ export const resolveDaemonLocation = Effect.gen(function* () {
 export const requestId = () => crypto.randomUUID();
 
 export const decodeRunResponse = (value: unknown) =>
-	Schema.decodeUnknownEffect(RunRecordSchema)(value).pipe(
+	Schema.decodeUnknownEffect(RunResponseSchema)(value).pipe(
 		Effect.mapError(
 			(cause) =>
 				new CommandError({
@@ -112,7 +113,7 @@ export const decodeRunResponse = (value: unknown) =>
 	);
 
 export const decodeRunListResponse = (value: unknown) =>
-	Schema.decodeUnknownEffect(Schema.Array(RunRecordSchema))(value).pipe(
+	Schema.decodeUnknownEffect(Schema.Array(RunResponseSchema))(value).pipe(
 		Effect.mapError(
 			(cause) =>
 				new CommandError({

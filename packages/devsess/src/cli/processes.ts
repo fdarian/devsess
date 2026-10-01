@@ -37,11 +37,13 @@ type TreeProcess = {
 	readonly parentPid: number;
 	readonly processGroupId: number;
 	readonly startedAt: string;
+	readonly memoryBytes?: number;
 };
 
 export const parseProcessTree = (output: string): ReadonlyArray<TreeProcess> =>
 	output.split('\n').flatMap((line) => {
-		const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.{24})\s*$/.exec(line);
+		const match =
+			/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.{24})(?:\s+(\d+))?\s*$/.exec(line);
 		if (match === null) return [];
 		const pid = Number(match[1]);
 		const parentPid = Number(match[2]);
@@ -53,7 +55,17 @@ export const parseProcessTree = (output: string): ReadonlyArray<TreeProcess> =>
 			status !== undefined &&
 			!status.startsWith('Z') &&
 			startedAt !== undefined
-			? [{ pid, parentPid, processGroupId, startedAt: startedAt.trim() }]
+			? [
+					{
+						pid,
+						parentPid,
+						processGroupId,
+						startedAt: startedAt.trim(),
+						...(match[6] === undefined
+							? {}
+							: { memoryBytes: Number(match[6]) * 1024 }),
+					},
+				]
 			: [];
 	});
 
@@ -97,7 +109,7 @@ const readProcessTree = () =>
 			new Promise<ReadonlyArray<TreeProcess>>((resolve, reject) => {
 				execFile(
 					'ps',
-					['-A', '-o', 'pid=,ppid=,pgid=,stat=,lstart='],
+					['-A', '-o', 'pid=,ppid=,pgid=,stat=,lstart=,rss='],
 					{ timeout: PROCESS_INSPECTION_TIMEOUT_MS },
 					(error, stdout) =>
 						error === null ? resolve(parseProcessTree(stdout)) : reject(error),
@@ -164,6 +176,58 @@ export const makeProcessSampler = (
 			return listeners.size;
 		},
 	};
+};
+
+export const makeMemorySampler = (
+	readTree: () => Effect.Effect<
+		ReadonlyArray<TreeProcess>,
+		ProcessError
+	> = readProcessTree,
+	now: () => number = Date.now,
+) => {
+	let cached:
+		| { expiresAt: number; tree: ReadonlyArray<TreeProcess> | undefined }
+		| undefined;
+	return Effect.gen(function* () {
+		if (cached !== undefined && now() < cached.expiresAt) return cached.tree;
+		const tree = yield* Effect.suspend(readTree).pipe(
+			Effect.catch((error) =>
+				Effect.logWarning(error).pipe(Effect.as(undefined)),
+			),
+		);
+		cached = { tree, expiresAt: now() + 2000 };
+		return tree;
+	});
+};
+
+export const serviceMemoryBytes = (
+	tree: ReadonlyArray<TreeProcess>,
+	identity: ProcessIdentity,
+) => {
+	const pids = new Set([
+		identity.pid,
+		...tree
+			.filter((process) => process.processGroupId === identity.processGroupId)
+			.map((process) => process.pid),
+		...descendantProcesses(tree, identity).map((process) => process.pid),
+	]);
+	const members = new Map(
+		tree
+			.filter((process) => pids.has(process.pid))
+			.map((process) => [process.pid, process]),
+	);
+	if (members.size === 0) return undefined;
+	let total = 0;
+	for (const member of members.values()) {
+		if (
+			member.memoryBytes === undefined ||
+			!Number.isSafeInteger(member.memoryBytes) ||
+			member.memoryBytes < 0
+		)
+			return undefined;
+		total += member.memoryBytes;
+	}
+	return Number.isSafeInteger(total) ? total : undefined;
 };
 
 const sameTreeProcess = (left: TreeProcess, right: TreeProcess) =>
