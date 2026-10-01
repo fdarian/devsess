@@ -116,7 +116,7 @@ struct ServiceRow: View {
                 urlLabel
             }
             .buttonStyle(.plain)
-            .disabled(service.publishedURL == nil || snapshotMode)
+            .disabled(snapshotMode)
             .accessibilityLabel("Open \(service.name)")
         }
         .font(.system(size: 13))
