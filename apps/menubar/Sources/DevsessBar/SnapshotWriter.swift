@@ -72,7 +72,7 @@ enum SnapshotWriter {
             testAnchor: NSRect(x: -11500, y: -11100, width: 22, height: 22),
             testScreen: NSRect(x: -12000, y: -12000, width: 1000, height: 1000))
         controller.panel.appearance = NSAppearance(named: appearance)
-        controller.host.rootView = PanelView(store: store, snapshotMode: true, previewState: previewState)
+        controller.host.rootView = PanelView(store: store, previewState: previewState)
         controller.updateLayout()
         controller.panel.orderBack(nil)
         defer { controller.panel.orderOut(nil); controller.panel.close() }
