@@ -4,6 +4,7 @@ import SwiftUI
 struct ClaudeSessionBadge: View {
     let sessions: [ClaudeSession]
     var snapshotMode = false
+    @LegacyState private var hovered = false
 
     private var tooltip: String {
         sessions.map { "\($0.title) — \($0.state.label)" }.joined(separator: "\n")
@@ -37,6 +38,10 @@ struct ClaudeSessionBadge: View {
                 }
             }
         }
+        .frame(height: 18)
+        .background(Color(nsColor: hovered ? .tertiaryLabelColor : .quaternaryLabelColor), in: Capsule())
+        .contentShape(Capsule())
+        .onHover { hovered = $0 && !snapshotMode }
         .help(tooltip)
         .accessibilityLabel(tooltip)
     }
@@ -45,13 +50,15 @@ struct ClaudeSessionBadge: View {
         sessions.contains { $0.state == .live } ? .systemOrange : .secondaryLabelColor
     }
 
-    private var sparkleImage: NSImage {
+    private var markImage: NSImage {
         let color = markColor
         // Native Menu labels bridge images and text, not arbitrary SwiftUI shapes.
-        return NSImage(size: NSSize(width: 9, height: 9), flipped: false) { rect in
+        return NSImage(size: NSSize(width: 10, height: 10), flipped: false) { rect in
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
             color.setFill()
-            context.addPath(Sparkle().path(in: rect).cgPath)
+            context.translateBy(x: 0, y: rect.height)
+            context.scaleBy(x: 1, y: -1)
+            context.addPath(ClaudeMark().path(in: rect).cgPath)
             context.fillPath()
             return true
         }
@@ -59,34 +66,16 @@ struct ClaudeSessionBadge: View {
 
     private func mark() -> some View {
         HStack(spacing: 3) {
-            Image(nsImage: sparkleImage)
+            Image(nsImage: markImage)
                 .renderingMode(.original)
-                .frame(width: 9, height: 9)
+                .frame(width: 10, height: 10)
             Text("\(sessions.count)")
                 .font(.system(size: 11, weight: .medium))
                 .monospacedDigit()
         }
         .foregroundStyle(Color(nsColor: markColor))
-        .frame(height: 20)
-    }
-}
-
-private struct Sparkle: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
-        path.addCurve(to: CGPoint(x: rect.maxX, y: rect.midY),
-                      control1: CGPoint(x: rect.midX + rect.width * 0.03, y: rect.minY + rect.height * 0.28),
-                      control2: CGPoint(x: rect.maxX - rect.width * 0.28, y: rect.midY - rect.height * 0.03))
-        path.addCurve(to: CGPoint(x: rect.midX, y: rect.maxY),
-                      control1: CGPoint(x: rect.maxX - rect.width * 0.28, y: rect.midY + rect.height * 0.03),
-                      control2: CGPoint(x: rect.midX + rect.width * 0.03, y: rect.maxY - rect.height * 0.28))
-        path.addCurve(to: CGPoint(x: rect.minX, y: rect.midY),
-                      control1: CGPoint(x: rect.midX - rect.width * 0.03, y: rect.maxY - rect.height * 0.28),
-                      control2: CGPoint(x: rect.minX + rect.width * 0.28, y: rect.midY + rect.height * 0.03))
-        path.addCurve(to: CGPoint(x: rect.midX, y: rect.minY),
-                      control1: CGPoint(x: rect.minX + rect.width * 0.28, y: rect.midY - rect.height * 0.03),
-                      control2: CGPoint(x: rect.midX - rect.width * 0.03, y: rect.minY + rect.height * 0.28))
-        return path
+        .padding(.horizontal, 6)
+        .frame(height: 18)
+        .contentShape(Capsule())
     }
 }
