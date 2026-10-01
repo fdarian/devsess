@@ -1,5 +1,19 @@
 import { Effect, Schema } from 'effect';
 import { Identifier } from './identifiers';
+import { RunRecordSchema, ServiceRecordSchema } from './registry';
+
+export const ServiceResponseSchema = Schema.Struct({
+	...ServiceRecordSchema.fields,
+	memoryBytes: Schema.optionalKey(
+		Schema.Int.check(Schema.makeFilter((value) => value >= 0)),
+	),
+});
+export type ServiceResponse = typeof ServiceResponseSchema.Type;
+export const RunResponseSchema = Schema.Struct({
+	...RunRecordSchema.fields,
+	services: Schema.Array(ServiceResponseSchema),
+});
+export type RunResponse = typeof RunResponseSchema.Type;
 
 export const PROTOCOL_VERSION = 1;
 export const LIVE_OUTPUT_OVERFLOW_MESSAGE =
