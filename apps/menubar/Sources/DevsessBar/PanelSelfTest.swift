@@ -24,54 +24,102 @@ enum PanelSelfTest {
             testAnchor: anchor, testScreen: screen)
         defer { controller.panel.close() }
 
-        try check("many runs", controller: controller, top: anchor.minY - 4)
+        try check("many runs", controller: controller, top: anchor.minY - 4, centerX: anchor.midX)
         store.runsForPreview(Fixtures.busy)
-        try check("few runs", controller: controller, top: anchor.minY - 4)
+        try check("few runs", controller: controller, top: anchor.minY - 4, centerX: anchor.midX)
         store.runsForPreview([])
-        try check("empty", controller: controller, top: anchor.minY - 4)
+        try check("empty", controller: controller, top: anchor.minY - 4, centerX: anchor.midX)
         store.runsForPreview(Fixtures.stress)
-        try check("many runs restored", controller: controller, top: anchor.minY - 4)
+        try check("many runs restored", controller: controller, top: anchor.minY - 4, centerX: anchor.midX)
 
         let smallScreen = NSRect(x: -12000, y: -11350, width: 1000, height: 350)
         let constrained = StatusItemController(store: store, showsStatusItem: false,
             testAnchor: anchor, testScreen: smallScreen)
         defer { constrained.panel.close() }
-        try check("short screen", controller: constrained, top: anchor.minY - 4)
-        guard constrained.panel.frame.height <= anchor.minY - 4 - smallScreen.minY else {
+        try check("short screen", controller: constrained, top: anchor.minY - 4, centerX: anchor.midX)
+        guard constrained.visiblePanelFrame.minY >= smallScreen.minY else {
             throw PanelTestFailure("Panel extends below the screen")
         }
     }
 
-    @MainActor private static func check(_ name: String, controller: StatusItemController, top: CGFloat) throws {
+    @MainActor private static func check(_ name: String, controller: StatusItemController,
+                                        top: CGFloat, centerX: CGFloat) throws {
         for _ in 0..<4 {
             RunLoop.main.run(until: Date().addingTimeInterval(0.03))
             controller.updateLayout()
         }
         let panel = controller.panel
         guard let content = panel.contentView else { throw PanelTestFailure("Missing panel content") }
-        let frame = panel.frame
+        let frame = controller.visiblePanelFrame
         let expectedHeight = min(controller.host.intrinsicContentSize.height, controller.host.rootView.maximumHeight)
         guard abs(frame.maxY - top) < 1 else { throw PanelTestFailure("\(name): top moved to \(frame.maxY)") }
         guard abs(frame.height - expectedHeight) < 1 else {
             throw PanelTestFailure("\(name): height \(frame.height) differs from fitting \(expectedHeight)")
         }
         guard abs(frame.width - 300) < 1 else { throw PanelTestFailure("\(name): wrong panel width") }
-        guard abs(controller.host.frame.minY - content.bounds.minY) < 1,
-              abs(controller.host.frame.height - content.bounds.height) < 1,
-              abs(controller.host.frame.width - content.bounds.width) < 1 else {
+        guard abs(frame.midX - centerX) < 1 else { throw PanelTestFailure("\(name): horizontal anchor moved") }
+        guard !panel.hasShadow else { throw PanelTestFailure("\(name): WindowServer shadow is enabled") }
+        let material = controller.chrome.material
+        guard abs(controller.host.frame.minY - material.bounds.minY) < 1,
+              abs(controller.host.frame.height - material.bounds.height) < 1,
+              abs(controller.host.frame.width - material.bounds.width) < 1 else {
             throw PanelTestFailure("\(name): hosting view does not fill the material content view")
         }
         guard let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else {
             throw PanelTestFailure("\(name): could not render the panel")
         }
         content.cacheDisplay(in: content.bounds, to: bitmap)
-        for x in [0, bitmap.pixelsWide - 1] {
-            for y in [0, bitmap.pixelsHigh - 1] {
-                guard let alpha = bitmap.colorAt(x: x, y: y)?.alphaComponent, alpha == 0 else {
-                    throw PanelTestFailure("\(name): corner (\(x), \(y)) is not transparent")
+        let visible = controller.chrome.panelRect
+        let shadow = controller.chrome.shadowView
+        guard let shadowBitmap = shadow.bitmapImageRepForCachingDisplay(in: shadow.bounds) else {
+            throw PanelTestFailure("\(name): could not render the custom shadow")
+        }
+        shadow.cacheDisplay(in: shadow.bounds, to: shadowBitmap)
+        guard let interiorAlpha = shadowBitmap.colorAt(x: shadowBitmap.pixelsWide / 2,
+            y: shadowBitmap.pixelsHigh / 2)?.alphaComponent, interiorAlpha == 0 else {
+            throw PanelTestFailure("\(name): shadow darkens the glass interior")
+        }
+        let scaleX = CGFloat(bitmap.pixelsWide) / content.bounds.width
+        let scaleY = CGFloat(bitmap.pixelsHigh) / content.bounds.height
+        let shadowPoint = CGPoint(x: visible.minX - 10, y: visible.midY)
+        guard let shadowAlpha = bitmap.colorAt(x: Int(shadowPoint.x * scaleX),
+            y: Int((content.bounds.maxY - shadowPoint.y) * scaleY))?.alphaComponent,
+            shadowAlpha > 0, shadowAlpha <= 0.30 else {
+            throw PanelTestFailure("\(name): missing or opaque custom shadow")
+        }
+        for cornerX in [visible.minX, visible.maxX] {
+            for cornerY in [visible.minY, visible.maxY] {
+                for dx in -3...2 {
+                    for dy in -3...2 {
+                        let point = CGPoint(x: cornerX + CGFloat(dx), y: cornerY + CGFloat(dy))
+                        guard !controller.chrome.containsPanelPoint(point),
+                              controller.chrome.hitTest(point) == nil else {
+                            throw PanelTestFailure("\(name): rounded-corner margin hit-tests")
+                        }
+                        controller.updateMousePassthrough(at: panel.convertPoint(toScreen:
+                            controller.chrome.convert(point, to: nil)))
+                        guard panel.ignoresMouseEvents else {
+                            throw PanelTestFailure("\(name): shadow margin is not click-through")
+                        }
+                        let x = Int(point.x * scaleX)
+                        let y = Int((content.bounds.maxY - point.y) * scaleY)
+                        guard let alpha = bitmap.colorAt(x: x, y: y)?.alphaComponent,
+                              let adjacent = bitmap.colorAt(x: x + 1, y: y)?.alphaComponent else {
+                            throw PanelTestFailure("\(name): missing corner pixels")
+                        }
+                        guard alpha <= 0.30, abs(alpha - adjacent) <= 0.12 else {
+                            throw PanelTestFailure("\(name): hard/opaque content outside corner at (\(x), \(y)): \(alpha), next=\(adjacent)")
+                        }
+                    }
                 }
             }
         }
+        guard controller.chrome.containsPanelPoint(CGPoint(x: visible.midX, y: visible.midY)) else {
+            throw PanelTestFailure("\(name): visible panel is not interactive")
+        }
+        controller.updateMousePassthrough(at: panel.convertPoint(toScreen:
+            controller.chrome.convert(CGPoint(x: visible.midX, y: visible.midY), to: nil)))
+        guard !panel.ignoresMouseEvents else { throw PanelTestFailure("\(name): panel ignores interior clicks") }
         print("\(name): \(NSStringFromRect(frame)) fitting=\(expectedHeight)")
     }
 }
