@@ -7,8 +7,10 @@ struct RunRow: View {
     let error: String?
     let claudeSessions: [ClaudeSession]
     var snapshotMode = false
+    var previewState: RowPreviewState = .normal
     let stop: () -> Void
     let restart: (ServiceRecord) -> Void
+    @LegacyState private var armedServiceIndex: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -27,7 +29,17 @@ struct RunRow: View {
             .padding(.horizontal, 9)
             ForEach(run.services.indices, id: \.self) { index in
                 ServiceRow(service: run.services[index], run: run, stopping: stopping,
-                    snapshotMode: snapshotMode, stop: stop, restart: { restart(run.services[index]) })
+                    snapshotMode: snapshotMode,
+                    previewState: index == 0 ? previewState : .normal,
+                    stopArmed: armedServiceIndex != nil || previewState == .stopArmed,
+                    setStopArmed: { armed in
+                        if armed {
+                            armedServiceIndex = index
+                        } else if armedServiceIndex == index {
+                            armedServiceIndex = nil
+                        }
+                    },
+                    stop: stop, restart: { restart(run.services[index]) })
             }
             if let error {
                 Text(error)

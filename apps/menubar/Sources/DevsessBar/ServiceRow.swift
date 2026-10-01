@@ -1,16 +1,24 @@
 import AppKit
 import SwiftUI
 
+enum RowPreviewState {
+    case normal, hovered, stopArmed
+}
+
 struct ServiceRow: View {
     let service: ServiceRecord
     let run: RunRecord
     let stopping: Bool
     var snapshotMode = false
+    var previewState: RowPreviewState = .normal
+    let stopArmed: Bool
+    let setStopArmed: (Bool) -> Void
     let stop: () -> Void
     let restart: () -> Void
     @LegacyState private var hovered = false
 
-    private var selected: Bool { hovered && !snapshotMode }
+    private var armed: Bool { stopArmed }
+    private var selected: Bool { armed || hovered || previewState == .hovered }
 
     private var statusColor: Color {
         if service.isFailure || service.state == .failed || service.state == .orphaned {
@@ -39,6 +47,7 @@ struct ServiceRow: View {
     }
 
     private var detailColor: Color {
+        if armed { return Color(nsColor: .secondaryLabelColor) }
         if selected { return .white }
         if stopping { return Color(nsColor: .secondaryLabelColor) }
         if service.publishedURL != nil { return Color(nsColor: .linkColor) }
@@ -53,21 +62,23 @@ struct ServiceRow: View {
             if selected {
                 Button(action: stop) {
                     RoundedRectangle(cornerRadius: 1.5)
-                        .fill(.white)
+                        .fill(armed ? Color(nsColor: .systemRed) : .white)
                         .frame(width: 7, height: 7)
                         .frame(width: 14, height: 18)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Stop \(run.projectName)")
                 .disabled(stopping)
+                .onHover { setStopArmed($0 && !snapshotMode && !stopping) }
                 .frame(width: 7)
             } else {
-                RoundedRectangle(cornerRadius: 2)
+                Circle()
                     .fill(statusColor)
                     .frame(width: 7, height: 7)
             }
-            Text(service.name)
-                .foregroundStyle(selected ? .white : Color(nsColor: .labelColor))
+            Text(armed ? "Stop \(service.name)" : service.name)
+                .foregroundStyle(armed ? Color(nsColor: .systemRed) : selected ? .white : Color(nsColor: .labelColor))
                 .lineLimit(1)
             Spacer(minLength: 4)
             if let detail {
@@ -82,7 +93,8 @@ struct ServiceRow: View {
         .frame(height: 24)
         .padding(.horizontal, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(selected ? Color(nsColor: .selectedContentBackgroundColor) : .clear,
+        .background(armed ? Color(nsColor: .quaternaryLabelColor)
+                    : selected ? Color(nsColor: .selectedContentBackgroundColor) : .clear,
                     in: RoundedRectangle(cornerRadius: 5))
         .background {
             Button {
@@ -94,7 +106,11 @@ struct ServiceRow: View {
             .disabled(service.publishedURL == nil)
         }
         .contentShape(Rectangle())
-        .onHover { hovered = $0 }
+        .onHover {
+            hovered = $0 && !snapshotMode
+            if !$0 { setStopArmed(false) }
+        }
+        .onDisappear { setStopArmed(false) }
         .help("\(run.canonicalCwd)\n\(service.command)")
         .contextMenu {
             Button("Restart service", action: restart)

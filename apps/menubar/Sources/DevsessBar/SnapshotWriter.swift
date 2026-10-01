@@ -14,6 +14,12 @@ enum SnapshotWriter {
         stress.runsForPreview(Fixtures.stress)
         let down = RunStore()
         down.downForPreview()
+        let twoServices = RunStore()
+        guard let twoServiceRun = Fixtures.busy.first(where: { $0.services.count == 2 }) else {
+            throw DaemonError.invalidResponse
+        }
+        twoServices.runsForPreview([twoServiceRun])
+        twoServices.claudeSessionsForPreview(Fixtures.claudeSessions)
 
         for appearance: NSAppearance.Name in [.aqua, .darkAqua] {
             let suffix = appearance == .aqua ? "light" : "dark"
@@ -22,6 +28,10 @@ enum SnapshotWriter {
             try savePanel(store: stress, appearance: appearance, as: "panel-stress-\(suffix).png", in: directory)
             try savePanel(store: RunStore(), appearance: appearance, as: "panel-empty-\(suffix).png", in: directory)
             try savePanel(store: down, appearance: appearance, as: "panel-daemon-down-\(suffix).png", in: directory)
+            try savePanel(store: twoServices, appearance: appearance, previewState: .hovered,
+                          as: "panel-hovered-\(suffix).png", in: directory)
+            try savePanel(store: twoServices, appearance: appearance, previewState: .stopArmed,
+                          as: "panel-stop-armed-\(suffix).png", in: directory)
         }
 
         let variants: [(String, Int, Bool)] = [
@@ -56,11 +66,13 @@ enum SnapshotWriter {
     }
 
     @MainActor private static func savePanel(store: RunStore, appearance: NSAppearance.Name,
+                                             previewState: RowPreviewState = .normal,
                                              as name: String, in directory: URL) throws {
         let controller = StatusItemController(store: store, showsStatusItem: false,
             testAnchor: NSRect(x: -11500, y: -11100, width: 22, height: 22),
             testScreen: NSRect(x: -12000, y: -12000, width: 1000, height: 1000))
         controller.panel.appearance = NSAppearance(named: appearance)
+        controller.host.rootView = PanelView(store: store, snapshotMode: true, previewState: previewState)
         controller.updateLayout()
         controller.panel.orderBack(nil)
         defer { controller.panel.orderOut(nil); controller.panel.close() }
