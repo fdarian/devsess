@@ -13,7 +13,7 @@ struct ClaudeSessionBadge: View {
     private var state: ClaudeBadgeState { ClaudeBadgeState(sessions: sessions) }
 
     var restingSize: CGSize {
-        CGSize(width: 13 + countText.size().width + 12, height: 18)
+        CGSize(width: 13 + countText.size().width + RunHeaderGeometry.badgeGlyphInset * 2, height: 18)
     }
 
     var countColor: NSColor {
@@ -43,7 +43,7 @@ struct ClaudeSessionBadge: View {
                     .buttonStyle(.plain)
                 } else {
                     ClaudeSessionMenu(state: state, image: badgeImage)
-                        .frame(width: badgeImage.size.width + 12, height: 18)
+                        .frame(width: restingSize.width, height: 18)
                 }
             }
         }
@@ -84,7 +84,7 @@ struct ClaudeSessionBadge: View {
     private func mark() -> some View {
         Image(nsImage: badgeImage)
             .renderingMode(.original)
-            .padding(.horizontal, 6)
+            .padding(.horizontal, RunHeaderGeometry.badgeGlyphInset)
             .frame(height: 18)
             .contentShape(Capsule())
     }
