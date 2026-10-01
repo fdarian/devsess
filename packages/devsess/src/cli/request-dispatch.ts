@@ -187,6 +187,33 @@ export const makeRequestDispatcher = (options: {
 					Effect.tap(() => forgetFinished(incoming.params.runId)),
 					Effect.tap(() => bestEffortPrune(options.registry)),
 				);
+		if (incoming.method === 'stopServices')
+			return Effect.gen(function* () {
+				const run = yield* options.registry.get(incoming.params.runId);
+				const names = new Set(incoming.params.serviceNames);
+				if (
+					names.size === 0 ||
+					names.size !== incoming.params.serviceNames.length
+				)
+					return yield* new DaemonError({
+						message: 'Select distinct services to stop',
+					});
+				for (const name of names) {
+					if (!run.services.some((service) => service.name === name))
+						return yield* new DaemonError({
+							message: `Service ${name} was not found in run ${run.runId}`,
+						});
+				}
+				return yield* options.runStop.stopRun(
+					run.runId,
+					incoming.params.force === true,
+					undefined,
+					names,
+				);
+			}).pipe(
+				Effect.tap(() => forgetFinished(incoming.params.runId)),
+				Effect.tap(() => bestEffortPrune(options.registry)),
+			);
 		if (incoming.method === 'restartServices')
 			return Effect.gen(function* () {
 				const run = yield* options.registry.get(incoming.params.runId);

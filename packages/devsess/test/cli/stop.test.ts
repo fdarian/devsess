@@ -73,6 +73,14 @@ describe('stop command', () => {
 				vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 				yield* stop({});
 				expect(timeout).toBe(STOP_REQUEST_TIMEOUT_MS);
+				expect(vi.mocked(callDaemon).mock.calls.at(-1)?.[1].method).toBe(
+					'stopRun',
+				);
+				yield* stop({ service: 'web', force: true });
+				expect(vi.mocked(callDaemon).mock.calls.at(-1)?.[1]).toMatchObject({
+					method: 'stopServices',
+					params: { runId: 'run', serviceNames: ['web'], force: true },
+				});
 			}).pipe(
 				Effect.provide(
 					Layer.effect(

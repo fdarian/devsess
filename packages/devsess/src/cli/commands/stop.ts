@@ -8,36 +8,55 @@ import {
 	resolveCurrentRuns,
 	write,
 } from './daemon';
+import { chooseServices } from './service-selection';
 
 export const stop = (options: CommandOptions) =>
-	resolveCurrentRuns().pipe(
-		Effect.flatMap((resolved) =>
-			chooseRun(
-				resolved.current,
+	Effect.gen(function* () {
+		const resolved = yield* resolveCurrentRuns();
+		const run = yield* chooseRun(
+			resolved.current,
+			options,
+			'stop',
+			undefined,
+			resolved.local,
+		);
+		const force = options.force === true ? { force: true } : {};
+		if (options.service !== undefined) {
+			const services = yield* chooseServices(
+				run,
 				options,
 				'stop',
 				undefined,
-				resolved.local,
-			).pipe(
-				Effect.flatMap((run) =>
-					callDaemon(
-						resolved.location.socketPath,
-						{
-							version: 1,
-							requestId: requestId(),
-							method: 'stopRun',
-							params: {
-								runId: run.runId,
-								...(options.force === true ? { force: true } : {}),
-							},
-						},
-						STOP_REQUEST_TIMEOUT_MS,
-					).pipe(
-						Effect.andThen(
-							write(`Stopped ${run.projectName}/${run.presetName}`),
-						),
-					),
-				),
-			),
-		),
-	);
+				resolved.runs,
+			);
+			yield* callDaemon(
+				resolved.location.socketPath,
+				{
+					version: 1,
+					requestId: requestId(),
+					method: 'stopServices',
+					params: {
+						runId: run.runId,
+						serviceNames: services.map((service) => service.name),
+						...force,
+					},
+				},
+				STOP_REQUEST_TIMEOUT_MS,
+			);
+			yield* write(
+				`Stopped ${services.map((service) => service.name).join(', ')} in ${run.projectName}/${run.presetName}`,
+			);
+			return;
+		}
+		yield* callDaemon(
+			resolved.location.socketPath,
+			{
+				version: 1,
+				requestId: requestId(),
+				method: 'stopRun',
+				params: { runId: run.runId, ...force },
+			},
+			STOP_REQUEST_TIMEOUT_MS,
+		);
+		yield* write(`Stopped ${run.projectName}/${run.presetName}`);
+	});
