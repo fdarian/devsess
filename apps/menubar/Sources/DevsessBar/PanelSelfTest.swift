@@ -33,15 +33,6 @@ enum PanelSelfTest {
         try check("empty", controller: controller, top: anchor.minY - 4, centerX: anchor.midX)
         store.runsForPreview(Fixtures.stress)
         try check("many runs restored", controller: controller, top: anchor.minY - 4, centerX: anchor.midX)
-        let anchoredFrame = controller.panel.frame
-        controller.panel.setFrame(anchoredFrame.offsetBy(dx: 31, dy: -19), display: false)
-        try checkShadowFrame(controller)
-        var resizedFrame = controller.panel.frame
-        resizedFrame.size.height -= 40
-        controller.panel.setFrame(resizedFrame, display: false)
-        try checkShadowFrame(controller)
-        controller.updateLayout()
-        print("child shadow: direct moves and resizes passed")
 
         let smallScreen = NSRect(x: -12000, y: -11350, width: 1000, height: 350)
         let constrained = StatusItemController(store: store, showsStatusItem: false,
@@ -52,6 +43,9 @@ enum PanelSelfTest {
         guard constrained.visiblePanelFrame.minY >= smallScreen.minY else {
             throw PanelTestFailure("Panel extends below the screen")
         }
+        store.runsForPreview(Fixtures.busy)
+        controller.panel.appearance = NSAppearance(named: .darkAqua)
+        try check("dark appearance", controller: controller, top: anchor.minY - 4, centerX: anchor.midX)
     }
 
     @MainActor private static func check(_ name: String, controller: StatusItemController,
@@ -70,76 +64,78 @@ enum PanelSelfTest {
         }
         guard abs(frame.width - 300) < 1 else { throw PanelTestFailure("\(name): wrong panel width") }
         guard abs(frame.midX - centerX) < 1 else { throw PanelTestFailure("\(name): horizontal anchor moved") }
-        guard !panel.hasShadow else { throw PanelTestFailure("\(name): WindowServer shadow is enabled") }
-        guard panel.frame.size == content.bounds.size,
-              controller.shadowPanel.parent == panel,
-              controller.shadowPanel.isVisible,
-              !controller.shadowPanel.hasShadow else {
-            throw PanelTestFailure("\(name): panel bounds or child shadow configuration is incorrect")
+        guard panel.hasShadow, !panel.isOpaque, panel.backgroundColor.alphaComponent == 0,
+              !panel.styleMask.contains(.fullSizeContentView), panel.childWindows?.isEmpty != false else {
+            throw PanelTestFailure("\(name): window backing or shadow configuration is incorrect")
         }
-        let material = content
+        guard panel.frame.size == content.bounds.size,
+              content === controller.container, content.subviews.count == 1,
+              content.subviews.first === controller.effectView,
+              controller.effectView.frame == content.bounds,
+              let layer = content.layer, layer.masksToBounds,
+              layer.cornerRadius == PanelChromeGeometry.cornerRadius, layer.cornerCurve == .continuous,
+              layer.backgroundColor == nil || layer.backgroundColor?.alpha == 0 else {
+            throw PanelTestFailure("\(name): panel is not a single clear clipped container")
+        }
+        let views = descendants(of: content)
+        let materialViews = views.filter { $0 is NSVisualEffectView }
+        if #available(macOS 26, *) {
+            let glassViews = views.compactMap { $0 as? NSGlassEffectView }
+            guard glassViews.count == 1, materialViews.isEmpty,
+                  glassViews.first?.cornerRadius == PanelChromeGeometry.cornerRadius,
+                  glassViews.first?.contentView === controller.host else {
+                throw PanelTestFailure("\(name): expected exactly one glass view and no fallback material")
+            }
+        } else {
+            guard materialViews.count == 1 else {
+                throw PanelTestFailure("\(name): expected exactly one fallback material view")
+            }
+        }
+        guard let hostLayer = controller.host.layer,
+              hostLayer.backgroundColor == nil || hostLayer.backgroundColor?.alpha == 0,
+              !controller.host.isOpaque,
+              controller.host.safeAreaInsets.top == 0, controller.host.safeAreaInsets.bottom == 0,
+              controller.host.safeAreaInsets.left == 0, controller.host.safeAreaInsets.right == 0,
+              controller.host.safeAreaRegions == [],
+              controller.host.sizingOptions == [.intrinsicContentSize] else {
+            throw PanelTestFailure("\(name): hosting view has rectangular backing")
+        }
+        for scroll in views.compactMap({ $0 as? NSScrollView }) {
+            guard !scroll.drawsBackground, !scroll.contentView.drawsBackground else {
+                throw PanelTestFailure("\(name): scroll view paints a rectangular background")
+            }
+        }
+        let material = controller.effectView
         guard abs(controller.host.frame.minY - material.bounds.minY) < 1,
               abs(controller.host.frame.height - material.bounds.height) < 1,
               abs(controller.host.frame.width - material.bounds.width) < 1 else {
             throw PanelTestFailure("\(name): hosting view does not fill the material content view")
         }
         let bitmap = try PanelCapture.bitmap(for: controller)
-        let visible = controller.chrome.panelRect
-        let shadow = controller.chrome.shadowView
-        guard let shadowBitmap = shadow.bitmapImageRepForCachingDisplay(in: shadow.bounds) else {
-            throw PanelTestFailure("\(name): could not render the custom shadow")
-        }
-        shadow.cacheDisplay(in: shadow.bounds, to: shadowBitmap)
-        guard let interiorAlpha = shadowBitmap.colorAt(x: shadowBitmap.pixelsWide / 2,
-            y: shadowBitmap.pixelsHigh / 2)?.alphaComponent, interiorAlpha == 0 else {
-            throw PanelTestFailure("\(name): shadow darkens the glass interior")
-        }
-        let scaleX = CGFloat(bitmap.pixelsWide) / controller.chrome.bounds.width
-        let scaleY = CGFloat(bitmap.pixelsHigh) / controller.chrome.bounds.height
-        let shadowPoint = CGPoint(x: visible.minX - 10, y: visible.midY)
-        guard let shadowAlpha = bitmap.colorAt(x: Int(shadowPoint.x * scaleX),
-            y: Int((controller.chrome.bounds.maxY - shadowPoint.y) * scaleY))?.alphaComponent,
-            shadowAlpha > 0, shadowAlpha <= 0.30 else {
-            throw PanelTestFailure("\(name): missing or opaque custom shadow")
-        }
-        for cornerX in [visible.minX, visible.maxX] {
-            for cornerY in [visible.minY, visible.maxY] {
-                for dx in -3...2 {
-                    for dy in -3...2 {
-                        let point = CGPoint(x: cornerX + CGFloat(dx), y: cornerY + CGFloat(dy))
-                        guard !controller.chrome.containsPanelPoint(point),
-                              controller.chrome.hitTest(point) == nil else {
-                            throw PanelTestFailure("\(name): rounded-corner margin hit-tests")
-                        }
-                        guard controller.shadowPanel.ignoresMouseEvents else {
-                            throw PanelTestFailure("\(name): shadow margin is not click-through")
-                        }
-                        let x = Int(point.x * scaleX)
-                        let y = Int((controller.chrome.bounds.maxY - point.y) * scaleY)
-                        guard let alpha = bitmap.colorAt(x: x, y: y)?.alphaComponent,
-                              let adjacent = bitmap.colorAt(x: x + 1, y: y)?.alphaComponent else {
-                            throw PanelTestFailure("\(name): missing corner pixels")
-                        }
-                        guard alpha <= 0.30, abs(alpha - adjacent) <= 0.12 else {
-                            throw PanelTestFailure("\(name): hard/opaque content outside corner at (\(x), \(y)): \(alpha), next=\(adjacent)")
+        let scale = CGFloat(bitmap.pixelsWide) / content.bounds.width
+        let cornerSampleSize = Int(PanelChromeGeometry.cornerRadius * scale / 4)
+        for left in [true, false] {
+            for top in [true, false] {
+                for dx in 0..<cornerSampleSize {
+                    for dy in 0..<cornerSampleSize {
+                        let x = left ? dx : bitmap.pixelsWide - 1 - dx
+                        let y = top ? dy : bitmap.pixelsHigh - 1 - dy
+                        guard let alpha = bitmap.colorAt(x: x, y: y)?.alphaComponent, alpha == 0 else {
+                            throw PanelTestFailure("\(name): material outside rounded corner at (\(x), \(y))")
                         }
                     }
                 }
             }
         }
-        guard controller.chrome.containsPanelPoint(CGPoint(x: visible.midX, y: visible.midY)) else {
-            throw PanelTestFailure("\(name): visible panel is not interactive")
-        }
         guard !panel.ignoresMouseEvents else { throw PanelTestFailure("\(name): panel ignores interior clicks") }
-        try checkShadowFrame(controller)
+        if name == "dark appearance" {
+            print("hierarchy: one effect view, clipped container, clear host/scroll backing, no child windows; corner alpha=0")
+        }
         print("\(name): \(NSStringFromRect(frame)) fitting=\(expectedHeight)")
     }
 
-    @MainActor private static func checkShadowFrame(_ controller: StatusItemController) throws {
-        guard controller.shadowPanel.frame == PanelChromeGeometry.windowFrame(for: controller.panel.frame),
-              controller.chrome.panelRect.size == controller.panel.frame.size else {
-            throw PanelTestFailure("Child shadow does not follow the panel frame")
-        }
+    @MainActor private static func descendants(of view: NSView) -> [NSView] {
+        [view] + view.subviews.flatMap { descendants(of: $0) }
     }
 }
 

@@ -10,6 +10,7 @@ enum SnapshotWriter {
         guard let firstRun = Fixtures.busy.first else { throw DaemonError.invalidResponse }
         let single = RunStore()
         single.runsForPreview([firstRun])
+        single.claudeSessionsForPreview(Fixtures.claudeSessions)
         let stress = RunStore()
         stress.runsForPreview(Fixtures.stress)
         let down = RunStore()

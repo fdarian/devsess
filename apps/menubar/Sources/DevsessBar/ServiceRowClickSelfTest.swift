@@ -22,9 +22,8 @@ enum ServiceRowClickSelfTest {
         }
         guard controller.host.acceptsFirstMouse(for: nil), controller.panel.becomesKeyOnlyIfNeeded,
               !controller.panel.isKeyWindow,
-              !controller.panel.ignoresMouseEvents, controller.shadowPanel.ignoresMouseEvents,
-              controller.shadowPanel.parent == controller.panel else {
-            throw Failure("First-click admission or child-window mouse routing is incorrect")
+              !controller.panel.ignoresMouseEvents, controller.panel.childWindows?.isEmpty != false else {
+            throw Failure("First-click admission or window mouse routing is incorrect")
         }
         try click(x: 220, controller: controller)
         guard opened == [expectedURL], stopped.isEmpty else {
