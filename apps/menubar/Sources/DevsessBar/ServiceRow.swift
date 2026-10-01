@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 enum RowPreviewState {
-    case normal, hovered, stopArmed, headerHovered, headerArmed
+    case normal, hovered, stopArmed, headerHovered, headerArmed, badgeHovered
 }
 
 struct ServiceRow: View {

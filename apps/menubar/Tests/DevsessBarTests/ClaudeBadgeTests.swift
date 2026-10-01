@@ -3,6 +3,18 @@ import Testing
 @testable import DevsessBar
 
 struct ClaudeBadgeTests {
+    @Test @MainActor func hoverMakesArchivedCountReadableWithoutChangingBadgeSize() throws {
+        let sessions = try #require(Fixtures.claudeSessions[Fixtures.twoServices.canonicalCwd])
+        let resting = ClaudeSessionBadge(sessions: sessions)
+        let hovered = ClaudeSessionBadge(sessions: sessions, previewHovered: true)
+        #expect(resting.countColor == .tertiaryLabelColor)
+        #expect(hovered.countColor == .secondaryLabelColor)
+        #expect(resting.restingSize == hovered.restingSize)
+        let live = [session("live", .live)]
+        #expect(ClaudeSessionBadge(sessions: live).countColor == .secondaryLabelColor)
+        #expect(ClaudeSessionBadge(sessions: live, previewHovered: true).countColor == .secondaryLabelColor)
+    }
+
     private func session(_ id: String, _ state: ClaudeSessionState) -> ClaudeSession {
         ClaudeSession(id: id, title: id, state: state, modifiedAt: Date(timeIntervalSince1970: 0))
     }

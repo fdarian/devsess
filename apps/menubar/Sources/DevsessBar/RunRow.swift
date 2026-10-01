@@ -16,8 +16,11 @@ struct RunRow: View {
     @LegacyState private var headerHovered = false
     @LegacyState private var headerArmed = false
 
-    private var headerSelected: Bool { headerHovered || runArmed || previewState == .headerHovered }
+    private var headerSelected: Bool { headerHovered || runArmed || previewState == .headerHovered || previewState == .badgeHovered }
     private var runArmed: Bool { headerArmed || previewState == .headerArmed }
+    private var badge: ClaudeSessionBadge {
+        ClaudeSessionBadge(sessions: claudeSessions, snapshotMode: snapshotMode, previewHovered: previewState == .badgeHovered)
+    }
 
     private var header: some View {
         GeometryReader { geometry in
@@ -35,12 +38,7 @@ struct RunRow: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                if !runArmed, !claudeSessions.isEmpty {
-                    ClaudeSessionBadge(sessions: claudeSessions, snapshotMode: snapshotMode)
-                        .padding(.leading, ServiceRowGeometry.spacing)
-                        .padding(.trailing, headerSelected ? ServiceRowGeometry.spacing : 0)
-                }
-                if headerSelected {
+                HStack(spacing: RunHeaderGeometry.badgeGap) {
                     Button(action: stop) {
                         RoundedRectangle(cornerRadius: 1)
                             .fill(Color(nsColor: runArmed ? .systemRed : .secondaryLabelColor))
@@ -56,12 +54,19 @@ struct RunRow: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(stopping || snapshotMode)
+                    .disabled(!headerSelected || stopping || snapshotMode)
+                    .opacity(headerSelected ? 1 : 0)
+                    .allowsHitTesting(headerSelected)
+                    .accessibilityHidden(!headerSelected)
                     .help("Stop all servers in \(run.projectName)")
                     .accessibilityLabel(RunHeaderGeometry.stopTitle(serviceCount: run.services.count))
+                    if !claudeSessions.isEmpty {
+                        badge.frame(width: badge.restingSize.width, height: badge.restingSize.height)
+                    }
                 }
+                .padding(.trailing, claudeSessions.isEmpty ? RunHeaderGeometry.trailingInset : RunHeaderGeometry.badgeTrailingInset)
+                .padding(.leading, ServiceRowGeometry.spacing)
             }
-            .padding(.trailing, headerSelected ? RunHeaderGeometry.trailingInset : ServiceRowGeometry.horizontalInset)
             .frame(height: RunHeaderGeometry.height)
             .background {
                 RoundedRectangle(cornerRadius: 5)
@@ -74,6 +79,7 @@ struct RunRow: View {
                 case .active(let point):
                     headerHovered = !snapshotMode
                     headerArmed = RunHeaderGeometry.shouldArm(at: point, width: geometry.size.width,
+                        badgeSize: claudeSessions.isEmpty ? nil : badge.restingSize,
                         stopping: stopping, snapshotMode: snapshotMode)
                 case .ended:
                     headerHovered = false

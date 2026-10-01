@@ -7,6 +7,7 @@ enum ServiceRowClickSelfTest {
               let expectedURL = service.publishedURL else { throw Failure("Missing URL fixture") }
         let store = RunStore()
         store.runsForPreview([run])
+        store.claudeSessionsForPreview(Fixtures.claudeSessions)
         let controller = StatusItemController(store: store, showsStatusItem: false,
             testAnchor: NSRect(x: -11500, y: -11100, width: 22, height: 22),
             testScreen: NSRect(x: -12000, y: -12000, width: 1000, height: 1000))
@@ -48,7 +49,10 @@ enum ServiceRowClickSelfTest {
         RunLoop.main.run(until: Date().addingTimeInterval(0.03))
         try click(x: 40, fromTop: 15, controller: controller)
         guard stopped.isEmpty else { throw Failure("Header text unexpectedly stops the run") }
-        try click(x: 280, fromTop: 15, controller: controller)
+        guard let sessions = Fixtures.claudeSessions[run.canonicalCwd] else { throw Failure("Missing badge fixture") }
+        let badgeSize = ClaudeSessionBadge(sessions: sessions).restingSize
+        let stopFrame = RunHeaderGeometry.stopFrame(width: 290, badgeSize: badgeSize)
+        try click(x: 5 + stopFrame.midX, fromTop: 15, controller: controller)
         guard stopped == [run.id], stoppedServices == [firstStop, secondStop], opened == [expectedURL] else {
             throw Failure("Header stop did not exclusively stop the whole run")
         }
