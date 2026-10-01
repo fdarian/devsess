@@ -5,9 +5,8 @@ import SwiftUI
 @MainActor final class StatusItemController: NSObject, NSWindowDelegate {
     let panel: PanelWindow
     let host: SizingHostingView<PanelView>
-    let chrome: PanelChromeView
-    let shadowPanel: PanelShadowWindow
-    private let background: NSView
+    let container: PanelContainerView
+    let effectView: NSView
     private let store: RunStore
     private var statusItem: NSStatusItem?
     private var globalMonitor: Any?
@@ -23,14 +22,18 @@ import SwiftUI
         self.testScreen = testScreen
         host = SizingHostingView(rootView: PanelView(store: store))
         host.sizingOptions = [.intrinsicContentSize]
+        host.safeAreaRegions = []
+        host.wantsLayer = true
+        host.layer?.backgroundColor = NSColor.clear.cgColor
         panel = PanelWindow(
             contentRect: NSRect(x: 0, y: 0, width: 300, height: 160),
-            styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered, defer: false
         )
         let background: NSView
         if #available(macOS 26, *) {
             let glass = NSGlassEffectView(frame: NSRect(x: 0, y: 0, width: 300, height: 160))
+            glass.style = .regular
             glass.cornerRadius = PanelChromeGeometry.cornerRadius
             glass.contentView = host
             background = glass
@@ -45,29 +48,22 @@ import SwiftUI
             material.addSubview(host)
             background = material
         }
-        self.background = background
-        chrome = PanelChromeView(panelSize: background.frame.size)
-        shadowPanel = PanelShadowWindow(contentRect: chrome.bounds,
-            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        effectView = background
+        container = PanelContainerView(frame: background.frame)
+        background.autoresizingMask = [.width, .height]
+        container.addSubview(background)
         super.init()
 
         panel.isFloatingPanel = true
         panel.level = .floating
-        panel.hasShadow = false
+        panel.hasShadow = true
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.isReleasedWhenClosed = false
         panel.becomesKeyOnlyIfNeeded = true
         panel.acceptsMouseMovedEvents = true
-        panel.contentView = background
+        panel.contentView = container
         panel.delegate = self
-        shadowPanel.level = panel.level
-        shadowPanel.hasShadow = false
-        shadowPanel.isOpaque = false
-        shadowPanel.backgroundColor = .clear
-        shadowPanel.isReleasedWhenClosed = false
-        shadowPanel.ignoresMouseEvents = true
-        shadowPanel.contentView = chrome
         panel.onDismiss = { [weak self] in self?.hide() }
         host.onSizeChange = { [weak self] in self?.updateLayout() }
 
@@ -91,8 +87,9 @@ import SwiftUI
     private func show() {
         store.panelOpen = true
         updateLayout()
-        attachShadow()
         panel.makeKeyAndOrderFront(nil)
+        panel.displayIfNeeded()
+        panel.invalidateShadow()
         statusItem?.button?.highlight(true)
         installMonitors()
         Task { await store.refresh() }
@@ -103,7 +100,6 @@ import SwiftUI
         isHiding = true
         store.panelOpen = false
         panel.orderOut(nil)
-        shadowPanel.orderOut(nil)
         statusItem?.button?.highlight(false)
         removeMonitors()
         isHiding = false
@@ -116,10 +112,8 @@ import SwiftUI
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             if let self {
                 if event.window == self.panel {
-                    let point = self.background.convert(event.locationInWindow, from: nil)
-                    let shape = CGPath(roundedRect: self.background.bounds,
-                        cornerWidth: PanelChromeGeometry.cornerRadius,
-                        cornerHeight: PanelChromeGeometry.cornerRadius, transform: nil)
+                    let point = self.container.convert(event.locationInWindow, from: nil)
+                    let shape = PanelChromeGeometry.visiblePath(in: self.container.bounds)
                     if !shape.contains(point) { self.hide() }
                 } else if event.window != self.statusItem?.button?.window {
                     self.hide()
@@ -137,21 +131,15 @@ import SwiftUI
         }
     }
 
-    private func attachShadow() {
-        if shadowPanel.parent != panel { panel.addChildWindow(shadowPanel, ordered: .below) }
-    }
-
     func orderBackForCapture() {
-        attachShadow()
         panel.orderBack(nil)
+        panel.displayIfNeeded()
+        panel.invalidateShadow()
     }
 
     func close() {
         removeMonitors()
-        panel.removeChildWindow(shadowPanel)
-        shadowPanel.orderOut(nil)
         panel.orderOut(nil)
-        shadowPanel.close()
         panel.close()
     }
 
@@ -223,27 +211,20 @@ import SwiftUI
             || abs(panel.frame.width - frame.width) > 0.5 || abs(panel.frame.height - frame.height) > 0.5 {
             panel.setFrame(frame, display: panel.isVisible)
         }
-        updateShadowLayout()
+        container.layoutSubtreeIfNeeded()
         if #available(macOS 26, *) {
-            background.layoutSubtreeIfNeeded()
+            effectView.layoutSubtreeIfNeeded()
         } else {
-            host.frame = background.bounds
+            host.frame = effectView.bounds
         }
+        panel.invalidateShadow()
     }
 
     var visiblePanelFrame: NSRect {
         panel.frame
     }
 
-    func windowDidMove(_ notification: Notification) { updateShadowLayout() }
-
-    func windowDidResize(_ notification: Notification) { updateShadowLayout() }
-
-    private func updateShadowLayout() {
-        shadowPanel.setFrame(PanelChromeGeometry.windowFrame(for: panel.frame), display: shadowPanel.isVisible)
-        chrome.needsLayout = true
-        chrome.layoutSubtreeIfNeeded()
-    }
+    func windowDidResize(_ notification: Notification) { panel.invalidateShadow() }
 
     private static func roundedMask(radius: CGFloat) -> NSImage {
         let side = radius * 2 + 1

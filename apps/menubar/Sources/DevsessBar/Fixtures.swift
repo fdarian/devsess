@@ -5,8 +5,8 @@ enum Fixtures {
         let home = NSHomeDirectory()
         let json = """
         [
-          {"runId":"a","projectName":"nisi","presetName":"desktop","canonicalCwd":"\(home)/code/nisi","state":"running","services":[
-            {"name":"desktop","command":"bun run scripts/dev.ts","cwd":"\(home)/code/nisi","state":"running","published":{"value":{"url":"http://localhost:50016/"}}}
+          {"runId":"a","projectName":"nisi","presetName":"desktop","canonicalCwd":"\(home)/.claude/worktrees/nisi/desktop","state":"running","services":[
+            {"name":"desktop","command":"bun run scripts/dev.ts","cwd":"\(home)/.claude/worktrees/nisi/desktop","state":"running","published":{"value":{"url":"http://localhost:50016/"}}}
           ]},
           {"runId":"b","projectName":"devsess","presetName":"docs","canonicalCwd":"\(home)/.claude/worktrees/devsess/docs-site","state":"starting","services":[
             {"name":"docs","command":"bun run docs --host 127.0.0.1","cwd":"\(home)/.claude/worktrees/devsess/docs-site","state":"starting"}
@@ -25,7 +25,12 @@ enum Fixtures {
     static let claudeSessions: [String: [ClaudeSession]] = {
         let modifiedAt = Date(timeIntervalSince1970: 1_790_000_000)
         return [
-            busy[1].canonicalCwd: [ClaudeSession(id: "local_docs-live", title: "Polish docs navigation", state: .live, modifiedAt: modifiedAt)],
+            busy[0].canonicalCwd: [ClaudeSession(id: "local_desktop-live", title: "Polish desktop panel", state: .live, modifiedAt: modifiedAt)],
+            busy[1].canonicalCwd: [
+                ClaudeSession(id: "local_docs-open", title: "Polish docs navigation", state: .open, modifiedAt: modifiedAt),
+                ClaudeSession(id: "local_examples-open", title: "Add examples", state: .open, modifiedAt: modifiedAt),
+                ClaudeSession(id: "local_docs-archived", title: "Initial docs layout", state: .archived, modifiedAt: modifiedAt)
+            ],
             busy[2].canonicalCwd: [
                 ClaudeSession(id: "local_api-archived", title: "API worker investigation", state: .archived, modifiedAt: modifiedAt),
                 ClaudeSession(id: "local_auth-archived", title: "Review authentication", state: .archived, modifiedAt: modifiedAt),

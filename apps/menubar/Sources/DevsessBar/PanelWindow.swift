@@ -12,8 +12,3 @@ import AppKit
         onDismiss?()
     }
 }
-
-@MainActor final class PanelShadowWindow: NSPanel {
-    override var canBecomeKey: Bool { false }
-    override var canBecomeMain: Bool { false }
-}

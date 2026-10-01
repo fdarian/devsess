@@ -44,6 +44,7 @@ struct PanelView: View {
             }
             .frame(height: min(sectionsHeight, max(30, maximumHeight - 87)))
             .scrollIndicators(.automatic)
+            .scrollContentBackground(.hidden)
 
             Rectangle()
                 .fill(Color(nsColor: .separatorColor))
