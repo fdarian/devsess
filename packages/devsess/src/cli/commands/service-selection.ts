@@ -11,7 +11,7 @@ import { type ChosenRun, CommandError, type CommandOptions } from './daemon';
 export const chooseServices = (
 	run: RunRecord | ChosenRun,
 	options: CommandOptions,
-	command: 'tail' | 'attach' | 'restart',
+	command: 'tail' | 'attach' | 'restart' | 'stop',
 	interactive = process.stdin.isTTY === true && process.stdout.isTTY === true,
 	runs: ReadonlyArray<RunRecord> = [run],
 ): Effect.Effect<

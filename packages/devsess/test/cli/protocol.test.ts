@@ -7,6 +7,34 @@ import {
 } from '../../src/cli/protocol';
 
 describe('CLI protocol validation', () => {
+	it.effect('decodes protocol-v1 stopServices with optional force', () =>
+		Effect.gen(function* () {
+			for (const force of [undefined, false, true]) {
+				const frame = {
+					version: 1,
+					requestId: 'stop',
+					method: 'stopServices',
+					params: {
+						runId: 'run',
+						serviceNames: ['web'],
+						...(force === undefined ? {} : { force }),
+					},
+				};
+				expect(yield* decodeRequest(JSON.stringify(frame))).toEqual(frame);
+			}
+			const invalid = yield* Effect.exit(
+				decodeRequest(
+					JSON.stringify({
+						version: 1,
+						requestId: 'stop',
+						method: 'stopServices',
+						params: { runId: 'run', serviceNames: ['../web'] },
+					}),
+				),
+			);
+			expect(invalid._tag).toBe('Failure');
+		}),
+	);
 	it.effect(
 		'accepts an additive getRun request and rejects unsafe run IDs',
 		() =>

@@ -71,7 +71,11 @@ const stopCommand = Command.make(
 		),
 	},
 	(input) => stop({ ...selectedOptions(input), force: input.force }),
-).pipe(Command.withDescription('Stop an active run and its services.'));
+).pipe(
+	Command.withDescription(
+		'Stop an active run, or one service with --service (-s).',
+	),
+);
 const restartCommand = Command.make(
 	'restart',
 	{

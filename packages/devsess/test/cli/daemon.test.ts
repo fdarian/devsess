@@ -350,6 +350,71 @@ const lastServer = () => {
 
 describe('daemon lifetime and failure handling', () => {
 	it.live(
+		'stops selected services, restarts an exited service, and finishes the last service',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						const initial = start();
+						yield* daemon.request({
+							...initial,
+							params: {
+								...initial.params,
+								services: [
+									...initial.params.services,
+									{ name: 'api', command: 'sleep 30', cwd: '/tmp' },
+								],
+							},
+						});
+						const selected = (serviceNames: string[]): DaemonRequest => ({
+							version: 1,
+							requestId: 'stop-selected',
+							method: 'stopServices',
+							params: { runId: 'run', serviceNames },
+						});
+						for (const names of [[], ['web', 'web'], ['missing']]) {
+							expect(
+								(yield* Effect.exit(daemon.request(selected(names))))._tag,
+							).toBe('Failure');
+						}
+						expect(state.terminate).not.toHaveBeenCalled();
+						const stopped = (yield* daemon.request(
+							selected(['web']),
+						)) as RunRecord;
+						expect(stopped.state).toBe('running');
+						expect(stopped.services.map((service) => service.state)).toEqual([
+							'exited',
+							'running',
+						]);
+						yield* daemon.request(selected(['web']));
+						expect(state.terminate).toHaveBeenCalledTimes(1);
+						const restarted = (yield* daemon.request({
+							version: 1,
+							requestId: 'restart',
+							method: 'restartServices',
+							params: { runId: 'run', serviceNames: ['web'] },
+						})) as RunRecord;
+						expect(restarted.services.map((service) => service.state)).toEqual([
+							'running',
+							'running',
+						]);
+						yield* daemon.request(selected(['web']));
+						const finished = (yield* daemon.request(
+							selected(['api']),
+						)) as RunRecord;
+						expect(finished.state).toBe('exited');
+						expect(
+							finished.services.every((service) => service.state === 'exited'),
+						).toBe(true);
+						expect(state.prune).toHaveBeenCalled();
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+	it.live(
 		'keeps start and stop outcomes and a clean exit when pruning fails',
 		() =>
 			runTest(

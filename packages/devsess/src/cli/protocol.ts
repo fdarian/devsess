@@ -75,6 +75,16 @@ export const StopRunRequest = Schema.Struct({
 		force: Schema.optional(Schema.Boolean),
 	}),
 });
+export const StopServicesRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('stopServices'),
+	params: Schema.Struct({
+		runId: Identifier,
+		serviceNames: Schema.Array(Identifier),
+		force: Schema.optional(Schema.Boolean),
+	}),
+});
 export const RestartServicesRequest = Schema.Struct({
 	version: Schema.Literal(PROTOCOL_VERSION),
 	requestId: Identifier,
@@ -146,6 +156,7 @@ export const DaemonRequest = Schema.Union([
 	InfoRequest,
 	ShutdownRequest,
 	StopRunRequest,
+	StopServicesRequest,
 	RestartServicesRequest,
 	TailRequest,
 	AttachRequest,
