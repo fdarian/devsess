@@ -17,6 +17,15 @@ enum PanelSelfTest {
         try check("empty", controller: controller, top: anchor.minY - 4)
         store.runsForPreview(Fixtures.stress)
         try check("many runs restored", controller: controller, top: anchor.minY - 4)
+
+        let smallScreen = NSRect(x: -12000, y: -11350, width: 1000, height: 350)
+        let constrained = StatusItemController(store: store, showsStatusItem: false,
+            testAnchor: anchor, testScreen: smallScreen)
+        defer { constrained.panel.close() }
+        try check("short screen", controller: constrained, top: anchor.minY - 4)
+        guard constrained.panel.frame.height <= anchor.minY - 4 - smallScreen.minY else {
+            throw PanelTestFailure("Panel extends below the screen")
+        }
     }
 
     @MainActor private static func check(_ name: String, controller: StatusItemController, top: CGFloat) throws {
@@ -27,7 +36,7 @@ enum PanelSelfTest {
         let panel = controller.panel
         guard let content = panel.contentView else { throw PanelTestFailure("Missing panel content") }
         let frame = panel.frame
-        let expectedHeight = min(controller.host.intrinsicContentSize.height, 530)
+        let expectedHeight = min(controller.host.intrinsicContentSize.height, controller.host.rootView.maximumHeight)
         guard abs(frame.maxY - top) < 1 else { throw PanelTestFailure("\(name): top moved to \(frame.maxY)") }
         guard abs(frame.height - expectedHeight) < 1 else {
             throw PanelTestFailure("\(name): height \(frame.height) differs from fitting \(expectedHeight)")
