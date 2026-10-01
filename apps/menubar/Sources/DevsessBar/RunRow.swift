@@ -10,6 +10,7 @@ struct RunRow: View {
     var previewState: RowPreviewState = .normal
     let stop: () -> Void
     let restart: (ServiceRecord) -> Void
+    var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
     @LegacyState private var armedServiceIndex: Int?
 
     var body: some View {
@@ -39,7 +40,7 @@ struct RunRow: View {
                             armedServiceIndex = nil
                         }
                     },
-                    stop: stop, restart: { restart(run.services[index]) })
+                    stop: stop, restart: { restart(run.services[index]) }, openURL: openURL)
             }
             if let error {
                 Text(error)

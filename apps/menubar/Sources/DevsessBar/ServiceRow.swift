@@ -15,6 +15,7 @@ struct ServiceRow: View {
     let setStopArmed: (Bool) -> Void
     let stop: () -> Void
     let restart: () -> Void
+    var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
     @LegacyState private var hovered = false
 
     private var armed: Bool { stopArmed }
@@ -57,19 +58,29 @@ struct ServiceRow: View {
         return Color(nsColor: .secondaryLabelColor)
     }
 
-    var body: some View {
-        HStack(spacing: ServiceRowGeometry.spacing) {
+    private var nameColor: Color {
+        if armed { return Color(nsColor: .systemRed) }
+        if selected { return .white }
+        return Color(nsColor: .labelColor)
+    }
+
+    private var indicator: some View {
+        ZStack {
             if selected {
                 RoundedRectangle(cornerRadius: 1.5)
                     .fill(armed ? Color(nsColor: .systemRed) : .white)
-                    .frame(width: ServiceRowGeometry.indicatorSize, height: ServiceRowGeometry.indicatorSize)
             } else {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: ServiceRowGeometry.indicatorSize, height: ServiceRowGeometry.indicatorSize)
+                Circle().fill(statusColor)
             }
+        }
+        .frame(width: ServiceRowGeometry.indicatorSize, height: ServiceRowGeometry.indicatorSize)
+        .allowsHitTesting(false)
+    }
+
+    private var urlLabel: some View {
+        HStack(spacing: 4) {
             Text(armed ? "Stop \(service.name)" : service.name)
-                .foregroundStyle(armed ? Color(nsColor: .systemRed) : selected ? .white : Color(nsColor: .labelColor))
+                .foregroundStyle(nameColor)
                 .lineLimit(1)
             Spacer(minLength: 4)
             if let detail {
@@ -80,31 +91,42 @@ struct ServiceRow: View {
                     .monospacedDigit()
             }
         }
-        .font(.system(size: 13))
-        .frame(height: ServiceRowGeometry.height)
-        .padding(.horizontal, ServiceRowGeometry.horizontalInset)
+        .padding(.trailing, ServiceRowGeometry.horizontalInset)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(armed ? Color(nsColor: .quaternaryLabelColor)
-                    : selected ? Color(nsColor: .selectedContentBackgroundColor) : .clear,
-                    in: RoundedRectangle(cornerRadius: 5))
-        .overlay {
-            HStack(spacing: 0) {
-                Button(action: stop) {
-                    Color.clear.contentShape(Rectangle())
-                }
-                .frame(width: ServiceRowGeometry.stopZoneWidth)
-                .disabled(stopping || snapshotMode)
-                .help("Stop \(run.projectName)")
-                .accessibilityLabel("Stop \(run.projectName)")
-                Button {
-                    if let url = service.publishedURL { NSWorkspace.shared.open(url) }
-                } label: {
-                    Color.clear.contentShape(Rectangle())
-                }
-                .disabled(service.publishedURL == nil || snapshotMode)
-                .accessibilityLabel("Open \(service.name)")
+        .frame(height: ServiceRowGeometry.height)
+        .contentShape(Rectangle())
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button(action: stop) {
+                indicator
+                    .padding(.leading, ServiceRowGeometry.horizontalInset)
+                    .padding(.trailing, ServiceRowGeometry.spacing)
+                    .frame(width: ServiceRowGeometry.stopZoneWidth, height: ServiceRowGeometry.height)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .disabled(stopping || snapshotMode)
+            .help("Stop \(run.projectName)")
+            .accessibilityLabel("Stop \(run.projectName)")
+            Button {
+                if let url = service.publishedURL { openURL(url) }
+            } label: {
+                urlLabel
+            }
+            .buttonStyle(.plain)
+            .disabled(service.publishedURL == nil || snapshotMode)
+            .accessibilityLabel("Open \(service.name)")
+        }
+        .font(.system(size: 13))
+        .frame(height: ServiceRowGeometry.height)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 5)
+                .fill(armed ? Color(nsColor: .quaternaryLabelColor)
+                    : selected ? Color(nsColor: .selectedContentBackgroundColor) : .clear)
+                .allowsHitTesting(false)
         }
         .contentShape(Rectangle())
         .onContinuousHover { phase in

@@ -2,18 +2,17 @@ import AppKit
 import Observation
 import SwiftUI
 
-@MainActor final class StatusItemController: NSObject {
+@MainActor final class StatusItemController: NSObject, NSWindowDelegate {
     let panel: PanelWindow
     let host: SizingHostingView<PanelView>
     let chrome: PanelChromeView
+    let shadowPanel: PanelShadowWindow
     private let background: NSView
     private let store: RunStore
     private var statusItem: NSStatusItem?
     private var globalMonitor: Any?
     private var localMonitor: Any?
     private var keyMonitor: Any?
-    private var globalPointerMonitor: Any?
-    private var localPointerMonitor: Any?
     private var isHiding = false
     private let testAnchor: NSRect?
     private let testScreen: NSRect?
@@ -47,7 +46,9 @@ import SwiftUI
             background = material
         }
         self.background = background
-        chrome = PanelChromeView(material: background)
+        chrome = PanelChromeView(panelSize: background.frame.size)
+        shadowPanel = PanelShadowWindow(contentRect: chrome.bounds,
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         super.init()
 
         panel.isFloatingPanel = true
@@ -56,8 +57,17 @@ import SwiftUI
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.isReleasedWhenClosed = false
+        panel.becomesKeyOnlyIfNeeded = true
         panel.acceptsMouseMovedEvents = true
-        panel.contentView = chrome
+        panel.contentView = background
+        panel.delegate = self
+        shadowPanel.level = panel.level
+        shadowPanel.hasShadow = false
+        shadowPanel.isOpaque = false
+        shadowPanel.backgroundColor = .clear
+        shadowPanel.isReleasedWhenClosed = false
+        shadowPanel.ignoresMouseEvents = true
+        shadowPanel.contentView = chrome
         panel.onDismiss = { [weak self] in self?.hide() }
         host.onSizeChange = { [weak self] in self?.updateLayout() }
 
@@ -81,10 +91,10 @@ import SwiftUI
     private func show() {
         store.panelOpen = true
         updateLayout()
+        attachShadow()
         panel.makeKeyAndOrderFront(nil)
         statusItem?.button?.highlight(true)
         installMonitors()
-        updateMousePassthrough()
         Task { await store.refresh() }
     }
 
@@ -93,9 +103,9 @@ import SwiftUI
         isHiding = true
         store.panelOpen = false
         panel.orderOut(nil)
+        shadowPanel.orderOut(nil)
         statusItem?.button?.highlight(false)
         removeMonitors()
-        panel.ignoresMouseEvents = false
         isHiding = false
     }
 
@@ -106,20 +116,15 @@ import SwiftUI
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             if let self {
                 if event.window == self.panel {
-                    let point = self.chrome.convert(event.locationInWindow, from: nil)
-                    if !self.chrome.containsPanelPoint(point) { self.hide() }
+                    let point = self.background.convert(event.locationInWindow, from: nil)
+                    let shape = CGPath(roundedRect: self.background.bounds,
+                        cornerWidth: PanelChromeGeometry.cornerRadius,
+                        cornerHeight: PanelChromeGeometry.cornerRadius, transform: nil)
+                    if !shape.contains(point) { self.hide() }
                 } else if event.window != self.statusItem?.button?.window {
                     self.hide()
                 }
             }
-            return event
-        }
-        let movement: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged]
-        globalPointerMonitor = NSEvent.addGlobalMonitorForEvents(matching: movement) { [weak self] _ in
-            MainActor.assumeIsolated { self?.updateMousePassthrough() }
-        }
-        localPointerMonitor = NSEvent.addLocalMonitorForEvents(matching: movement) { [weak self] event in
-            self?.updateMousePassthrough()
             return event
         }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -132,23 +137,28 @@ import SwiftUI
         }
     }
 
-    private func updateMousePassthrough() {
-        updateMousePassthrough(at: NSEvent.mouseLocation)
+    private func attachShadow() {
+        if shadowPanel.parent != panel { panel.addChildWindow(shadowPanel, ordered: .below) }
     }
 
-    func updateMousePassthrough(at screenPoint: NSPoint) {
-        let point = chrome.convert(panel.convertPoint(fromScreen: screenPoint), from: nil)
-        // hitTest(nil) alone cannot pass a click to another window.
-        let ignoresMouse = !chrome.containsPanelPoint(point)
-        if panel.ignoresMouseEvents != ignoresMouse { panel.ignoresMouseEvents = ignoresMouse }
+    func orderBackForCapture() {
+        attachShadow()
+        panel.orderBack(nil)
+    }
+
+    func close() {
+        removeMonitors()
+        panel.removeChildWindow(shadowPanel)
+        shadowPanel.orderOut(nil)
+        panel.orderOut(nil)
+        shadowPanel.close()
+        panel.close()
     }
 
     private func removeMonitors() {
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor); self.globalMonitor = nil }
         if let localMonitor { NSEvent.removeMonitor(localMonitor); self.localMonitor = nil }
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
-        if let globalPointerMonitor { NSEvent.removeMonitor(globalPointerMonitor); self.globalPointerMonitor = nil }
-        if let localPointerMonitor { NSEvent.removeMonitor(localPointerMonitor); self.localPointerMonitor = nil }
     }
 
     private func observeChanges() {
@@ -208,24 +218,31 @@ import SwiftUI
         let height = min(fittingHeight, availableHeight)
         let width: CGFloat = 300
         let x = min(max(anchor.midX - width / 2, screen.minX), screen.maxX - width)
-        let visibleFrame = NSRect(x: x, y: top - height, width: width, height: height)
-        let frame = PanelChromeGeometry.windowFrame(for: visibleFrame)
+        let frame = NSRect(x: x, y: top - height, width: width, height: height)
         if abs(panel.frame.minX - frame.minX) > 0.5 || abs(panel.frame.minY - frame.minY) > 0.5
             || abs(panel.frame.width - frame.width) > 0.5 || abs(panel.frame.height - frame.height) > 0.5 {
             panel.setFrame(frame, display: panel.isVisible)
         }
-        chrome.needsLayout = true
-        chrome.layoutSubtreeIfNeeded()
+        updateShadowLayout()
         if #available(macOS 26, *) {
             background.layoutSubtreeIfNeeded()
         } else {
             host.frame = background.bounds
         }
-        if globalPointerMonitor != nil { updateMousePassthrough() }
     }
 
     var visiblePanelFrame: NSRect {
-        panel.convertToScreen(chrome.convert(chrome.panelRect, to: nil))
+        panel.frame
+    }
+
+    func windowDidMove(_ notification: Notification) { updateShadowLayout() }
+
+    func windowDidResize(_ notification: Notification) { updateShadowLayout() }
+
+    private func updateShadowLayout() {
+        shadowPanel.setFrame(PanelChromeGeometry.windowFrame(for: panel.frame), display: shadowPanel.isVisible)
+        chrome.needsLayout = true
+        chrome.layoutSubtreeIfNeeded()
     }
 
     private static func roundedMask(radius: CGFloat) -> NSImage {
@@ -244,6 +261,8 @@ import SwiftUI
 @MainActor final class SizingHostingView<Content: View>: NSHostingView<Content> {
     var onSizeChange: (() -> Void)?
     private var reportQueued = false
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func invalidateIntrinsicContentSize() {
         super.invalidateIntrinsicContentSize()

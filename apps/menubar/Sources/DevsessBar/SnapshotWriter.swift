@@ -74,17 +74,13 @@ enum SnapshotWriter {
         controller.panel.appearance = NSAppearance(named: appearance)
         controller.host.rootView = PanelView(store: store, previewState: previewState)
         controller.updateLayout()
-        controller.panel.orderBack(nil)
-        defer { controller.panel.orderOut(nil); controller.panel.close() }
+        controller.orderBackForCapture()
+        defer { controller.close() }
         for _ in 0..<3 {
             RunLoop.main.run(until: Date().addingTimeInterval(0.03))
             controller.updateLayout()
         }
-        guard let content = controller.panel.contentView,
-              let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else {
-            throw DaemonError.invalidResponse
-        }
-        content.cacheDisplay(in: content.bounds, to: bitmap)
+        let bitmap = try PanelCapture.bitmap(for: controller)
         guard let png = bitmap.representation(using: .png, properties: [:]) else {
             throw DaemonError.invalidResponse
         }
