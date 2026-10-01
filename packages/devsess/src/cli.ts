@@ -9,6 +9,7 @@ import { Argument, Command, Flag } from 'effect/unstable/cli';
 import devsessPackageJson from '../package.json' with { type: 'json' };
 import { reportCliCause } from './cli/cli-errors';
 import { attach } from './cli/commands/attach';
+import { completionsCommand } from './cli/commands/completions';
 import { CommandError, daemonCommand } from './cli/commands/daemon';
 import { daemonControlCommand } from './cli/commands/daemon-control';
 import { list } from './cli/commands/list';
@@ -149,9 +150,16 @@ const statusCommand = Command.make(
 ).pipe(Command.withDescription('Show active runs and recent service status.'));
 const listCommand = Command.make(
 	'list',
-	{ project: options.project, configPath: options.configPath },
+	{
+		project: options.project,
+		configPath: options.configPath,
+		names: Flag.boolean('names').pipe(
+			Flag.withDescription('Print only preset selectors, one per line.'),
+		),
+	},
 	(input) =>
 		list({
+			names: input.names,
 			project: value(input.project),
 			configPath: value(input.configPath),
 		}),
@@ -162,6 +170,7 @@ const docTopics = [
 	'selecting',
 	'logs',
 	'attach',
+	'completions',
 	'daemon',
 	'troubleshooting',
 ] as const;
@@ -240,6 +249,7 @@ const app = Command.make('devsess', {}).pipe(
 	Command.withSubcommands([
 		startCommand,
 		listCommand,
+		completionsCommand,
 		statusCommand,
 		stopCommand,
 		restartCommand,

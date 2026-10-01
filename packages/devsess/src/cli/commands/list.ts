@@ -89,10 +89,25 @@ export const formatPresetList = (
 };
 
 export const list = (
-	options: Pick<PresetResolutionOptions, 'configPath' | 'project'>,
+	options: Pick<PresetResolutionOptions, 'configPath' | 'project'> & {
+		names?: boolean;
+	},
 ) =>
 	Effect.gen(function* () {
 		const resolved = yield* resolvePresetCandidates(options);
+		if (options.names) {
+			yield* Effect.forEach(
+				resolved.candidates,
+				(candidate) =>
+					write(
+						resolved.projects.length === 1
+							? candidate.presetName
+							: `${candidate.projectName}/${candidate.presetName}`,
+					),
+				{ discard: true },
+			);
+			return;
+		}
 		const location = yield* resolveDaemonLocation;
 		const runs = yield* reachableRuns(location.socketPath);
 		const lines = formatPresetList(
