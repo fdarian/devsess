@@ -88,7 +88,7 @@ struct ServiceRow: View {
             Button {
                 if let url = service.publishedURL { NSWorkspace.shared.open(url) }
             } label: {
-                Color.clear
+                Color.clear.contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(service.publishedURL == nil)

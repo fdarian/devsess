@@ -36,7 +36,7 @@ struct PanelView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(height: min(sectionsHeight, max(30, maximumHeight - 84)))
+            .frame(height: min(sectionsHeight, max(30, maximumHeight - 87)))
             .scrollIndicators(.automatic)
 
             Rectangle()
