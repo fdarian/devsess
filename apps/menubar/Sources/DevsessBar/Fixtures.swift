@@ -6,20 +6,31 @@ enum Fixtures {
         let json = """
         [
           {"runId":"a","projectName":"nisi","presetName":"desktop","canonicalCwd":"\(home)/.claude/worktrees/nisi/desktop","state":"running","services":[
-            {"name":"desktop","command":"bun run scripts/dev.ts","cwd":"\(home)/.claude/worktrees/nisi/desktop","state":"running","published":{"value":{"url":"http://localhost:50016/"}}}
+            {"name":"desktop","command":"bun run scripts/dev.ts","cwd":"\(home)/.claude/worktrees/nisi/desktop","state":"running","memoryBytes":1288490188,"published":{"value":{"url":"http://localhost:50016/"}}}
           ]},
           {"runId":"b","projectName":"devsess","presetName":"docs","canonicalCwd":"\(home)/.claude/worktrees/devsess/docs-site","state":"starting","services":[
-            {"name":"docs","command":"bun run docs --host 127.0.0.1","cwd":"\(home)/.claude/worktrees/devsess/docs-site","state":"starting"}
+            {"name":"docs","command":"bun run docs --host 127.0.0.1","cwd":"\(home)/.claude/worktrees/devsess/docs-site","state":"starting","memoryBytes":90177536}
           ]},
           {"runId":"c","projectName":"atlas","presetName":"api","canonicalCwd":"\(home)/.claude/worktrees/atlas/feat-auth","state":"running","services":[
-            {"name":"api","command":"bun run src/server.ts --watch","cwd":"\(home)/.claude/worktrees/atlas/feat-auth","state":"running","published":{"value":{"url":"http://localhost:3000/"}}},
-            {"name":"worker","command":"bun run src/worker.ts --queue background","cwd":"\(home)/.claude/worktrees/atlas/feat-auth","state":"failed","exitCode":1}
+            {"name":"api","command":"bun run src/server.ts --watch","cwd":"\(home)/.claude/worktrees/atlas/feat-auth","state":"running","memoryBytes":356515840,"published":{"value":{"url":"http://localhost:3000/"}}},
+            {"name":"worker","command":"bun run src/worker.ts --queue background","cwd":"\(home)/.claude/worktrees/atlas/feat-auth","state":"failed","exitCode":1,"memoryBytes":90177536}
           ]},
           {"runId":"d","projectName":"old-site","presetName":"dev","canonicalCwd":"\(home)/code/old-site","state":"exited","services":[{"name":"web","command":"bun dev","cwd":"\(home)/code/old-site","state":"exited","exitCode":0}]},
           {"runId":"e","projectName":"nisi","presetName":"tests","canonicalCwd":"\(home)/code/nisi","state":"exited","services":[{"name":"test","command":"bun test --watch","cwd":"\(home)/code/nisi","state":"exited","exitCode":0}]}
         ]
         """
         return try! JSONDecoder().decode([RunRecord].self, from: Data(json.utf8))
+    }()
+
+    static let twoServices: RunRecord = {
+        let cwd = "\(NSHomeDirectory())/.claude/worktrees/atlas/feat-auth"
+        let json = """
+        {"runId":"two-services","projectName":"atlas","presetName":"api","canonicalCwd":"\(cwd)","state":"running","services":[
+          {"name":"api","command":"bun run src/server.ts --watch","cwd":"\(cwd)","state":"running","memoryBytes":356515840,"published":{"value":{"url":"http://localhost:52454/"}}},
+          {"name":"web","command":"bun run web","cwd":"\(cwd)","state":"running","memoryBytes":224395264,"published":{"value":{"url":"http://localhost:52460/"}}}
+        ]}
+        """
+        return try! JSONDecoder().decode(RunRecord.self, from: Data(json.utf8))
     }()
 
     static let claudeSessions: [String: [ClaudeSession]] = {
@@ -48,7 +59,7 @@ enum Fixtures {
                 command: "cd $(pm cd @repo/engine --path) && bun run dev --sqlite --local hatchet --config ./config/development-\(index).json",
                 cwd: cwd,
                 state: index.isMultiple(of: 3) ? .starting : .running,
-                exitCode: nil, signal: nil, published: nil
+                exitCode: nil, signal: nil, published: nil, memoryBytes: Double(86 + index * 30) * 1_048_576
             )
             return RunRecord(
                 runId: "active-\(index)", projectName: "mockingbird", presetName: "default",

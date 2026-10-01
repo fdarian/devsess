@@ -5,6 +5,8 @@ enum ServiceRowGeometry {
     static let horizontalInset: CGFloat = 9
     static let indicatorSize: CGFloat = 7
     static let spacing: CGFloat = 8
+    static let columnWidth: CGFloat = 48
+    static let memoryTrailingGap: CGFloat = 4
     static let stopZoneWidth = horizontalInset + indicatorSize + spacing
 
     static func shouldArm(at point: CGPoint, stopping: Bool, snapshotMode: Bool) -> Bool {

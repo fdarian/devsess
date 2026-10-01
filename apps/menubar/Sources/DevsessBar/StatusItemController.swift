@@ -156,6 +156,7 @@ import SwiftUI
             _ = store.statusError
             _ = store.actionErrors
             _ = store.stopping
+            _ = store.stoppingServices
             _ = store.claudeByCwd
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in

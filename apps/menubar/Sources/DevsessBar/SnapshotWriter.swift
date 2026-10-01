@@ -16,10 +16,7 @@ enum SnapshotWriter {
         let down = RunStore()
         down.downForPreview()
         let twoServices = RunStore()
-        guard let twoServiceRun = Fixtures.busy.first(where: { $0.services.count == 2 }) else {
-            throw DaemonError.invalidResponse
-        }
-        twoServices.runsForPreview([twoServiceRun])
+        twoServices.runsForPreview([Fixtures.twoServices])
         twoServices.claudeSessionsForPreview(Fixtures.claudeSessions)
 
         for appearance: NSAppearance.Name in [.aqua, .darkAqua] {
@@ -33,6 +30,12 @@ enum SnapshotWriter {
                           as: "panel-hovered-\(suffix).png", in: directory)
             try savePanel(store: twoServices, appearance: appearance, previewState: .stopArmed,
                           as: "panel-stop-armed-\(suffix).png", in: directory)
+            try savePanel(store: twoServices, appearance: appearance, previewState: .headerHovered,
+                          as: "panel-header-hovered-\(suffix).png", in: directory)
+            try savePanel(store: twoServices, appearance: appearance, previewState: .headerArmed,
+                          as: "panel-header-armed-\(suffix).png", in: directory)
+            try savePanel(store: twoServices, appearance: appearance, previewState: .stopArmed,
+                          as: "panel-service-armed-\(suffix).png", in: directory)
         }
 
         let variants: [(String, Int, Bool)] = [

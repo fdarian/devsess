@@ -9,6 +9,7 @@ import SwiftUI
     private(set) var statusError: String?
     private(set) var actionErrors: [String: String] = [:]
     private(set) var stopping: Set<String> = []
+    private(set) var stoppingServices: [String: Set<String>] = [:]
     private(set) var claudeByCwd: [String: [ClaudeSession]] = [:]
     var panelOpen = false
     private let client: DaemonClient
@@ -70,6 +71,27 @@ import SwiftUI
         Task {
             do {
                 try await client.restart(service.name, in: run.id)
+                actionErrors.removeValue(forKey: run.id)
+                await refresh()
+            } catch {
+                actionErrors[run.id] = error.localizedDescription
+            }
+        }
+    }
+
+    func isStopping(_ service: ServiceRecord, in run: RunRecord) -> Bool {
+        stopping.contains(run.id) || stoppingServices[run.id]?.contains(service.name) == true || service.state == .stopping
+    }
+
+    @discardableResult func stop(_ service: ServiceRecord, in run: RunRecord) -> Task<Void, Never> {
+        stoppingServices[run.id, default: []].insert(service.name)
+        return Task {
+            defer {
+                stoppingServices[run.id]?.remove(service.name)
+                if stoppingServices[run.id]?.isEmpty == true { stoppingServices.removeValue(forKey: run.id) }
+            }
+            do {
+                try await client.stopServices(runId: run.id, serviceNames: [service.name])
                 actionErrors.removeValue(forKey: run.id)
                 await refresh()
             } catch {

@@ -48,13 +48,18 @@ private struct Response<Result: Decodable>: Decodable {
 
 private struct EmptyParams: Encodable {}
 private struct StopParams: Encodable { let runId: String }
-private struct RestartParams: Encodable { let runId: String; let serviceNames: [String] }
+private struct ServicesParams: Encodable { let runId: String; let serviceNames: [String] }
 private struct EmptyResult: Decodable {}
 
 final class DaemonClient: Sendable {
     let socketPath: String
+    private let exchangeHandler: (@Sendable (Data) async throws -> Data)?
 
-    init(socketPath: String = DaemonLocation.socketPath()) { self.socketPath = socketPath }
+    init(socketPath: String = DaemonLocation.socketPath(),
+         exchangeHandler: (@Sendable (Data) async throws -> Data)? = nil) {
+        self.socketPath = socketPath
+        self.exchangeHandler = exchangeHandler
+    }
 
     func listRuns() async throws -> [RunRecord] {
         try await call("listRuns", params: EmptyParams(), result: [RunRecord].self)
@@ -65,7 +70,11 @@ final class DaemonClient: Sendable {
     }
 
     func restart(_ service: String, in runId: String) async throws {
-        _ = try await call("restartServices", params: RestartParams(runId: runId, serviceNames: [service]), result: EmptyResult.self)
+        _ = try await call("restartServices", params: ServicesParams(runId: runId, serviceNames: [service]), result: EmptyResult.self)
+    }
+
+    func stopServices(runId: String, serviceNames: [String]) async throws {
+        _ = try await call("stopServices", params: ServicesParams(runId: runId, serviceNames: serviceNames), result: EmptyResult.self)
     }
 
     private func call<Params: Encodable, Result: Decodable>(
@@ -74,7 +83,9 @@ final class DaemonClient: Sendable {
         let id = UUID().uuidString.lowercased()
         var payload = try JSONEncoder().encode(Request(requestId: id, method: method, params: params))
         payload.append(0x0A)
-        let data = try await exchange(payload)
+        let data: Data
+        if let exchangeHandler { data = try await exchangeHandler(payload) }
+        else { data = try await exchange(payload) }
         let response = try JSONDecoder().decode(Response<Result>.self, from: data)
         guard response.version == 1, response.requestId == id else { throw DaemonError.invalidResponse }
         guard response.ok else {
