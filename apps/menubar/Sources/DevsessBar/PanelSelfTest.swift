@@ -47,6 +47,17 @@ enum PanelSelfTest {
               abs(controller.host.frame.width - content.bounds.width) < 1 else {
             throw PanelTestFailure("\(name): hosting view does not fill the material content view")
         }
+        guard let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else {
+            throw PanelTestFailure("\(name): could not render the panel")
+        }
+        content.cacheDisplay(in: content.bounds, to: bitmap)
+        for x in [0, bitmap.pixelsWide - 1] {
+            for y in [0, bitmap.pixelsHigh - 1] {
+                guard let alpha = bitmap.colorAt(x: x, y: y)?.alphaComponent, alpha == 0 else {
+                    throw PanelTestFailure("\(name): corner (\(x), \(y)) is not transparent")
+                }
+            }
+        }
         print("\(name): \(NSStringFromRect(frame)) fitting=\(expectedHeight)")
     }
 }
