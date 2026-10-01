@@ -16,9 +16,9 @@ struct ProtocolTests {
         #expect(Fixtures.busy.filter(\.isActive).map(\.glyphState) == [.ready, .starting, .failed])
         #expect(Fixtures.busy[0].canonicalCwd == NSHomeDirectory() + "/code/nisi")
         #expect(Fixtures.busy[2].canonicalCwd == NSHomeDirectory() + "/.claude/worktrees/atlas/feat-auth")
-        #expect(Fixtures.stress.count == 41)
-        #expect(RunGroups(Fixtures.stress).active.count == 1)
-        #expect(RunGroups(Fixtures.stress).finished.count == 40)
+        #expect(Fixtures.stress.count == 20)
+        #expect(RunGroups(Fixtures.stress).active.count == 20)
+        #expect(RunGroups(Fixtures.stress).finished.isEmpty)
         #expect(Fixtures.stress[1].services[0].isFailure == false)
     }
 
@@ -37,7 +37,8 @@ struct ProtocolTests {
     }
 
     @Test func stoppedServicesAreNotFailures() {
-        let stopped = Fixtures.stress[1].services[0]
+        let stopped = ServiceRecord(name: "web", command: "bun dev", cwd: "/tmp", state: .exited,
+                                    exitCode: 0, signal: 15, published: nil)
         #expect(stopped.state == .exited)
         #expect(stopped.signal == 15)
         #expect(!stopped.isFailure)
@@ -52,5 +53,14 @@ struct ProtocolTests {
             exitCode: 0, signal: nil, published: nil
         )
         #expect(!cleanButMarkedFailed.isFailure)
+    }
+
+    @Test func menuBarCountThreshold() {
+        #expect(MenuBarIcon.count(for: 0, daemonDown: false) == nil)
+        #expect(MenuBarIcon.count(for: 1, daemonDown: false) == nil)
+        #expect(MenuBarIcon.count(for: 2, daemonDown: false) == nil)
+        #expect(MenuBarIcon.count(for: 3, daemonDown: false) == 3)
+        #expect(MenuBarIcon.count(for: 12, daemonDown: false) == 12)
+        #expect(MenuBarIcon.count(for: 12, daemonDown: true) == nil)
     }
 }

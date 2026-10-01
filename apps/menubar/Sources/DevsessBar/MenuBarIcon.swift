@@ -1,55 +1,36 @@
 import AppKit
 import SwiftUI
 
-struct JackGlyph: View {
-    let states: [JackState]
-    let daemonDown: Bool
+struct TerminalGlyph: View {
+    let idle: Bool
 
     var body: some View {
-        Canvas { context, size in
-            var visible = states.count >= 5 ? Array(states.prefix(3)) : states
-            if states.count >= 5 && states.contains(.failed) && !visible.contains(.failed) {
-                visible[2] = .failed
-            }
-            let count = visible.isEmpty ? 1 : visible.count
-            let radius: CGFloat = 4.1
-            for index in 0..<count {
-                let x = CGFloat(index) * 14 + 6
-                let center = CGPoint(x: x, y: size.height / 2)
-                let circle = Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
-                let state = visible.isEmpty ? JackState.starting : visible[index]
-                let tint = state == .failed ? Color(nsColor: .systemRed) : Color.primary
-                if states.isEmpty {
-                    context.stroke(circle, with: .color(tint.opacity(daemonDown ? 0.5 : 1)), style: StrokeStyle(lineWidth: 1.5, dash: [2, 2]))
-                } else if state == .ready {
-                    context.fill(circle, with: .color(tint))
-                } else {
-                    context.stroke(circle, with: .color(tint), lineWidth: 1.6)
-                    if state == .failed {
-                        var slash = Path()
-                        slash.move(to: CGPoint(x: x - 5.3, y: center.y + 5.3))
-                        slash.addLine(to: CGPoint(x: x + 5.3, y: center.y - 5.3))
-                        context.stroke(slash, with: .color(tint), lineWidth: 1.6)
-                    }
-                }
-            }
-            if states.count >= 5 {
-                let text = Text("\(states.count)").font(.system(size: 10, weight: .semibold, design: .rounded))
-                context.draw(text, at: CGPoint(x: size.width - 7, y: size.height / 2))
-            }
+        Canvas { context, _ in
+            var path = Path(roundedRect: CGRect(x: 1.5, y: 2.5, width: 12, height: 10), cornerRadius: 2.5)
+            path.move(to: CGPoint(x: 4.6, y: 6))
+            path.addLine(to: CGPoint(x: 6.6, y: 7.5))
+            path.addLine(to: CGPoint(x: 4.6, y: 9))
+            path.move(to: CGPoint(x: 8.4, y: 9.2))
+            path.addLine(to: CGPoint(x: 10.6, y: 9.2))
+            context.stroke(path, with: .color(Color.primary.opacity(idle ? 0.35 : 1)),
+                           style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
         }
-        .frame(width: states.count >= 5 ? 56 : CGFloat(max(1, min(states.count, 4))) * 14 - 2, height: 18)
-        .accessibilityLabel(states.isEmpty ? "No active devsess runs" : "\(states.count) active devsess runs")
+        .frame(width: 15, height: 15)
+        .accessibilityLabel(idle ? "No active devsess runs" : "Active devsess runs")
     }
 }
 
 enum MenuBarIcon {
-    @MainActor static func image(states: [JackState], daemonDown: Bool) -> NSImage {
-        let view = JackGlyph(states: states, daemonDown: daemonDown)
-        let renderer = ImageRenderer(content: view)
+    static func count(for activeRuns: Int, daemonDown: Bool) -> Int? {
+        if daemonDown || activeRuns < 3 { return nil }
+        return activeRuns
+    }
+
+    @MainActor static func image(idle: Bool) -> NSImage {
+        let renderer = ImageRenderer(content: TerminalGlyph(idle: idle))
         renderer.scale = 2
         guard let image = renderer.nsImage else { preconditionFailure("Could not render menu bar icon") }
-        image.isTemplate = !states.contains(.failed)
+        image.isTemplate = true
         return image
     }
 }

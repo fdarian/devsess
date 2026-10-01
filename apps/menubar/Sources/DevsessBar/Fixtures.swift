@@ -31,23 +31,19 @@ enum Fixtures {
     }()
 
     static let stress: [RunRecord] = {
-        let finished = (0..<40).map { index in
+        (0..<20).map { index in
             let cwd = "\(NSHomeDirectory())/.worktrees/mockingbird/refactor-engine-and-dashboard-\(index)-long-checkout"
             let service = ServiceRecord(
                 name: index.isMultiple(of: 2) ? "engine" : "web",
                 command: "cd $(pm cd @repo/engine --path) && bun run dev --sqlite --local hatchet --config ./config/development-\(index).json",
                 cwd: cwd,
-                state: index.isMultiple(of: 3) && index > 0 ? .failed : .exited,
-                exitCode: index % 11 == 10 ? 1 : 0,
-                signal: index.isMultiple(of: 2) ? 15 : nil,
-                published: nil
+                state: index.isMultiple(of: 3) ? .starting : .running,
+                exitCode: nil, signal: nil, published: nil
             )
             return RunRecord(
-                runId: "finished-\(index)", projectName: "mockingbird", presetName: "default",
-                canonicalCwd: cwd, state: .exited, services: [service]
+                runId: "active-\(index)", projectName: "mockingbird", presetName: "default",
+                canonicalCwd: cwd, state: .running, services: [service]
             )
         }
-        guard let active = busy.first else { preconditionFailure("Missing active fixture") }
-        return [active] + finished
     }()
 }
