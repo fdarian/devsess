@@ -4,6 +4,7 @@ import SwiftUI
 struct PanelView: View {
     @Bindable var store: RunStore
     var snapshotMode = false
+    var previewState: RowPreviewState = .normal
     var maximumHeight: CGFloat = 530
 
     private var sectionsHeight: CGFloat {
@@ -30,7 +31,8 @@ struct PanelView: View {
                         RunRow(run: run, stopping: store.stopping.contains(run.id),
                             error: store.actionErrors[run.id],
                             claudeSessions: store.claudeByCwd[run.canonicalCwd] ?? [],
-                            snapshotMode: snapshotMode, stop: { store.stop(run) },
+                            snapshotMode: snapshotMode, previewState: previewState,
+                            stop: { store.stop(run) },
                             restart: { store.restart($0, in: run) })
                     }
                 }
