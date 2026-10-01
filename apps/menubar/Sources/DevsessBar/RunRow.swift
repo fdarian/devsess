@@ -39,19 +39,20 @@ struct RunRow: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                HStack(spacing: RunHeaderGeometry.badgeGap) {
+                HStack(spacing: RunHeaderGeometry.badgeGap - RunHeaderGeometry.badgeGlyphInset) {
                     Button(action: stop) {
                         RoundedRectangle(cornerRadius: 1)
                             .fill(Color(nsColor: runArmed ? .systemRed : .secondaryLabelColor))
                             .frame(width: RunHeaderGeometry.stopSquareSize, height: RunHeaderGeometry.stopSquareSize)
                             .allowsHitTesting(false)
-                            .frame(width: RunHeaderGeometry.stopZoneWidth, height: RunHeaderGeometry.height)
-                            .background {
+                            .background(alignment: .trailing) {
                                 RoundedRectangle(cornerRadius: 5)
                                     .fill(runArmed ? Color(nsColor: .systemRed).opacity(0.15) : .clear)
                                     .frame(width: RunHeaderGeometry.tintedBoxSize, height: RunHeaderGeometry.tintedBoxSize)
                                     .allowsHitTesting(false)
                             }
+                            .frame(width: RunHeaderGeometry.stopZoneWidth, height: RunHeaderGeometry.height,
+                                alignment: .trailing)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -65,7 +66,7 @@ struct RunRow: View {
                         badge.frame(width: badge.restingSize.width, height: badge.restingSize.height)
                     }
                 }
-                .padding(.trailing, claudeSessions.isEmpty ? RunHeaderGeometry.trailingInset : RunHeaderGeometry.badgeTrailingInset)
+                .padding(.trailing, RunHeaderGeometry.trailingInset)
                 .padding(.leading, ServiceRowGeometry.spacing)
             }
             .frame(height: RunHeaderGeometry.height)
