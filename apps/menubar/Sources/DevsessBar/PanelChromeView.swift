@@ -26,15 +26,13 @@ enum PanelChromeGeometry {
 }
 
 @MainActor final class PanelChromeView: NSView {
-    let material: NSView
     let shadowView = PanelShadowView()
 
-    init(material: NSView) {
-        self.material = material
-        super.init(frame: PanelChromeGeometry.windowFrame(for: material.frame))
+    init(panelSize: NSSize) {
+        let frame = PanelChromeGeometry.windowFrame(for: NSRect(origin: .zero, size: panelSize))
+        super.init(frame: NSRect(origin: .zero, size: frame.size))
         wantsLayer = true
         addSubview(shadowView)
-        addSubview(material)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -45,14 +43,10 @@ enum PanelChromeGeometry {
         PanelChromeGeometry.visiblePath(in: bounds).contains(point)
     }
 
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard containsPanelPoint(convert(point, from: superview)) else { return nil }
-        return super.hitTest(point)
-    }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override func layout() {
         super.layout()
-        material.frame = panelRect
         shadowView.frame = bounds
         shadowView.updateShadow(panelRect: panelRect)
     }

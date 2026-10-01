@@ -6,6 +6,8 @@ struct PanelView: View {
     var snapshotMode = false
     var previewState: RowPreviewState = .normal
     var maximumHeight: CGFloat = 530
+    var stopRun: ((RunRecord) -> Void)?
+    var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
 
     private var sectionsHeight: CGFloat {
         let runs = store.groups.active
@@ -32,8 +34,10 @@ struct PanelView: View {
                             error: store.actionErrors[run.id],
                             claudeSessions: store.claudeByCwd[run.canonicalCwd] ?? [],
                             snapshotMode: snapshotMode, previewState: previewState,
-                            stop: { store.stop(run) },
-                            restart: { store.restart($0, in: run) })
+                            stop: {
+                                if let stopRun { stopRun(run) } else { store.stop(run) }
+                            },
+                            restart: { store.restart($0, in: run) }, openURL: openURL)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
