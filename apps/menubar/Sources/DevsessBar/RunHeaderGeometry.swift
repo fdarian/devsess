@@ -4,7 +4,6 @@ enum RunHeaderGeometry {
     static let height: CGFloat = 20
     static let stopZoneWidth: CGFloat = 24
     static let stopSquareSize: CGFloat = 9
-    static let tintedBoxSize: CGFloat = 20
     static let trailingInset: CGFloat = 9
     static let badgeGap: CGFloat = 8
     static let badgeGlyphInset: CGFloat = 6
@@ -27,6 +26,11 @@ enum RunHeaderGeometry {
         let zone = stopFrame(width: width, badgeSize: badgeSize)
         return CGRect(x: zone.maxX - stopSquareSize, y: (height - stopSquareSize) / 2,
             width: stopSquareSize, height: stopSquareSize)
+    }
+
+    static func stopTintFrame(width: CGFloat, badgeSize: CGSize?) -> CGRect {
+        let square = stopSquareFrame(width: width, badgeSize: badgeSize)
+        return StopSquareTintGeometry.frame(centeredOn: square)
     }
 
     static func shouldArm(at point: CGPoint, width: CGFloat, badgeSize: CGSize? = nil,

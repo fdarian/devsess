@@ -9,6 +9,14 @@ enum ServiceRowGeometry {
     static let memoryTrailingGap: CGFloat = 4
     static let stopZoneWidth = horizontalInset + indicatorSize + spacing
 
+    static var indicatorFrame: CGRect {
+        CGRect(x: horizontalInset, y: (height - indicatorSize) / 2, width: indicatorSize, height: indicatorSize)
+    }
+
+    static var stopTintFrame: CGRect {
+        StopSquareTintGeometry.frame(centeredOn: indicatorFrame)
+    }
+
     static func shouldArm(at point: CGPoint, stopping: Bool, snapshotMode: Bool) -> Bool {
         !stopping && !snapshotMode
             && CGRect(x: 0, y: 0, width: stopZoneWidth, height: height).contains(point)

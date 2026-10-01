@@ -44,4 +44,36 @@ struct RunHeaderHoverTests {
         #expect(!RunHeaderGeometry.shouldArm(at: CGPoint(x: 275, y: 10), width: 290,
             stopping: false, snapshotMode: true))
     }
+
+    @Test func tintIsCenteredOnSquareNotOnLeftExtendingHitZone() {
+        let sizes: [CGSize?] = [nil, CGSize(width: 33, height: 18), CGSize(width: 47, height: 18)]
+        for size in sizes {
+            let square = RunHeaderGeometry.stopSquareFrame(width: 290, badgeSize: size)
+            let tint = RunHeaderGeometry.stopTintFrame(width: 290, badgeSize: size)
+            let hit = RunHeaderGeometry.stopFrame(width: 290, badgeSize: size)
+            #expect(tint.size == CGSize(width: 20, height: 20))
+            #expect(tint.midX == square.midX)
+            #expect(tint.midY == square.midY)
+            #expect(tint.midX != hit.midX)
+            #expect(hit.maxX == square.maxX)
+            #expect(tint.maxX - square.maxX == 5.5)
+            if let size {
+                let glyphLeft = RunHeaderGeometry.badgeFrame(width: 290, badgeSize: size).minX
+                    + RunHeaderGeometry.badgeGlyphInset
+                #expect(glyphLeft - tint.maxX == 2.5)
+            }
+        }
+    }
+
+    @Test func serviceTintUsesSameBoxCenteredWithoutChangingNameInset() {
+        let square = ServiceRowGeometry.indicatorFrame
+        let tint = ServiceRowGeometry.stopTintFrame
+        #expect(tint.size == CGSize(width: 20, height: 20))
+        #expect(StopSquareTintGeometry.cornerRadius == 5)
+        #expect(tint.midX == square.midX)
+        #expect(tint.midY == square.midY)
+        #expect(tint == CGRect(x: 2.5, y: 2, width: 20, height: 20))
+        #expect(ServiceRowGeometry.stopZoneWidth == 24)
+        #expect(tint.maxX < ServiceRowGeometry.stopZoneWidth)
+    }
 }

@@ -82,6 +82,7 @@ struct ServiceRow: View {
             }
         }
         .frame(width: ServiceRowGeometry.indicatorSize, height: ServiceRowGeometry.indicatorSize)
+        .stopSquareTint(armed: armed)
         .allowsHitTesting(false)
     }
 

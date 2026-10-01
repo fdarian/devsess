@@ -45,12 +45,7 @@ struct RunRow: View {
                             .fill(Color(nsColor: runArmed ? .systemRed : .secondaryLabelColor))
                             .frame(width: RunHeaderGeometry.stopSquareSize, height: RunHeaderGeometry.stopSquareSize)
                             .allowsHitTesting(false)
-                            .background(alignment: .trailing) {
-                                RoundedRectangle(cornerRadius: 5)
-                                    .fill(runArmed ? Color(nsColor: .systemRed).opacity(0.15) : .clear)
-                                    .frame(width: RunHeaderGeometry.tintedBoxSize, height: RunHeaderGeometry.tintedBoxSize)
-                                    .allowsHitTesting(false)
-                            }
+                            .stopSquareTint(armed: runArmed)
                             .frame(width: RunHeaderGeometry.stopZoneWidth, height: RunHeaderGeometry.height,
                                 alignment: .trailing)
                             .contentShape(Rectangle())
