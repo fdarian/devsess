@@ -160,4 +160,4 @@ const client = yield* openLitePglite({
 })
 ```
 
-`dataDir: 'memory://'` never counts as "already on disk," so every call rebuilds from the dump — a fresh database per test run, without replaying your full migration history to get it. Full signature and the rest of the exports are in the [`devsess/pglite` reference](/reference/pglite).
+`dataDir: 'memory://'` never counts as "already on disk," so every call hydrates from the dump — a fresh database per test run, without replaying your full migration history to get it. Full signature and the rest of the exports are in the [`devsess/pglite` reference](/reference/pglite).
