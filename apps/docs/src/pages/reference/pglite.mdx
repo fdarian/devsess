@@ -73,6 +73,8 @@ Every `devsess/pglite` export fails with this tagged error (`_tag: 'PgliteError'
 
 `prepareSessionPglite` and `openLitePglite` cover most use cases. These are their building blocks.
 
+Dumps are published atomically, so parallel test workers can safely share a dump path without serializing first builds.
+
 | Export | Signature | Description |
 |---|---|---|
 | `ensurePgliteDump` | `(opts: PgliteMigrations & { dumpPath: string }) => Effect<void, PgliteError \| PlatformError, FileSystem \| Path>` | Builds the dump via `buildPgliteDump`, only if `dumpPath` doesn't exist yet |

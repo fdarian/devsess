@@ -108,7 +108,19 @@ export const dumpPgliteToFile = (client: PGlite, dest: string) =>
 		});
 
 		const data = yield* toUint8Array(dump);
-		yield* fs.writeFile(dest, data);
+		const tempName = yield* Effect.sync(
+			() => `.${path.basename(dest)}.${crypto.randomUUID()}.tmp`,
+		);
+		const tempPath = path.join(destDir, tempName);
+		// A sibling rename keeps concurrent readers from seeing a partial dump.
+		yield* Effect.gen(function* () {
+			yield* fs.writeFile(tempPath, data);
+			yield* fs.rename(tempPath, dest);
+		}).pipe(
+			Effect.onError(() =>
+				fs.remove(tempPath, { force: true }).pipe(Effect.orDie),
+			),
+		);
 	});
 
 export const migratePglite = (client: PGlite, migrations: PgliteMigrations) =>

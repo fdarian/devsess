@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 import { PGlite } from '@electric-sql/pglite';
@@ -86,6 +86,33 @@ describe('createPgliteFromDump', () => {
 });
 
 describe('openLitePglite', () => {
+	it.effect('applies pending migrations from a stale existing dump', () =>
+		runTest(
+			Effect.gen(function* () {
+				const rootDir = yield* makeTempDir;
+				const migrationsFolder = join(rootDir, 'migrations');
+				yield* writeMigrationsFixture(migrationsFolder, { count: 1 });
+				const dumpPath = join(rootDir, 'pglite.dump');
+				yield* buildPgliteDump({ migrationsFolder, dumpPath });
+				yield* writeMigrationsFixture(migrationsFolder, { count: 2 });
+
+				const client = yield* openLitePglite({
+					dataDir: IN_MEMORY_DATA_DIR,
+					dumpPath,
+					migrationsFolder,
+				});
+				const result = yield* Effect.promise(() =>
+					client.query<{ exists: boolean }>(
+						`SELECT to_regclass('"0001_migration"') IS NOT NULL AS "exists"`,
+					),
+				);
+				expect(result.rows).toEqual([{ exists: true }]);
+				expect(yield* getDbMigrationCount(client)).toBe(2);
+				yield* closeClient(client);
+			}),
+		),
+	);
+
 	it.effect(
 		'builds the dump, migrates, and opens a working client at memory://',
 		() =>
@@ -177,7 +204,57 @@ describe('openLitePglite', () => {
 	);
 });
 
+describe('dumpPgliteToFile', () => {
+	it.effect('removes its temporary file when publication fails', () =>
+		runTest(
+			Effect.gen(function* () {
+				const rootDir = yield* makeTempDir;
+				const dest = join(rootDir, 'destination');
+				yield* Effect.promise(() => mkdir(dest));
+				const client = new PGlite(IN_MEMORY_DATA_DIR);
+				const error = yield* dumpPgliteToFile(client, dest).pipe(Effect.flip);
+				yield* closeClient(client);
+				expect(error).toBeDefined();
+				expect(yield* Effect.promise(() => readdir(rootDir))).toEqual([
+					'destination',
+				]);
+			}),
+		),
+	);
+});
+
 describe('ensurePgliteDump', () => {
+	it.effect(
+		'publishes complete dumps from concurrent cold starts without temp files',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const rootDir = yield* makeTempDir;
+					const migrationsFolder = join(rootDir, 'migrations');
+					yield* writeMigrationsFixture(migrationsFolder, { count: 2 });
+					const dumpDir = join(rootDir, 'dumps');
+					const dumpPath = join(dumpDir, 'pglite.dump');
+					yield* Effect.all(
+						Array.from({ length: 3 }, () =>
+							Effect.gen(function* () {
+								yield* ensurePgliteDump({ migrationsFolder, dumpPath });
+								const client = yield* createPgliteFromDump({
+									dataDir: IN_MEMORY_DATA_DIR,
+									dumpPath,
+								});
+								expect(yield* getDbMigrationCount(client)).toBe(2);
+								yield* closeClient(client);
+							}),
+						),
+						{ concurrency: 'unbounded' },
+					);
+					expect(yield* Effect.promise(() => readdir(dumpDir))).toEqual([
+						'pglite.dump',
+					]);
+				}),
+			),
+	);
+
 	it.effect('builds the dump when absent and no-ops when already present', () =>
 		runTest(
 			Effect.gen(function* () {
