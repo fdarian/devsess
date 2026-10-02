@@ -113,19 +113,13 @@ export const dumpPgliteToFile = (client: PGlite, dest: string) =>
 		);
 		const tempPath = path.join(destDir, tempName);
 		// A sibling rename keeps concurrent readers from seeing a partial dump.
-		yield* Effect.acquireUseRelease(
-			Effect.scoped(
-				Effect.gen(function* () {
-					yield* fs.open(tempPath, { flag: 'wx' });
-					return tempPath;
-				}),
+		yield* Effect.gen(function* () {
+			yield* fs.writeFile(tempPath, data);
+			yield* fs.rename(tempPath, dest);
+		}).pipe(
+			Effect.onError(() =>
+				fs.remove(tempPath, { force: true }).pipe(Effect.orDie),
 			),
-			(tempPath) =>
-				Effect.gen(function* () {
-					yield* fs.writeFile(tempPath, data);
-					yield* fs.rename(tempPath, dest);
-				}),
-			(tempPath) => fs.remove(tempPath, { force: true }).pipe(Effect.orDie),
 		);
 	});
 
