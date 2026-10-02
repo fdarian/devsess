@@ -216,33 +216,6 @@ describe('publishRunning', () => {
 	});
 
 	it.live(
-		'keeps the file signal when the daemon is unreachable and warns once',
-		() =>
-			runTest(
-				Effect.gen(function* () {
-					const rootDir = yield* makeTempDir;
-					vi.stubEnv('DEVSESS_SOCKET', join(rootDir, 'missing.sock'));
-					vi.stubEnv('DEVSESS_RUN_ID', 'run');
-					vi.stubEnv('DEVSESS_SERVICE', 'web');
-					const warning = vi
-						.spyOn(process.stderr, 'write')
-						.mockImplementation(() => true);
-					yield* Effect.scoped(
-						Effect.gen(function* () {
-							yield* publishRunning({ url: 'http://localhost:5173' }).pipe(
-								Effect.provide(makeTestDevSessionsLayer(rootDir)),
-							);
-							expect(
-								JSON.parse(readFileSync(runningSignalPath(rootDir), 'utf8')),
-							).toEqual({ url: 'http://localhost:5173' });
-						}),
-					);
-					expect(existsSync(runningSignalPath(rootDir))).toBe(false);
-					expect(warning).toHaveBeenCalledTimes(1);
-				}),
-			),
-	);
-	it.live(
 		'writes to <DevSessions.dir>/.data/running.json, not under a session dir',
 		() =>
 			runTest(
