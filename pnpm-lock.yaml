@@ -209,9 +209,21 @@ importers:
 
   packages/devsess:
     dependencies:
+      '@effect/platform-node':
+        specifier: 4.0.0-beta.101
+        version: 4.0.0-beta.101(effect@4.0.0-beta.101)(ioredis@5.11.1)
+      '@effect/platform-node-shared':
+        specifier: 4.0.0-beta.101
+        version: 4.0.0-beta.101(effect@4.0.0-beta.101)
+      effect:
+        specifier: 4.0.0-beta.101
+        version: 4.0.0-beta.101
       get-port:
         specifier: ^7.2.0
         version: 7.2.0
+      node-pty:
+        specifier: 1.0.0
+        version: 1.0.0
       random-word-slugs:
         specifier: ^0.1.7
         version: 0.1.7
@@ -219,9 +231,6 @@ importers:
       '@devsess/config':
         specifier: workspace:*
         version: link:../config
-      '@effect/platform-node':
-        specifier: ^4.0.0-beta.101
-        version: 4.0.0-beta.101(effect@4.0.0-beta.101)(ioredis@5.11.1)
       '@effect/vitest':
         specifier: ^4.0.0-beta.101
         version: 4.0.0-beta.101(effect@4.0.0-beta.101)(vitest@4.1.10(@types/node@22.19.21)(vite@8.0.16(@types/node@22.19.21)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0)))
@@ -234,12 +243,12 @@ importers:
       drizzle-orm:
         specifier: 1.0.0-rc.4
         version: 1.0.0-rc.4(@electric-sql/pglite@0.5.3)(effect@4.0.0-beta.101)(zod@4.4.3)
-      effect:
-        specifier: ^4.0.0-beta.101
-        version: 4.0.0-beta.101
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.15)(tsx@4.22.4)(typescript@5.9.3)(yaml@2.9.0)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
       vitest:
         specifier: ^4.1.10
         version: 4.1.10(@types/node@22.19.21)(vite@8.0.16(@types/node@22.19.21)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))
@@ -3048,6 +3057,9 @@ packages:
   mz@2.7.0:
     resolution: {integrity: sha512-z81GNO7nnYMEhrGh9LeymoE4+Yr0Wn5McHIZMK5cfQCl+NDX08sCZgUc9/6MHni9IWuFLm1Z3HTCXu2z9fN62Q==}
 
+  nan@2.29.0:
+    resolution: {integrity: sha512-GlGk3HIvitbvs+LT3g6XUP1kpirKNvmDFwF/bmo6XNWSb/eYEs/O4bfgIEIXCZ+lIOTS5xNwDvSGMw6FJdAhtA==}
+
   nanoid@3.3.13:
     resolution: {integrity: sha512-sPdqC6ByMVVGvF1ynvvMo0/o+oD1VX7DaHhijt1bFgjvBkHBib4t49GoNDhf2NDta4oeUNlaGbSt5K7qjZ955Q==}
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
@@ -3069,6 +3081,9 @@ packages:
   node-gyp-build-optional-packages@5.2.2:
     resolution: {integrity: sha512-s+w+rBWnpTMwSFbaE0UXsRlg7hU4FjekKU4eyAih5T8nJuNZT1nNsskXpxmeqSK9UzkBl6UgRlnKc8hz8IEqOw==}
     hasBin: true
+
+  node-pty@1.0.0:
+    resolution: {integrity: sha512-wtBMWWS7dFZm/VgqElrTvtfMq4GzJ6+edFI0Y0zyzygUSZMgZdraDUMUhCIvkjhJjme15qWmbyJbtAx4ot4uZA==}
 
   node-releases@2.0.48:
     resolution: {integrity: sha512-1uz8041X6LoI6ZSdZacM9lVY28vuzDlSKitnpbSNK0RfKoIJkX29NBPVEFXhnuSuEOA9Ww0xnPJ+ILWbGAv8DA==}
@@ -6982,6 +6997,8 @@ snapshots:
       object-assign: 4.1.1
       thenify-all: 1.6.0
 
+  nan@2.29.0: {}
+
   nanoid@3.3.13: {}
 
   negotiator@1.0.0: {}
@@ -6999,6 +7016,10 @@ snapshots:
     dependencies:
       detect-libc: 2.1.2
     optional: true
+
+  node-pty@1.0.0:
+    dependencies:
+      nan: 2.29.0
 
   node-releases@2.0.48: {}
 
