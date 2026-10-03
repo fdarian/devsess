@@ -23,7 +23,7 @@ Create `scripts/dev.ts`. Build a stock `Command` and provide devsess's layers ar
 import { CurrentSession, DevSessions, getStickyPort, runManagedSubprocess } from 'devsess'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
-import { Command } from 'effect/unstable/cli'
+import { Command } from 'effect/cli'
 
 const web = Command.make('web', {}, () =>
 	Effect.gen(function* () {

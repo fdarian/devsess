@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest';
 import { Effect } from 'effect';
+import * as cli from 'effect/cli';
 import { FileSystem } from 'effect/FileSystem';
-import * as cli from 'effect/unstable/cli';
 import { generateSlug } from 'random-word-slugs';
 import { vi } from 'vitest';
 import { CurrentSession } from '../src/current-session';

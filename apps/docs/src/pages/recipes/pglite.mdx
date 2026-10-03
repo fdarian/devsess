@@ -30,7 +30,7 @@ import { CurrentSession, DevSessions, getStickyPort, runManagedSubprocess } from
 import { prepareSessionPglite } from 'devsess/pglite'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
-import { Command, Flag } from 'effect/unstable/cli'
+import { Command, Flag } from 'effect/cli'
 
 const web = Command.make(
 	'web',

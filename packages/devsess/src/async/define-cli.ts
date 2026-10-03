@@ -1,7 +1,7 @@
 import { Effect, type Scope } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
-import type { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner';
+import type { ChildProcessSpawner } from 'effect/process/ChildProcessSpawner';
 import {
 	awaitRunningSignal,
 	publishRunningSignal,

@@ -10,7 +10,7 @@ import { CurrentSession, DevSessions, getStickyPort, runManagedSubprocess } from
 import { Service } from 'devsess/services'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
-import { Command } from 'effect/unstable/cli'
+import { Command } from 'effect/cli'
 
 const postgres = Service.container({
 	name: 'postgres',

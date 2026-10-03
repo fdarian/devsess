@@ -1,5 +1,5 @@
 import { Effect } from 'effect';
-import { ChildProcess } from 'effect/unstable/process';
+import { ChildProcess } from 'effect/process';
 
 export const runManagedSubprocess = (
 	cmd: string,

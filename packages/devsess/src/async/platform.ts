@@ -1,14 +1,14 @@
 import type { Effect, Layer } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
+import type { ChildProcessSpawner } from 'effect/process/ChildProcessSpawner';
 import type * as Runtime from 'effect/Runtime';
 import type { Stdio } from 'effect/Stdio';
 import type { Terminal } from 'effect/Terminal';
-import type { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner';
 
 /**
  * Core `effect` service tags this library needs from the caller-supplied platform.
- * `effect/unstable/cli`'s `Command.runWith` pulls in `Stdio`/`Terminal` alongside the
+ * `effect/cli`'s `Command.runWith` pulls in `Stdio`/`Terminal` alongside the
  * `FileSystem`/`Path`/`ChildProcessSpawner` the library's own code depends on directly.
  *
  * Both `@effect/platform-node`'s `NodeServices.NodeServices` and `@effect/platform-bun`'s

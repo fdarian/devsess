@@ -1,7 +1,7 @@
 import { Effect, Stream } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { Path } from 'effect/Path';
-import { ChildProcess } from 'effect/unstable/process';
+import { ChildProcess } from 'effect/process';
 import { DevSessions } from '../dev-sessions';
 import { type ServiceContext, ServiceError, validName } from './core';
 import { buildRunArgs, type Healthcheck, selectOrphans } from './docker-args';

@@ -2,7 +2,7 @@
 title: Writing a dev CLI
 ---
 
-devsess doesn't wrap `effect/unstable/cli` for you — you write a stock `Command.make(...)`, and devsess gives you services and layers that plug into it: a session directory that survives restarts, a sticky port, managed subprocesses, and cross-package running signals.
+devsess doesn't wrap `effect/cli` for you — you write a stock `Command.make(...)`, and devsess gives you services and layers that plug into it: a session directory that survives restarts, a sticky port, managed subprocesses, and cross-package running signals.
 
 ## Building the command
 
@@ -11,7 +11,7 @@ devsess doesn't wrap `effect/unstable/cli` for you — you write a stock `Comman
 import { CurrentSession, DevSessions, getStickyPort, runManagedSubprocess } from 'devsess'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
-import { Command } from 'effect/unstable/cli'
+import { Command } from 'effect/cli'
 
 const web = Command.make('web', {}, () =>
 	Effect.gen(function* () {
@@ -27,10 +27,10 @@ Command.run(web, { version: '0.1.0' }).pipe(
 )
 ```
 
-- `Command.make(name, config, handler)` and `Command.run(command, { version })` are plain `effect/unstable/cli` — nothing devsess-specific. `name` shows in `--help`; `config` is your flags (see [Flags](#flags)); `version` is whatever `--version` should print.
+- `Command.make(name, config, handler)` and `Command.run(command, { version })` are plain `effect/cli` — nothing devsess-specific. `name` shows in `--help`; `config` is your flags (see [Flags](#flags)); `version` is whatever `--version` should print.
 - `DevSessions.layer` provides the session store, rooted at your project — see [Dev sessions](#dev-sessions) for how that root gets picked.
 - `CurrentSession.layer` provides the resolved session for this run — but only around the handler, not around `Command.run`. See below for why.
-- `NodeServices.layer` (or `@effect/platform-bun`'s `BunServices.layer`) supplies the `FileSystem`/`Path`/`ChildProcessSpawner`/etc. devsess and `effect/unstable/cli` need underneath. devsess depends on neither platform package itself — you supply whichever one you run scripts with.
+- `NodeServices.layer` (or `@effect/platform-bun`'s `BunServices.layer`) supplies the `FileSystem`/`Path`/`ChildProcessSpawner`/etc. devsess and `effect/cli` need underneath. devsess depends on neither platform package itself — you supply whichever one you run scripts with.
 - `Effect.scoped` is yours to add — see [One scope for the whole run](#one-scope-for-the-whole-run).
 
 Full types are in the [API reference](/reference/devsess).
@@ -64,12 +64,12 @@ A `Layer`'s build effect runs the moment it's provided, regardless of what the e
 
 ## Flags
 
-`Command.make`'s second argument takes `effect/unstable/cli`'s `Flag`s directly:
+`Command.make`'s second argument takes `effect/cli`'s `Flag`s directly:
 
 ```ts
 import { CurrentSession } from 'devsess'
 import { Effect } from 'effect'
-import { Command, Flag } from 'effect/unstable/cli'
+import { Command, Flag } from 'effect/cli'
 
 const web = Command.make(
 	'web',
