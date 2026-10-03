@@ -2,6 +2,8 @@
 title: Wiring services together
 ---
 
+For infrastructure shared by multiple dev processes, opt a handler into [shared services](/reference/services#shared-services). Its detached host lives until the last consumer leaves plus a short grace period; no daemon is required.
+
 `apps/web` needs to talk to `packages/db` — specifically, whatever port `packages/db` landed on this run, since `getStickyPort` decides that at runtime, not you. [Turborepo](https://turborepo.dev/) will happily run `packages/db`'s dev task before `apps/web`'s, but running first isn't the same as handing anything off: Turborepo schedules tasks and caches their output — it doesn't share state between them. `apps/web` still has no way to find out what port the other task's server actually bound to.
 
 `publishRunning` and `awaitRunning` are that hand-off. One script publishes whatever JSON describes its own readiness; another reads it back — waiting for it to show up, if it has to.
