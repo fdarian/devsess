@@ -9,7 +9,7 @@ import {
 	acquireHost,
 	type Lease,
 	launchHost,
-} from '../../src/services/shared-protocol';
+} from '../../src/services/shared/protocol';
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const waitFor = async (predicate: () => Promise<boolean>) => {

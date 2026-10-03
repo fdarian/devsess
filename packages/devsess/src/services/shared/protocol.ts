@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Effect } from 'effect';
 import lockfile from 'proper-lockfile';
-import { ServiceError } from './core';
+import { ServiceError } from '../core';
 
 export const sharedGraceMs = 5_000;
 
@@ -145,8 +145,8 @@ export const launchHost = async (
 	try {
 		const entry = new URL(
 			import.meta.url.endsWith('.ts')
-				? '../../dist/services/host.js'
-				: './services/host.js',
+				? '../../../dist/services/shared/entry.js'
+				: './services/shared/entry.js',
 			import.meta.url,
 		);
 		const child = spawn(

@@ -1,10 +1,11 @@
 import { Effect, Schema } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
-import { reportDaemonService } from '../dev/daemon-services';
-import { resolveSiblingDir } from '../dev/running-signal';
-import { type DevSession, DevSessions } from '../dev-sessions';
-import { ServiceError, validName } from './core';
-import { acquireHost, io, launchHost, startupLock } from './shared-protocol';
+import { reportDaemonService } from '../../dev/daemon-services';
+import { resolveSiblingDir } from '../../dev/running-signal';
+import { type DevSession, DevSessions } from '../../dev-sessions';
+import { ServiceError, validName } from '../core';
+import type { RunningService } from '../index';
+import { acquireHost, io, launchHost, startupLock } from './protocol';
 
 export type SharedOptions<A> = {
 	readonly module: string;
@@ -12,7 +13,7 @@ export type SharedOptions<A> = {
 	readonly home?: string;
 };
 
-export const runShared = <A>(
+export const runShared = <Port extends string, A>(
 	session: DevSession,
 	name: string,
 	options: SharedOptions<A>,
@@ -83,12 +84,15 @@ export const runShared = <A>(
 			),
 		)(lease.line).pipe(
 			Effect.tap((value) => reportDaemonService(name, value.ports)),
-			Effect.map((value) => ({
-				...(typeof value.output === 'object' && value.output !== null
-					? value.output
-					: {}),
-				ports: value.ports,
-			})),
+			Effect.map(
+				(value) =>
+					({
+						...(typeof value.output === 'object' && value.output !== null
+							? value.output
+							: {}),
+						ports: value.ports,
+					}) as RunningService<Port, A>,
+			),
 			Effect.mapError(
 				(cause) =>
 					new ServiceError({

@@ -3,10 +3,11 @@ import { NodeServices } from '@effect/platform-node';
 import { Effect, Exit, Schema, Scope } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
-import { ServiceError } from './core';
-import { Service, type ServiceDefinition } from './index';
-import { serveHost } from './shared-host';
-import { io } from './shared-protocol';
+import { ServiceError } from '../core';
+import type { ServiceDefinition } from '../index';
+import { runLocal } from '../local';
+import { serveHost } from './host';
+import { io } from './protocol';
 
 const program = Effect.gen(function* () {
 	const args = yield* Schema.decodeUnknownEffect(
@@ -48,9 +49,8 @@ const program = Effect.gen(function* () {
 	const close = Scope.close(scope, Exit.void);
 	yield* Effect.gen(function* () {
 		const original = { value: undefined as unknown };
-		const value = yield* Service.run(session, {
+		const value = yield* runLocal(session, {
 			...def,
-			shared: undefined,
 			start: (ctx) =>
 				def.start(ctx).pipe(
 					Effect.tap((value) =>

@@ -5,7 +5,7 @@ export default defineConfig({
 		index: 'src/index.ts',
 		'pglite/index': 'src/pglite/index.ts',
 		'services/index': 'src/services/index.ts',
-		'services/host': 'src/services/host.ts',
+		'services/shared/entry': 'src/services/shared/entry.ts',
 		'async/index': 'src/async/index.ts',
 	},
 	format: ['esm'],

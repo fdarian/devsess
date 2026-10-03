@@ -2,8 +2,8 @@ import { rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { Effect } from 'effect';
-import type { ServiceError } from './core';
-import { io, sharedGraceMs, socketPath, startupLock } from './shared-protocol';
+import type { ServiceError } from '../core';
+import { io, sharedGraceMs, socketPath, startupLock } from './protocol';
 
 export const serveHost = (
 	dataDir: string,
