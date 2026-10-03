@@ -1,7 +1,12 @@
 {
-	"extends": "@devsess/config/tsconfig",
 	"compilerOptions": {
-		"jsx": "react-jsx"
+		"target": "ESNext",
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"resolveJsonModule": true,
+		"strict": true,
+		"skipLibCheck": true,
+		"noEmit": true
 	},
-	"include": ["**/*.ts", "**/*.tsx", "**/*.mdx"]
+	"include": ["blume.config.ts"]
 }

@@ -5,7 +5,7 @@ Monorepo for the `devsess` library — Effect-based dev-session scaffolding plus
 ## Workspaces
 - `packages/config` — shared tsconfig presets (`@devsess/config`, private)
 - `packages/devsess` — the published library (`devsess` on npm)
-- `apps/docs` — vocs documentation site
+- `apps/docs` — Blume documentation site
 
 ## Commands
 - `pnpm run build` — build the library (tsup JS + tsc declarations)

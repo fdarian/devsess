@@ -1,4 +1,6 @@
-# Ports that survive restarts
+---
+title: Ports that survive restarts
+---
 
 Restart your dev script and the server usually comes up somewhere new. The OAuth redirect URI you registered against `localhost:4321` stops matching. A tunnel you pointed at that port now points at nothing. Anywhere you hardcoded the URL goes stale the moment the port does.
 

@@ -1,4 +1,6 @@
-# A database per session
+---
+title: A database per session
+---
 
 Two AI agents, each working in their own git worktree, point at the same local Postgres. One runs a migration to try something — it breaks the other one too, same database, same tables, and neither instance knows the other exists. Switching branches by hand causes a smaller version of the same problem: the schema under your feet changes and you didn't touch the database at all.
 
@@ -105,18 +107,20 @@ devsess doesn't know these two sessions are related. This is a manual copy of tw
 
 Start the second worktree's dev script once first — Ctrl-C it as soon as it's up — so its session directory actually exists. Then copy the first session's data into it:
 
-:::file-tree
-- my-app
-  - .data
-    - sessions
-      - walrus main worktree, already seeded
-        - pglite{info="Data directory — copy this"}
-        - pglite.dump{info="Copy this too, or the new session rebuilds it from scratch"}
-- my-app-2
-  - .data
-    - sessions
-      - +piano second worktree, freshly created and empty
-:::
+<FileTree>
+
+- my-app/
+  - .data/
+    - sessions/
+      - walrus/ — main worktree, already seeded
+        - pglite/ — data directory, copy this
+        - pglite.dump — copy this too, or the new session rebuilds it from scratch
+- my-app-2/
+  - .data/
+    - sessions/
+      - piano/ — second worktree, freshly created and empty
+
+</FileTree>
 
 ```bash
 cp -r my-app/.data/sessions/walrus/pglite my-app-2/.data/sessions/piano/pglite

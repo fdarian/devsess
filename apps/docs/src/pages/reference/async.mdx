@@ -1,4 +1,6 @@
-# devsess/async
+---
+title: devsess/async
+---
 
 Promise-based facade over the same core as `devsess`, for dev scripts that would rather not import `effect` directly. Its shape doesn't mirror `devsess` member-for-member anymore — the Effect API exports services and layers around a stock `Command.make(...)` (see [Writing a dev CLI](/writing-a-dev-cli)), while `devsess/async` keeps the config-object `defineDevCli` it always had, since it's the one facade that legitimately owns `main`. This page documents this facade in full; it links to [`devsess`](/reference/devsess) wherever the underlying behavior — session picking, sticky ports, subprocess cleanup — is identical. See [Without Effect](/without-effect).
 

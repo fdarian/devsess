@@ -14,7 +14,7 @@
 		}
 	},
 	"files": {
-		"includes": ["**", "!**/dist", "!**/.vocs", "!**/.gen", "!**/*.gen.ts"]
+		"includes": ["**", "!**/dist", "!**/.blume", "!**/.gen", "!**/*.gen.ts"]
 	},
 	"linter": {
 		"enabled": true,

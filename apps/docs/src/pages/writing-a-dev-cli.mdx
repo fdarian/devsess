@@ -1,4 +1,6 @@
-# Writing a dev CLI
+---
+title: Writing a dev CLI
+---
 
 devsess doesn't wrap `effect/unstable/cli` for you — you write a stock `Command.make(...)`, and devsess gives you services and layers that plug into it: a session directory that survives restarts, a sticky port, managed subprocesses, and cross-package running signals.
 
@@ -97,18 +99,20 @@ A session is a directory that outlives your script. `CurrentSession` resolves to
 
 It lives at `<root>/.data/sessions/<slug>/` — `<slug>` a single generated noun, like `walrus` or `piano`, not a name you choose.
 
-:::file-tree
-- my-app
-  - .data
-    - sessions
-      - walrus the current session
-        - sess.json{info="Sticky port and any SessionState slots"}
-        - pglite a per-session PGlite database directory
-      - piano an older session, now idle
-    - running.json cross-package signal — not session-scoped
-  - scripts
+<FileTree>
+
+- my-app/
+  - .data/
+    - sessions/
+      - walrus/ — the current session
+        - sess.json — sticky port and any SessionState slots
+        - pglite/ — a per-session PGlite database directory
+      - piano/ — an older session, now idle
+    - running.json — cross-package signal, not session-scoped
+  - scripts/
     - dev.ts
-:::
+
+</FileTree>
 
 `<root>` is whatever `DevSessions.layer` resolved. It walks up from `process.cwd()` to the nearest ancestor containing a `package.json` — in a monorepo, running your script from `apps/web` resolves to `apps/web`, not the repo root. If no ancestor has one, it fails with `ProjectRootNotFoundError` (naming the directory it started the search from) instead of silently falling back to `process.cwd()` — a wrong root means sessions get written somewhere surprising. Pass an explicit root instead with `DevSessions.layerAt(rootDir)` if you don't want auto-detection.
 

@@ -7,7 +7,7 @@ Monorepo for [`devsess`](packages/devsess) — scaffold dev scripts with reusabl
 | Path | Description |
 | --- | --- |
 | [`packages/devsess`](packages/devsess) | The `devsess` library (published to npm). |
-| [`apps/docs`](apps/docs) | Documentation site, built with [vocs](https://vocs.dev). |
+| [`apps/docs`](apps/docs) | Documentation site, built with [Blume](https://useblume.dev). |
 
 ## Development
 

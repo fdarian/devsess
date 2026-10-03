@@ -1,4 +1,7 @@
-# devsess
+---
+title: devsess
+description: Isolated, managed dev servers with a port and database for every worktree.
+---
 
 devsess is a library for Node dev scripts, built on [Effect](https://effect.website), that gives every parallel checkout of your project — every git worktree, every AI agent working in its own copy — an isolated dev session.
 
@@ -11,20 +14,22 @@ You're not running one dev environment — you're running several at once: a cou
 
 devsess resolves this by giving each checkout its own session directory, holding that instance's port, database, and state:
 
-:::file-tree
-- worktree-a
-  - .data
-    - sessions
-      - walrus
-        - sess.json{info="This instance's port and state"}
-        - pglite{info="This instance's database"}
-- worktree-b
-  - .data
-    - sessions
-      - piano
-        - sess.json{info="A different port, a different session"}
-        - pglite
-:::
+<FileTree>
+
+- worktree-a/
+  - .data/
+    - sessions/
+      - walrus/
+        - sess.json — this instance's port and state
+        - pglite/ — this instance's database
+- worktree-b/
+  - .data/
+    - sessions/
+      - piano/
+        - sess.json — a different port, a different session
+        - pglite/
+
+</FileTree>
 
 That isolation falls out of where the data lives, not from any session-switching feature: each checkout is a different `dir`, so each gets its own `<dir>/.data/sessions/`. Within a single checkout, devsess still resumes whichever session was used most recently — there's no flag to pick a specific one.
 

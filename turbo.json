@@ -6,6 +6,14 @@
 			"dependsOn": ["^build"],
 			"outputs": ["dist/**"]
 		},
+		"docs#build": {
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/packages/devsess/CHANGELOG.md",
+				"$TURBO_ROOT$/packages/devsess/package.json"
+			],
+			"outputs": ["dist/**"]
+		},
 		"check:type": {
 			"dependsOn": ["build", "^build"]
 		},
