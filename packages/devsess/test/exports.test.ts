@@ -72,8 +72,9 @@ describe('./pglite', () => {
 });
 
 describe('./services', () => {
-	it('exports the Docker service primitive', () => {
+	it('exports handler and container service primitives', () => {
 		expect(typeof Service.make).toBe('function');
+		expect(typeof Service.container).toBe('function');
 		expect(typeof Service.run).toBe('function');
 		expect(typeof ServiceError).toBe('function');
 	});
