@@ -124,8 +124,8 @@ export const makeRequestDispatcher = (options: {
 						serviceKey({ runId: run.runId, serviceName: service.name }),
 					);
 					const children =
-						live?.exit === undefined &&
-						live?.children !== undefined &&
+						live !== undefined &&
+						live.exit === undefined &&
 						live.children.length > 0
 							? { children: [...live.children] }
 							: {};
@@ -210,11 +210,10 @@ export const makeRequestDispatcher = (options: {
 				if (
 					live === undefined ||
 					live.exit !== undefined ||
-					(live.instanceId !== undefined &&
-						incoming.params.instanceId !== live.instanceId)
+					incoming.params.instanceId !== live.instanceId
 				)
 					return {};
-				const children = live.children ?? [];
+				const children = live.children;
 				if (incoming.method === 'retractService')
 					live.children = children.filter(
 						(child) => child.name !== incoming.params.name,
@@ -245,11 +244,15 @@ export const makeRequestDispatcher = (options: {
 					return yield* new DaemonError({
 						message: `Service ${incoming.params.service} was not found in run ${run.runId}`,
 					});
+				const live = options.terminals.get(
+					serviceKey({ runId: run.runId, serviceName: service.name }),
+				);
 				if (
 					service.state !== 'running' ||
-					!options.terminals.has(
-						serviceKey({ runId: run.runId, serviceName: service.name }),
-					)
+					live === undefined ||
+					live.exit !== undefined ||
+					(incoming.params.instanceId !== undefined &&
+						incoming.params.instanceId !== live.instanceId)
 				)
 					return yield* new DaemonError({
 						message: `Service ${service.name} in run ${run.runId} is not live`,

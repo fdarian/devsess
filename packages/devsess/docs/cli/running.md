@@ -6,6 +6,8 @@ Expanded `status` and the menu bar show ready in-process `Service.make`/`Service
 
 In-process reporters use `reportService { runId, service, name, ports?, instanceId? }` and `retractService { runId, service, name, instanceId? }`, both acknowledged with `{}`. The daemon supplies `DEVSESS_INSTANCE_ID` alongside `DEVSESS_SOCKET`, `DEVSESS_RUN_ID`, and `DEVSESS_SERVICE`; reports must match that live process instance. Missing, stale, or exited instances are silently ignored. Re-reporting a name replaces its ports without changing row order. Library reports use a 250ms timeout, no retries, and silently tolerate older or unreachable daemons.
 
+Readiness `publish` and `unpublish` also accept optional `instanceId`, sent by the library when available. A mismatched instance is rejected so an old process cannot change its replacement's readiness. Requests without the field remain supported for older reporters.
+
 Expanded `status` output includes compact resident memory next to live service PIDs when available. Memory sums RSS across the service's process group and descendants that left it, counting each PID once. It is sampled on demand and cached for two seconds, never persisted, and omitted when unavailable; a sampling failure does not prevent status reporting. Displayed KB/MB/GB use powers of 1024.
 
 For protocol-v1 clients, `stopServices` accepts `{ runId, serviceNames: string[], force?: boolean }` and returns the updated run record, just like `stopRun`. Names must be non-empty, distinct, and exist in the run. `listRuns` and `getRun` may include `memoryBytes: number` on each live service (RSS in bytes); finished services and unavailable samples omit the field. Clients must tolerate its absence, including responses from older daemons.

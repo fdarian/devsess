@@ -65,6 +65,7 @@ const serviceEnvironment = (socketPath: string) => {
 	vi.stubEnv('DEVSESS_SOCKET', socketPath);
 	vi.stubEnv('DEVSESS_RUN_ID', 'run-123');
 	vi.stubEnv('DEVSESS_SERVICE', 'web');
+	vi.stubEnv('DEVSESS_INSTANCE_ID', 'instance');
 };
 
 describe('daemon readiness publishing', () => {
@@ -167,12 +168,17 @@ describe('daemon readiness publishing', () => {
 							params: {
 								runId: 'run-123',
 								service: 'web',
+								instanceId: 'instance',
 								value: { url: 'http://localhost:5173' },
 							},
 						});
 						expect(requests[1]).toMatchObject({
 							version: 1,
-							params: { runId: 'run-123', service: 'web' },
+							params: {
+								runId: 'run-123',
+								service: 'web',
+								instanceId: 'instance',
+							},
 						});
 						expect(requests[0]?.requestId).not.toBe(requests[1]?.requestId);
 					}),

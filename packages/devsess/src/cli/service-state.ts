@@ -6,6 +6,7 @@ import type { IPty } from 'node-pty';
 import { type ServiceExit, UNKNOWN_EXIT_CODE } from './exit-status';
 import type { LogAddress } from './logs';
 import type { LiveProcessOwnership, ProcessesService } from './processes';
+import type { ServiceChild } from './protocol';
 import {
 	isActive,
 	type RegistryService,
@@ -17,11 +18,8 @@ import {
 import { TERMINATION_TERM_SIGNAL } from './termination';
 
 export type LiveService = {
-	readonly instanceId?: string;
-	children?: Array<{
-		readonly name: string;
-		readonly ports?: Readonly<Record<string, number>>;
-	}>;
+	readonly instanceId: string;
+	children: Array<ServiceChild>;
 	readonly terminal: IPty;
 	readonly address: LogAddress;
 	readonly ownership: LiveProcessOwnership;

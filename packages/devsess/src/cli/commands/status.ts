@@ -3,7 +3,7 @@ import { FileSystem } from 'effect/FileSystem';
 import { callDaemon } from '../client';
 import { serviceExitCode } from '../exit-status';
 import { captureInvocation } from '../project-matching';
-import type { RunResponse, ServiceResponse } from '../protocol';
+import type { RunResponse, ServiceChild, ServiceResponse } from '../protocol';
 import { formatPublishedValue } from '../published-value';
 import { isActive, isRunActive, type RunRecord } from '../registry';
 import { runSelector, shortRunId } from '../run-id';
@@ -63,6 +63,16 @@ export const formatService = (service: ServiceResponse) => {
 			? ` ${formatMemory(service.memoryBytes)}`
 			: '';
 	return `  ${service.name}: ${state}${readiness}${pid}${memory}${exit}${signal} — ${service.command} (cwd: ${service.cwd})${value}`;
+};
+
+const formatChild = (child: ServiceChild) => {
+	const ports =
+		child.ports === undefined
+			? ''
+			: ` ${Object.values(child.ports)
+					.map((port) => `:${port}`)
+					.join(' ')}`;
+	return `    ${child.name}${ports}`;
 };
 
 export const formatStatus = (
@@ -140,16 +150,7 @@ const formatRun = (
 	...(isRunActive(run) ? [`  Uptime: ${elapsed(run.startedAt, now)}`] : []),
 	...run.services.flatMap((service) => [
 		formatService(service),
-		...(service.children ?? []).map(
-			(child) =>
-				`    ${child.name}${
-					child.ports === undefined
-						? ''
-						: ` ${Object.values(child.ports)
-								.map((port) => `:${port}`)
-								.join(' ')}`
-				}`,
-		),
+		...(service.children ?? []).map(formatChild),
 	]),
 ];
 

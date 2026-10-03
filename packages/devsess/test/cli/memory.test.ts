@@ -96,10 +96,15 @@ describe('service memory', () => {
 					);
 					yield* registry.reserve(run);
 					const read = vi.fn(() => Effect.succeed(tree));
-					const live = {
+					const live: LiveService = {
 						instanceId: 'instance',
+						children: [],
 						exit: undefined,
-					} as LiveService;
+						address: { runId: 'run', serviceName: 'web' },
+						ownership: { identity, terminate: Effect.succeed(undefined) },
+						lease: undefined,
+						terminal: {} as never,
+					};
 					const terminals = new Map([['run:web', live]]);
 					const create = (memorySample: ReturnType<typeof makeMemorySampler>) =>
 						makeRequestDispatcher({

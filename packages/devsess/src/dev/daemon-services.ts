@@ -1,44 +1,20 @@
-import { Config, ConfigProvider, Effect, Option } from 'effect';
-import { sendDaemonRequest } from './daemon-readiness';
+import { Effect } from 'effect';
+import { readDaemonIdentity, sendDaemonRequest } from './daemon-client';
 
 export const reportDaemonService = (
 	name: string,
 	ports: Readonly<Record<string, number>>,
 ) =>
 	Effect.gen(function* () {
-		const provider = ConfigProvider.fromEnv();
-		const socketPath = Option.getOrUndefined(
-			yield* Config.String('DEVSESS_SOCKET')
-				.pipe(Config.option)
-				.parse(provider),
-		);
-		const runId = Option.getOrUndefined(
-			yield* Config.String('DEVSESS_RUN_ID')
-				.pipe(Config.option)
-				.parse(provider),
-		);
-		const service = Option.getOrUndefined(
-			yield* Config.String('DEVSESS_SERVICE')
-				.pipe(Config.option)
-				.parse(provider),
-		);
-		const instanceId = Option.getOrUndefined(
-			yield* Config.String('DEVSESS_INSTANCE_ID')
-				.pipe(Config.option)
-				.parse(provider),
-		);
-		if (
-			socketPath === undefined ||
-			runId === undefined ||
-			service === undefined
-		)
-			return;
-		const identity = { socketPath, runId, service };
+		const identity = yield* readDaemonIdentity;
+		if (identity === undefined) return;
 		const params = {
-			runId,
-			service,
+			runId: identity.runId,
+			service: identity.service,
 			name,
-			...(instanceId === undefined ? {} : { instanceId }),
+			...(identity.instanceId === undefined
+				? {}
+				: { instanceId: identity.instanceId }),
 		};
 		const send = (method: string, values: Readonly<Record<string, unknown>>) =>
 			sendDaemonRequest(

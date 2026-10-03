@@ -495,6 +495,7 @@ describe('daemon lifetime and failure handling', () => {
 							DEVSESS_SOCKET: socketPath,
 							DEVSESS_RUN_ID: 'run',
 							DEVSESS_SERVICE: 'web',
+							DEVSESS_INSTANCE_ID: expect.any(String),
 						});
 						const publish = {
 							version: 1 as const,
@@ -503,10 +504,31 @@ describe('daemon lifetime and failure handling', () => {
 							params: {
 								runId: 'run',
 								service: 'web',
+								instanceId: spawn?.env?.DEVSESS_INSTANCE_ID,
 								value: { url: 'http://localhost:5173' },
 							},
 						};
 						yield* daemon.request(publish);
+						const stale = yield* Effect.exit(
+							daemon.request({
+								...publish,
+								params: {
+									...publish.params,
+									instanceId: 'old',
+									value: { stale: true },
+								},
+							}),
+						);
+						expect(Exit.isFailure(stale)).toBe(true);
+						const staleRetraction = yield* Effect.exit(
+							daemon.request({
+								version: 1,
+								requestId: 'stale-retraction',
+								method: 'unpublish',
+								params: { runId: 'run', service: 'web', instanceId: 'old' },
+							}),
+						);
+						expect(Exit.isFailure(staleRetraction)).toBe(true);
 						const ready = yield* state.registry.get('run');
 						expect(ready.services[0]?.published?.value).toEqual({
 							url: 'http://localhost:5173',

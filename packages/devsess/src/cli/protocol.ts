@@ -2,16 +2,15 @@ import { Effect, Schema } from 'effect';
 import { Identifier } from './identifiers';
 import { RunRecordSchema, ServiceRecordSchema } from './registry';
 
+export const ServiceChildSchema = Schema.Struct({
+	name: Identifier,
+	ports: Schema.optionalKey(Schema.Record(Schema.String, Schema.Int)),
+});
+export type ServiceChild = typeof ServiceChildSchema.Type;
+
 export const ServiceResponseSchema = Schema.Struct({
 	...ServiceRecordSchema.fields,
-	children: Schema.optionalKey(
-		Schema.Array(
-			Schema.Struct({
-				name: Identifier,
-				ports: Schema.optionalKey(Schema.Record(Schema.String, Schema.Int)),
-			}),
-		),
-	),
+	children: Schema.optionalKey(Schema.Array(ServiceChildSchema)),
 	memoryBytes: Schema.optionalKey(
 		Schema.Int.check(Schema.makeFilter((value) => value >= 0)),
 	),
@@ -68,13 +67,18 @@ export const PublishRequest = Schema.Struct({
 		runId: Identifier,
 		service: Identifier,
 		value: Schema.Json,
+		instanceId: Schema.optionalKey(Identifier),
 	}),
 });
 export const UnpublishRequest = Schema.Struct({
 	version: Schema.Literal(PROTOCOL_VERSION),
 	requestId: Identifier,
 	method: Schema.Literal('unpublish'),
-	params: Schema.Struct({ runId: Identifier, service: Identifier }),
+	params: Schema.Struct({
+		runId: Identifier,
+		service: Identifier,
+		instanceId: Schema.optionalKey(Identifier),
+	}),
 });
 export const InfoRequest = Schema.Struct({
 	version: Schema.Literal(PROTOCOL_VERSION),
@@ -169,30 +173,31 @@ export const DetachRequest = Schema.Struct({
 		leaseId: Identifier,
 	}),
 });
+export const ReportServiceRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('reportService'),
+	params: Schema.Struct({
+		runId: Identifier,
+		service: Identifier,
+		...ServiceChildSchema.fields,
+		instanceId: Schema.optionalKey(Identifier),
+	}),
+});
+export const RetractServiceRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('retractService'),
+	params: Schema.Struct({
+		runId: Identifier,
+		service: Identifier,
+		name: Identifier,
+		instanceId: Schema.optionalKey(Identifier),
+	}),
+});
 export const DaemonRequest = Schema.Union([
-	Schema.Struct({
-		version: Schema.Literal(PROTOCOL_VERSION),
-		requestId: Identifier,
-		method: Schema.Literal('reportService'),
-		params: Schema.Struct({
-			runId: Identifier,
-			service: Identifier,
-			name: Identifier,
-			instanceId: Schema.optionalKey(Identifier),
-			ports: Schema.optionalKey(Schema.Record(Schema.String, Schema.Int)),
-		}),
-	}),
-	Schema.Struct({
-		version: Schema.Literal(PROTOCOL_VERSION),
-		requestId: Identifier,
-		method: Schema.Literal('retractService'),
-		params: Schema.Struct({
-			runId: Identifier,
-			service: Identifier,
-			name: Identifier,
-			instanceId: Schema.optionalKey(Identifier),
-		}),
-	}),
+	ReportServiceRequest,
+	RetractServiceRequest,
 	StartRunRequest,
 	ListRunsRequest,
 	GetRunRequest,

@@ -260,6 +260,7 @@ export const makeRunStart = (options: {
 			const ownership = captured.value;
 			const live: LiveService = {
 				instanceId,
+				children: [],
 				address,
 				terminal,
 				ownership,
