@@ -13,6 +13,30 @@ export type SharedOptions<A> = {
 	readonly home?: string;
 };
 
+const resolveHomeSession = (session: DevSession, home: string | undefined) =>
+	Effect.gen(function* () {
+		if (home === undefined) return session;
+		const currentPath = yield* session.path('');
+		const root = yield* Effect.try({
+			try: () =>
+				resolveSiblingDir(home, resolveSiblingDir('../../..', currentPath)),
+			catch: (cause) =>
+				new ServiceError({
+					message: 'Failed to resolve shared service home',
+					cause,
+				}),
+		});
+		const fs = yield* FileSystem;
+		yield* fs.makeDirectory(`${root}/.data/sessions`, { recursive: true });
+		return yield* Effect.gen(function* () {
+			yield* Effect.acquireRelease(startupLock(`${root}/.data`), (release) =>
+				io(release).pipe(Effect.orDie),
+			);
+			const sessions = yield* DevSessions;
+			return yield* sessions.getLatestOrCreate;
+		}).pipe(Effect.scoped, Effect.provide(DevSessions.layerAt(root)));
+	});
+
 export const runShared = <Port extends string, A>(
 	session: DevSession,
 	name: string,
@@ -23,38 +47,7 @@ export const runShared = <Port extends string, A>(
 			return yield* new ServiceError({
 				message: 'Invalid shared service or session name',
 			});
-		const home =
-			options.home === undefined
-				? session
-				: yield* Effect.gen(function* () {
-						const currentPath = yield* session.path('');
-						const root = yield* Effect.try({
-							try: () =>
-								resolveSiblingDir(
-									options.home as string,
-									resolveSiblingDir('../../..', currentPath),
-								),
-							catch: (cause) =>
-								new ServiceError({
-									message: 'Failed to resolve shared service home',
-									cause,
-								}),
-						});
-						const fs = yield* FileSystem;
-						const sessionsDir = `${root}/.data/sessions`;
-						yield* fs.makeDirectory(sessionsDir, { recursive: true });
-						return yield* Effect.scoped(
-							Effect.gen(function* () {
-								yield* Effect.acquireRelease(
-									startupLock(`${root}/.data`),
-									(release) => io(release).pipe(Effect.orDie),
-								);
-								return yield* DevSessions.use(
-									(sessions) => sessions.getLatestOrCreate,
-								).pipe(Effect.provide(DevSessions.layerAt(root)));
-							}),
-						);
-					});
+		const home = yield* resolveHomeSession(session, options.home);
 		const sessionDir = yield* home.path('');
 		const dataDir = `${sessionDir}/services/${name}`;
 		const lease = yield* Effect.acquireRelease(

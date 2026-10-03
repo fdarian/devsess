@@ -11,65 +11,57 @@ export const serveHost = (
 	stop: Effect.Effect<void>,
 	graceMs = sharedGraceMs,
 ) =>
-	io(() => socketPath(dataDir)).pipe(
-		Effect.flatMap((address) =>
-			Effect.callback<void, ServiceError>((resume) => {
-				const state = {
-					consumers: 0,
-					stopping: false,
-					timer: undefined as ReturnType<typeof setTimeout> | undefined,
-				};
-				const schedule = () => {
-					if (state.timer !== undefined) clearTimeout(state.timer);
-					state.timer = setTimeout(() => {
-						Effect.runFork(
-							Effect.scoped(
-								Effect.gen(function* () {
-									yield* Effect.acquireRelease(
-										startupLock(dataDir),
-										(release) => io(release).pipe(Effect.orDie),
-									);
-									if (state.consumers !== 0) return;
-									state.stopping = true;
-									yield* io(() =>
-										rm(join(dataDir, 'host.sock'), { force: true }),
-									);
-									server.close();
-									yield* stop;
-								}),
-							).pipe(
-								Effect.matchCauseEffect({
-									onFailure: (cause) =>
-										Effect.sync(() => resume(Effect.failCause(cause))),
-									onSuccess: () =>
-										Effect.sync(() => {
-											if (state.stopping) resume(Effect.void);
-										}),
-								}),
-							),
-						);
-					}, graceMs);
-				};
-				const server = createServer((socket) => {
-					if (state.stopping) {
-						socket.destroy();
-						return;
-					}
-					state.consumers++;
-					if (state.timer !== undefined) clearTimeout(state.timer);
-					socket.on('error', () => socket.destroy());
-					socket.once('close', () => {
-						state.consumers--;
-						if (state.consumers === 0) schedule();
-					});
-					socket.write(`${line}\n`);
+	Effect.gen(function* () {
+		const address = yield* io(() => socketPath(dataDir));
+		return yield* Effect.callback<void, ServiceError>((resume) => {
+			const state = {
+				consumers: 0,
+				stopping: false,
+				timer: undefined as ReturnType<typeof setTimeout> | undefined,
+			};
+			const shutdown = Effect.gen(function* () {
+				yield* Effect.acquireRelease(startupLock(dataDir), (release) =>
+					io(release).pipe(Effect.orDie),
+				);
+				if (state.consumers !== 0) return;
+				state.stopping = true;
+				yield* io(() => rm(join(dataDir, 'host.sock'), { force: true }));
+				server.close();
+				yield* stop;
+			}).pipe(
+				Effect.scoped,
+				Effect.matchCauseEffect({
+					onFailure: (cause) =>
+						Effect.sync(() => resume(Effect.failCause(cause))),
+					onSuccess: () =>
+						Effect.sync(() => {
+							if (state.stopping) resume(Effect.void);
+						}),
+				}),
+			);
+			const schedule = () => {
+				if (state.timer !== undefined) clearTimeout(state.timer);
+				state.timer = setTimeout(() => Effect.runFork(shutdown), graceMs);
+			};
+			const server = createServer((socket) => {
+				if (state.stopping) {
+					socket.destroy();
+					return;
+				}
+				state.consumers++;
+				if (state.timer !== undefined) clearTimeout(state.timer);
+				socket.on('error', () => socket.destroy());
+				socket.once('close', () => {
+					state.consumers--;
+					if (state.consumers === 0) schedule();
 				});
-				server.once('error', (cause) => resume(Effect.die(cause)));
-				server.listen(address, schedule);
-				return Effect.sync(() => {
-					if (state.timer !== undefined) clearTimeout(state.timer);
-					server.close();
-				});
-			}),
-		),
-	);
+				socket.write(`${line}\n`);
+			});
+			server.once('error', (cause) => resume(Effect.die(cause)));
+			server.listen(address, schedule);
+			return Effect.sync(() => {
+				if (state.timer !== undefined) clearTimeout(state.timer);
+				server.close();
+			});
+		});
+	});

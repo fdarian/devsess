@@ -4,7 +4,7 @@ import { mkdir, open, readlink, rm, symlink } from 'node:fs/promises';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Effect } from 'effect';
+import { Effect, Schedule } from 'effect';
 import lockfile from 'proper-lockfile';
 import { ServiceError } from '../core';
 
@@ -91,49 +91,40 @@ const unavailable = (cause: unknown) =>
 	'code' in cause &&
 	(cause.code === 'ENOENT' || cause.code === 'ECONNREFUSED');
 
+const startHost = (dataDir: string, launch: () => Promise<void>) =>
+	Effect.gen(function* () {
+		yield* io(() => rm(join(dataDir, 'host.sock'), { force: true }));
+		yield* io(launch);
+		const deadline = Date.now() + 60_000;
+		return yield* io(() => connectHost(dataDir)).pipe(
+			Effect.retry({
+				while: (error) => unavailable(error.cause) && Date.now() < deadline,
+				schedule: Schedule.spaced('50 millis'),
+			}),
+		);
+	});
+
+const acquireHostUnderLock = (dataDir: string, launch: () => Promise<void>) =>
+	Effect.gen(function* () {
+		yield* Effect.acquireRelease(startupLock(dataDir), (release) =>
+			io(release).pipe(Effect.orDie),
+		);
+		return yield* io(() => connectHost(dataDir)).pipe(
+			Effect.catch((error) =>
+				unavailable(error.cause) ? startHost(dataDir, launch) : error,
+			),
+		);
+	}).pipe(Effect.scoped);
+
 export const acquireHost = (dataDir: string, launch: () => Promise<void>) =>
 	Effect.gen(function* () {
 		yield* io(() => mkdir(dataDir, { recursive: true }));
-		const attempt = () => io(() => connectHost(dataDir));
-		return yield* attempt().pipe(
-			Effect.catch((error) => {
-				if (!unavailable(error.cause)) return error;
-				return Effect.scoped(
-					Effect.gen(function* () {
-						yield* Effect.acquireRelease(startupLock(dataDir), (release) =>
-							io(release).pipe(Effect.orDie),
-						);
-						return yield* attempt().pipe(
-							Effect.catch((second) => {
-								if (!unavailable(second.cause)) return second;
-								return Effect.gen(function* () {
-									yield* io(() =>
-										rm(join(dataDir, 'host.sock'), { force: true }),
-									);
-									yield* io(launch);
-									const deadline = Date.now() + 60_000;
-									const retry: Effect.Effect<Lease, ServiceError> =
-										Effect.suspend(() =>
-											attempt().pipe(
-												Effect.catch((failure) => {
-													if (
-														!unavailable(failure.cause) ||
-														Date.now() >= deadline
-													)
-														return failure;
-													return Effect.sleep('50 millis').pipe(
-														Effect.flatMap(() => retry),
-													);
-												}),
-											),
-										);
-									return yield* retry;
-								});
-							}),
-						);
-					}),
-				);
-			}),
+		return yield* io(() => connectHost(dataDir)).pipe(
+			Effect.catch((error) =>
+				unavailable(error.cause)
+					? acquireHostUnderLock(dataDir, launch)
+					: error,
+			),
 		);
 	});
 

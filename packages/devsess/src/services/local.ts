@@ -7,9 +7,9 @@ import type { DevSession } from '../dev-sessions';
 import { ServiceError, validName } from './core';
 import type { RunningService, ServiceDefinition } from './index';
 
-export const runLocal = <Name extends string, Port extends string, A, E, R>(
+const prepareLocal = <Name extends string, Port extends string>(
 	session: DevSession,
-	def: Pick<ServiceDefinition<Name, Port, A, E, R>, 'name' | 'ports' | 'start'>,
+	def: { readonly name: Name; readonly ports: ReadonlyArray<Port> },
 ) =>
 	Effect.gen(function* () {
 		if (!validName(def.name) || !validName(session.name)) {
@@ -37,19 +37,22 @@ export const runLocal = <Name extends string, Port extends string, A, E, R>(
 						cause,
 					}),
 		),
-		Effect.flatMap((prepared) =>
-			def
-				.start({ session, ports: prepared.ports, dataDir: prepared.dataDir })
-				.pipe(
-					Effect.tap(() => reportDaemonService(def.name, prepared.ports)),
-					Effect.map(
-						(value) =>
-							({
-								...(typeof value === 'object' && value !== null ? value : {}),
-								ports: prepared.ports,
-							}) as RunningService<Port, A>,
-					),
-				),
-		),
-		Effect.annotateLogs({ service: def.name }),
 	);
+
+export const runLocal = <Name extends string, Port extends string, A, E, R>(
+	session: DevSession,
+	def: Pick<ServiceDefinition<Name, Port, A, E, R>, 'name' | 'ports' | 'start'>,
+) =>
+	Effect.gen(function* () {
+		const prepared = yield* prepareLocal(session, def);
+		const value = yield* def.start({
+			session,
+			ports: prepared.ports,
+			dataDir: prepared.dataDir,
+		});
+		yield* reportDaemonService(def.name, prepared.ports);
+		return {
+			...(typeof value === 'object' && value !== null ? value : {}),
+			ports: prepared.ports,
+		} as RunningService<Port, A>;
+	}).pipe(Effect.annotateLogs({ service: def.name }));
