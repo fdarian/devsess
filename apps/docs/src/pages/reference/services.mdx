@@ -1,0 +1,95 @@
+---
+title: devsess/services
+---
+
+Define scoped services with custom Effect handlers or Docker containers. Definitions do not start anything; use `Service.run(session, def)` directly or provide `def.layer` and yield `def.key`.
+
+## Handler services
+
+```ts
+import { Service } from 'devsess/services'
+import { Effect } from 'effect'
+
+const api = Service.make({
+	name: 'api',
+	ports: ['http'],
+	start: (ctx) => Effect.gen(function* () {
+		// Acquire your server here and register its cleanup in the scope.
+		// Wait until it is ready before returning.
+		yield* Effect.logInfo('ready')
+		return { url: `http://127.0.0.1:${ctx.ports.http}` }
+	}),
+})
+
+const running = yield* Service.run(session, api)
+running.url
+running.ports.http // number, inferred from the declared port names
+```
+
+The `start` handler receives a `ServiceContext<Port>`:
+
+- `session`: the selected `DevSession`.
+- `ports`: allocated host ports for the names in `ports` (optional, defaults to no ports). They are persisted under `<service>:<port>` using `getStickyPort`; remembered ports are preferred, not guaranteed if unavailable.
+- `dataDir`: `<session>/services/<name>`, created before `start` runs and kept after it stops.
+
+`start` must resolve **once the service is ready**, not when it stops. Register resource cleanup with the enclosing Effect scope (for example, `Effect.acquireRelease`); closing that scope stops the service. `run` merges the handler's object output with `{ ports }`, replacing any output `ports` field with the allocated ports. Non-object output is discarded. Handler errors retain their own types; preparation and Docker failures use `ServiceError`. Log lines from `start` are annotated with `service: <name>`.
+
+**Long-running subprocesses:** `runManagedSubprocess` resolves only when the child exits. Fork it in the service scope (for example, `yield* runManagedSubprocess(...).pipe(Effect.forkScoped)`), then wait for a readiness signal or probe before returning from `start`. Merely forking the child does not establish readiness.
+
+Direct `run` calls require `FileSystem` and `Path`, plus whatever services the handler uses. Supply a scope when the handler acquires scoped resources. Each direct call runs the handler again; use layers to share an instance.
+
+## Container services
+
+```ts
+const cache = Service.container({
+	name: 'redis', image: 'redis:7',
+	ports: { redis: 6379 },
+	volumes: { data: '/data' },
+	env: { MY_SETTING: 'value' },
+	healthcheck: { test: ['CMD', 'redis-cli', 'ping'], interval: '1 second', timeout: '2 seconds', retries: 30, startPeriod: '1 second' },
+})
+const running = yield* Service.run(session, cache)
+running.ports.redis
+running.container // Docker container name
+```
+
+`Service.container` defines a handler backed by Docker. `ports` maps names to container ports; allocated host ports bind only to `127.0.0.1`. `volumes` maps names to container paths; host directories are `<session>/services/<service>/<volume>`. Healthcheck `test` accepts compose-style `['CMD', ...]` or `['CMD-SHELL', '...']`; durations accept Effect Duration inputs. When configured, the healthcheck must pass before `start` resolves; without one, it resolves after the container starts. Containers require a scope, `DevSessions`, `FileSystem`, `Path`, and the platform's `ChildProcessSpawner`.
+
+The container runs as your host UID:GID, with no root override. This keeps session files owned by you; otherwise, rootful Docker on Linux can leave root-owned bind-mount files that block copying branch data, removing worktrees, or deleting `.data` without `sudo` (Docker Desktop and OrbStack on macOS work either way). Images requiring root may fail; `ServiceError` includes a hint if they exit before healthy. On each container start, devsess removes containers labelled with this project root whose session directory no longer exists. On scope close it removes the active container but leaves all data directories intact. A cold image pull prints progress. Docker Desktop, OrbStack, or a running Docker daemon is required; [PGlite](/reference/pglite) needs no Docker. See the [Postgres recipe](/recipes/postgres-service).
+
+## Compose services with layers
+
+Yield a definition's `key` inside another handler to declare a dependency. Provide its `layer` to satisfy that dependency:
+
+```ts
+import { CurrentSession, DevSessions } from 'devsess'
+import { NodeServices } from '@effect/platform-node'
+import { Effect, Layer } from 'effect'
+
+const worker = Service.make({
+	name: 'worker',
+	start: () => Effect.gen(function* () {
+		const redis = yield* cache.key
+		return { redisPort: redis.ports.redis }
+	}),
+})
+
+const services = Layer.mergeAll(
+	cache.layer,
+	worker.layer.pipe(Layer.provide(cache.layer)),
+)
+
+const program = Effect.gen(function* () {
+	const redis = yield* cache.key
+	const runningWorker = yield* worker.key
+	// Both consumers share the same cache instance.
+}).pipe(
+	Effect.provide(services),
+	Effect.provide(CurrentSession.layer),
+	Effect.provide(DevSessions.layer),
+	Effect.provide(NodeServices.layer),
+	Effect.scoped,
+)
+```
+
+Each `def.layer` builds the service from `CurrentSession` once per layer build and shares it between consumers. Keep and reuse that layer value when wiring dependencies; its resources stop when the layer's scope closes. For an explicit session, provide `CurrentSession.layerOf(session)` instead.

@@ -53,6 +53,10 @@ export default defineConfig({
 					{ label: 'Running your Dev Server', href: '/recipes/dev-server' },
 					{ label: 'A Database per Session', href: '/recipes/pglite' },
 					{
+						label: 'Postgres per Session with Docker',
+						href: '/recipes/postgres-service',
+					},
+					{
 						label: 'Wiring Services Together',
 						href: '/recipes/wiring-services',
 					},
@@ -61,7 +65,12 @@ export default defineConfig({
 			'/changelog',
 			{
 				label: 'Reference',
-				items: ['/reference/devsess', '/reference/async', '/reference/pglite'],
+				items: [
+					'/reference/devsess',
+					'/reference/async',
+					'/reference/pglite',
+					'/reference/services',
+				],
 			},
 		],
 	},

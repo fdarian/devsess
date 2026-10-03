@@ -3,6 +3,7 @@ import * as pkg from 'devsess';
 import type { DevSession as AsyncDevSession } from 'devsess/async';
 import * as pkgAsync from 'devsess/async';
 import * as pkgPglite from 'devsess/pglite';
+import { Service, ServiceError } from 'devsess/services';
 
 /**
  * Imports through the published package specifiers (`devsess`, `devsess/async`,
@@ -67,6 +68,15 @@ describe('./pglite', () => {
 		expect(typeof pkgPglite.getDbMigrationCount).toBe('function');
 		expect(typeof pkgPglite.getExpectedMigrationCount).toBe('function');
 		expect(typeof pkgPglite.PgliteError).toBe('function');
+	});
+});
+
+describe('./services', () => {
+	it('exports handler and container service primitives', () => {
+		expect(typeof Service.make).toBe('function');
+		expect(typeof Service.container).toBe('function');
+		expect(typeof Service.run).toBe('function');
+		expect(typeof ServiceError).toBe('function');
 	});
 });
 
