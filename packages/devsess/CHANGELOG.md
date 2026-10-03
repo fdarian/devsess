@@ -1,5 +1,19 @@
 # devsess
 
+## 0.4.0
+
+### Minor Changes
+
+- 8827ca8: Require drizzle-orm ^1.0.0-rc.5-5935859 for the optional PGlite adapter.
+- 1c7bda1: Add custom handler and Docker-backed services with per-session ports, persistent data directories, scoped cleanup, and layer-based composition.
+- 8827ca8: Require stable Effect ^4.0.0; update caller imports from effect/unstable/cli and effect/unstable/process to effect/cli and effect/process.
+- f6fcc4c: Upgrade the PGlite adapter to Drizzle v1 RC; consumers must use `drizzle-orm@^1.0.0-rc.4` and upgrade existing migrations folders with v1 RC `drizzle-kit up`.
+
+### Patch Changes
+
+- 3c975ab: Publish PGlite dumps atomically so parallel test workers can safely share a dump path.
+- bb61a8b: Avoid reporting a stop failure when a managed subprocess has already exited.
+
 ## 0.3.4
 
 ### Patch Changes
