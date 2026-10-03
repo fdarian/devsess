@@ -12,7 +12,7 @@ import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
 import { Command } from 'effect/unstable/cli'
 
-const postgres = Service.make({
+const postgres = Service.container({
 	name: 'postgres',
 	image: 'postgres:17',
 	ports: { sql: 5432 },
