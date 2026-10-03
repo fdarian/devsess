@@ -1,10 +1,10 @@
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
 import { Config, Effect, Option, Runtime, Schema } from 'effect';
+import { Command, Flag, Prompt } from 'effect/cli';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { Terminal } from 'effect/Terminal';
-import { Command, Flag, Prompt } from 'effect/unstable/cli';
 import {
 	ensureDaemon as ensureDaemonBootstrap,
 	launchDetachedDaemon,
@@ -17,7 +17,7 @@ import { RunResponseSchema } from '../protocol';
 import { isRunActive, type RunRecord } from '../registry';
 import { shortRunId } from '../run-id';
 
-export class CommandError extends Schema.TaggedErrorClass<CommandError>()(
+export class CommandError extends Schema.TaggedError<CommandError>()(
 	'devsess/cli/CommandError',
 	{ message: Schema.String, cause: Schema.optional(Schema.Defect()) },
 ) {
@@ -77,10 +77,10 @@ export const daemonLocation = (
 
 /** Resolves the one daemon location shared by every project for this user. */
 export const resolveDaemonLocation = Effect.gen(function* () {
-	const xdgStateHome = yield* Config.string('XDG_STATE_HOME').pipe(
+	const xdgStateHome = yield* Config.String('XDG_STATE_HOME').pipe(
 		Config.option,
 	);
-	const xdgRuntimeDirectory = yield* Config.string('XDG_RUNTIME_DIR').pipe(
+	const xdgRuntimeDirectory = yield* Config.String('XDG_RUNTIME_DIR').pipe(
 		Config.option,
 	);
 	const stateHome = Option.match(xdgStateHome, {
@@ -345,7 +345,7 @@ export const chooseRun = (
 		});
 	if (interactive)
 		return Prompt.run(
-			Prompt.select({
+			Prompt.Select({
 				message: 'Choose a running preset',
 				choices: choices.map((choice) => ({
 					title: choice.label,
@@ -366,13 +366,13 @@ export const chooseRun = (
 export const daemonCommand = Command.make(
 	'__daemon',
 	{
-		dataDirectory: Flag.string('data-directory').pipe(
+		dataDirectory: Flag.String('data-directory').pipe(
 			Flag.withDescription('Daemon state directory.'),
 		),
-		logsDirectory: Flag.string('logs-directory').pipe(
+		logsDirectory: Flag.String('logs-directory').pipe(
 			Flag.withDescription('Directory for retained service logs.'),
 		),
-		socketPath: Flag.string('socket-path').pipe(
+		socketPath: Flag.String('socket-path').pipe(
 			Flag.withDescription('Daemon control socket path.'),
 		),
 	},
@@ -391,5 +391,5 @@ export const daemonCommand = Command.make(
 		),
 ).pipe(
 	Command.withDescription('Run the internal daemon process.'),
-	Command.withHidden,
+	Command.unlisted,
 );

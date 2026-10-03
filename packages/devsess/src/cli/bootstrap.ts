@@ -12,7 +12,7 @@ import { dirname, join } from 'node:path';
 import { Effect, Schema } from 'effect';
 import { callDaemon, DaemonClientError } from './client';
 
-export class DaemonBootstrapError extends Schema.TaggedErrorClass<DaemonBootstrapError>()(
+export class DaemonBootstrapError extends Schema.TaggedError<DaemonBootstrapError>()(
 	'DaemonBootstrapError',
 	{
 		message: Schema.String,

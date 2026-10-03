@@ -4,8 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { posix } from 'node:path';
 import { NodeRuntime, NodeServices, NodeTerminal } from '@effect/platform-node';
 import { Effect, Layer, Option } from 'effect';
+import { Argument, Command, Flag } from 'effect/cli';
 import { Terminal } from 'effect/Terminal';
-import { Argument, Command, Flag } from 'effect/unstable/cli';
 import devsessPackageJson from '../package.json' with { type: 'json' };
 import { reportCliCause } from './cli/cli-errors';
 import { attach } from './cli/commands/attach';
@@ -19,15 +19,15 @@ import { status } from './cli/commands/status';
 import { stop } from './cli/commands/stop';
 import { tail } from './cli/commands/tail';
 
-const optionalPreset = Argument.string('preset').pipe(
+const optionalPreset = Argument.String('preset').pipe(
 	Argument.withDescription('Preset name or project/preset selector.'),
 	Argument.optional,
 );
 const optionalString = (name: string, description: string) =>
-	Flag.string(name).pipe(Flag.withDescription(description), Flag.optional);
+	Flag.String(name).pipe(Flag.withDescription(description), Flag.optional);
 const options = {
 	project: optionalString('project', 'Select a configured project by name.'),
-	service: Flag.string('service').pipe(
+	service: Flag.String('service').pipe(
 		Flag.withAlias('s'),
 		Flag.withDescription('Select one service by name.'),
 		Flag.optional,
@@ -66,7 +66,8 @@ const stopCommand = Command.make(
 		...options,
 		preset: optionalPreset,
 		runId: optionalString('run', 'Select a run by its ID or unique prefix.'),
-		force: Flag.boolean('force').pipe(
+		force: Flag.Boolean('force').pipe(
+			Flag.withDefault(false),
 			Flag.withDescription('Allow stopping an orphaned process group.'),
 		),
 	},
@@ -82,7 +83,8 @@ const restartCommand = Command.make(
 		...options,
 		preset: optionalPreset,
 		runId: optionalString('run', 'Select a run by its ID or unique prefix.'),
-		allServices: Flag.boolean('all-services').pipe(
+		allServices: Flag.Boolean('all-services').pipe(
+			Flag.withDefault(false),
 			Flag.withDescription('Restart every service in the run.'),
 		),
 	},
@@ -99,15 +101,17 @@ const tailCommand = Command.make(
 		...options,
 		preset: optionalPreset,
 		runId: optionalString('run', 'Select a run by its ID or unique prefix.'),
-		allServices: Flag.boolean('all-services').pipe(
+		allServices: Flag.Boolean('all-services').pipe(
+			Flag.withDefault(false),
 			Flag.withDescription('Print output from every service in the run.'),
 		),
-		lines: Flag.integer('lines').pipe(
+		lines: Flag.Int('lines').pipe(
 			Flag.withAlias('n'),
 			Flag.withDescription('Print the last N lines per service (default: 10).'),
 			Flag.withDefault(10),
 		),
-		follow: Flag.boolean('follow').pipe(
+		follow: Flag.Boolean('follow').pipe(
+			Flag.withDefault(false),
 			Flag.withAlias('f'),
 			Flag.withDescription(
 				'Keep streaming new output until the service exits.',
@@ -145,7 +149,8 @@ const statusCommand = Command.make(
 	'status',
 	{
 		project: options.project,
-		all: Flag.boolean('all').pipe(
+		all: Flag.Boolean('all').pipe(
+			Flag.withDefault(false),
 			Flag.withAlias('a'),
 			Flag.withDescription('Show all active runs in full detail.'),
 		),
@@ -157,7 +162,8 @@ const listCommand = Command.make(
 	{
 		project: options.project,
 		configPath: options.configPath,
-		names: Flag.boolean('names').pipe(
+		names: Flag.Boolean('names').pipe(
+			Flag.withDefault(false),
 			Flag.withDescription('Print only preset selectors, one per line.'),
 		),
 	},
@@ -203,7 +209,7 @@ const printDoc = (filename: string) =>
 const docsReadCommand = Command.make(
 	'read',
 	{
-		id: Argument.string('id').pipe(
+		id: Argument.String('id').pipe(
 			Argument.withDescription('Topic ID or relative Markdown filename.'),
 		),
 	},

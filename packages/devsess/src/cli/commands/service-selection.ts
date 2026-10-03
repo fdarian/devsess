@@ -1,8 +1,8 @@
 import { Effect } from 'effect';
+import { Prompt } from 'effect/cli';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { Terminal } from 'effect/Terminal';
-import { Prompt } from 'effect/unstable/cli';
 import { cancelPicker } from '../picker-cancellation';
 import type { RunRecord } from '../registry';
 import { runSelector, shortRunId } from '../run-id';
@@ -59,7 +59,7 @@ export const chooseServices = (
 		});
 	if (interactive)
 		return Prompt.run(
-			Prompt.select({
+			Prompt.Select({
 				message: `Choose a service to ${command}${'selection' in run && !run.selection.local ? ` in ${run.selection.label}` : ''}`,
 				choices: [
 					...(command === 'tail'

@@ -3,7 +3,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { Effect, Fiber, Queue, Schema } from 'effect';
 import { DaemonEvent, type DaemonRequest, DaemonResponse } from './protocol';
 
-export class TerminalTransportError extends Schema.TaggedErrorClass<TerminalTransportError>()(
+export class TerminalTransportError extends Schema.TaggedError<TerminalTransportError>()(
 	'devsess/cli/TerminalTransportError',
 	{ message: Schema.String, cause: Schema.optional(Schema.Defect()) },
 ) {}

@@ -8,7 +8,7 @@ import {
 } from './protocol';
 import { DEFAULT_DAEMON_REQUEST_TIMEOUT_MS } from './termination';
 
-export class DaemonClientError extends Schema.TaggedErrorClass<DaemonClientError>()(
+export class DaemonClientError extends Schema.TaggedError<DaemonClientError>()(
 	'DaemonClientError',
 	{
 		message: Schema.String,

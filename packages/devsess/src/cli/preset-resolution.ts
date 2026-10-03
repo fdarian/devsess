@@ -1,5 +1,5 @@
 import { Effect } from 'effect';
-import { Prompt } from 'effect/unstable/cli';
+import { Prompt } from 'effect/cli';
 import { CommandError, type CommandOptions } from './commands/daemon';
 import type { ConfigPreset } from './config';
 import { readConfig, resolveDefaultConfigPath } from './config';
@@ -79,7 +79,7 @@ export const choosePreset = (
 			}),
 		);
 	return Prompt.run(
-		Prompt.select({
+		Prompt.Select({
 			message: 'Choose a preset',
 			choices: selection.candidates.map((candidate) => ({
 				title: `${candidate.projectName}/${candidate.presetName}`,

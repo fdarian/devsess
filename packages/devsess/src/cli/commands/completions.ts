@@ -1,5 +1,5 @@
 import { Console, Effect } from 'effect';
-import { Argument, Command, Flag } from 'effect/unstable/cli';
+import { Argument, Command, Flag } from 'effect/cli';
 import { CommandError } from './daemon';
 
 const zshScript = (
@@ -151,8 +151,8 @@ ${names
 export const completionsCommand = Command.make(
 	'completions',
 	{
-		shell: Argument.choice('shell', ['zsh', 'bash', 'fish']),
-		aliases: Flag.string('alias').pipe(
+		shell: Argument.Literals('shell', ['zsh', 'bash', 'fish']),
+		aliases: Flag.String('alias').pipe(
 			Flag.withDescription('Also register completion for this command name.'),
 			Flag.atLeast(0),
 		),

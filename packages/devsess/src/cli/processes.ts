@@ -235,7 +235,7 @@ const sameTreeProcess = (left: TreeProcess, right: TreeProcess) =>
 	left.processGroupId === right.processGroupId &&
 	left.startedAt === right.startedAt;
 
-export class ProcessError extends Schema.TaggedErrorClass<ProcessError>()(
+export class ProcessError extends Schema.TaggedError<ProcessError>()(
 	'ProcessError',
 	{
 		message: Schema.String,

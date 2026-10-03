@@ -3,11 +3,11 @@ import { isIP } from 'node:net';
 import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { Effect, Option, Schema, Stream } from 'effect';
-import { ChildProcess } from 'effect/unstable/process';
-import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner';
+import { ChildProcess } from 'effect/process';
+import { ChildProcessSpawner } from 'effect/process/ChildProcessSpawner';
 import type { ConfigProject, DevsessConfig } from './config';
 
-export class ProjectPathResolutionError extends Schema.TaggedErrorClass<ProjectPathResolutionError>()(
+export class ProjectPathResolutionError extends Schema.TaggedError<ProjectPathResolutionError>()(
 	'ProjectPathResolutionError',
 	{
 		path: Schema.String,

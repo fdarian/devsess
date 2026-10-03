@@ -66,13 +66,9 @@ describe('CLI errors', () => {
 	}
 
 	it('leaves CLI parse errors to the CLI renderer', async () => {
-		const result = await execute(
-			'bun',
-			['src/cli.ts', 'tail', '--lines', '-1'],
-			{
-				cwd: process.cwd(),
-			},
-		).catch((error: unknown) => error);
+		const result = await execute('bun', ['src/cli.ts', 'tail', '--lines'], {
+			cwd: process.cwd(),
+		}).catch((error: unknown) => error);
 		expect(result).toMatchObject({ code: 1 });
 		if (!(result instanceof Error) || !('stderr' in result))
 			throw new Error('Expected a failed CLI process');

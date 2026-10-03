@@ -63,7 +63,7 @@ export const defaultConfigPath = (
 
 /** Resolves the XDG default without opening or inspecting the resulting file. */
 export const resolveDefaultConfigPath = Effect.gen(function* () {
-	const xdgConfigHome = yield* Config.string('XDG_CONFIG_HOME').pipe(
+	const xdgConfigHome = yield* Config.String('XDG_CONFIG_HOME').pipe(
 		Config.option,
 	);
 	return Option.match(xdgConfigHome, {

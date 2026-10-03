@@ -83,7 +83,7 @@ export const RunRecordSchema = Schema.Struct({
 
 export type RunRecord = typeof RunRecordSchema.Type;
 
-class RunAlreadyReserved extends Schema.TaggedErrorClass<RunAlreadyReserved>()(
+class RunAlreadyReserved extends Schema.TaggedError<RunAlreadyReserved>()(
 	'devsess/cli/RunAlreadyReserved',
 	{
 		runId: Schema.String,
@@ -92,7 +92,7 @@ class RunAlreadyReserved extends Schema.TaggedErrorClass<RunAlreadyReserved>()(
 	},
 ) {}
 
-export class RunNotFound extends Schema.TaggedErrorClass<RunNotFound>()(
+export class RunNotFound extends Schema.TaggedError<RunNotFound>()(
 	'devsess/cli/RunNotFound',
 	{ runId: Schema.String },
 ) {}

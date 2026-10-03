@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { Cause, Effect, Exit, Runtime, Schema } from 'effect';
+import { Command, Flag } from 'effect/cli';
 import { FileSystem } from 'effect/FileSystem';
-import { Command, Flag } from 'effect/unstable/cli';
 import devsessPackageJson from '../../../package.json' with { type: 'json' };
 import { callDaemon, DaemonClientError } from '../client';
 import { Processes } from '../processes';
@@ -25,7 +25,7 @@ import {
 const DAEMON_STOP_TIMEOUT_MS = 12_000;
 const DAEMON_POLL_INTERVAL_MS = 50;
 
-export class DaemonStatusError extends Schema.TaggedErrorClass<DaemonStatusError>()(
+export class DaemonStatusError extends Schema.TaggedError<DaemonStatusError>()(
 	'DaemonStatusError',
 	{ message: Schema.String },
 ) {
@@ -439,7 +439,8 @@ const daemonStartCommand = Command.make('start', {}, () => start()).pipe(
 const daemonStopCommand = Command.make(
 	'stop',
 	{
-		force: Flag.boolean('force').pipe(
+		force: Flag.Boolean('force').pipe(
+			Flag.withDefault(false),
 			Flag.withDescription('Stop live runs before shutting down.'),
 		),
 	},
@@ -451,7 +452,8 @@ const daemonStatusCommand = Command.make('status', {}, () => status()).pipe(
 const daemonRestartCommand = Command.make(
 	'restart',
 	{
-		force: Flag.boolean('force').pipe(
+		force: Flag.Boolean('force').pipe(
+			Flag.withDefault(false),
 			Flag.withDescription('Stop live runs before restarting.'),
 		),
 	},

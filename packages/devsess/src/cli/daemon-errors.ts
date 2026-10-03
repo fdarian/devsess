@@ -1,6 +1,6 @@
 import { Schema } from 'effect';
 
-export class DaemonError extends Schema.TaggedErrorClass<DaemonError>()(
+export class DaemonError extends Schema.TaggedError<DaemonError>()(
 	'DaemonError',
 	{
 		message: Schema.String,

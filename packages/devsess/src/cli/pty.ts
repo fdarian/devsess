@@ -1,7 +1,7 @@
 import { Effect, Schema } from 'effect';
 import * as pty from 'node-pty';
 
-export class PtyError extends Schema.TaggedErrorClass<PtyError>()('PtyError', {
+export class PtyError extends Schema.TaggedError<PtyError>()('PtyError', {
 	message: Schema.String,
 	cause: Schema.optional(Schema.Defect()),
 }) {}
