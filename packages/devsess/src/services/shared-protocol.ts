@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process';
-import { open, mkdir, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, open, readlink, rm, symlink } from 'node:fs/promises';
 import { connect, type Socket } from 'node:net';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import lockfile from 'proper-lockfile';
 import { Effect } from 'effect';
+import lockfile from 'proper-lockfile';
 import { ServiceError } from './core';
 
 export const sharedGraceMs = 5_000;
@@ -27,9 +29,31 @@ export const startupLock = (dataDir: string) =>
 
 export type Lease = { socket: Socket; line: string };
 
-export const connectHost = (dataDir: string): Promise<Lease> =>
+/** Unix sockets have tiny pathname limits; a short directory alias keeps the socket in dataDir. */
+export const socketPath = async (dataDir: string) => {
+	const direct = join(dataDir, 'host.sock');
+	if (Buffer.byteLength(direct) < 100) return direct;
+	const alias = join(
+		tmpdir(),
+		`dvs-${createHash('sha256').update(dataDir).digest('hex').slice(0, 16)}`,
+	);
+	await symlink(dataDir, alias).catch(async (cause: unknown) => {
+		if (
+			typeof cause !== 'object' ||
+			cause === null ||
+			!('code' in cause) ||
+			cause.code !== 'EEXIST'
+		)
+			throw cause;
+		if ((await readlink(alias)) !== dataDir)
+			throw new Error(`Unexpected shared socket alias: ${alias}`);
+	});
+	return join(alias, 'host.sock');
+};
+
+const connectSocket = (address: string): Promise<Lease> =>
 	new Promise((resolve, reject) => {
-		const socket = connect(join(dataDir, 'host.sock'));
+		const socket = connect(address);
 		const timer = setTimeout(
 			() => socket.destroy(new Error('Shared host readiness timed out')),
 			60_000,
@@ -57,6 +81,9 @@ export const connectHost = (dataDir: string): Promise<Lease> =>
 			resolve({ socket, line: buffer.slice(0, newline) });
 		});
 	});
+
+export const connectHost = async (dataDir: string) =>
+	connectSocket(await socketPath(dataDir));
 
 const unavailable = (cause: unknown) =>
 	typeof cause === 'object' &&

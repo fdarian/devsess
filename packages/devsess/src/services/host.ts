@@ -3,10 +3,10 @@ import { NodeServices } from '@effect/platform-node';
 import { Effect, Exit, Schema, Scope } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
-import { Service, type ServiceDefinition } from './index';
 import { ServiceError } from './core';
-import { io } from './shared-protocol';
+import { Service, type ServiceDefinition } from './index';
 import { serveHost } from './shared-host';
+import { io } from './shared-protocol';
 
 const program = Effect.gen(function* () {
 	const args = yield* Schema.decodeUnknownEffect(

@@ -196,6 +196,9 @@ importers:
 
   packages/devsess:
     dependencies:
+      '@effect/platform-node':
+        specifier: ^4.0.0
+        version: 4.0.0(effect@4.0.0)(redis@6.3.0)
       get-port:
         specifier: ^7.2.0
         version: 7.2.0
@@ -209,9 +212,6 @@ importers:
       '@devsess/config':
         specifier: workspace:*
         version: link:../config
-      '@effect/platform-node':
-        specifier: ^4.0.0
-        version: 4.0.0(effect@4.0.0)(redis@6.3.0)
       '@effect/vitest':
         specifier: ^4.0.0
         version: 4.0.0(effect@4.0.0)(vitest@5.0.3(@types/node@22.19.21)(vite@8.0.16(@types/node@22.19.21)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0)))

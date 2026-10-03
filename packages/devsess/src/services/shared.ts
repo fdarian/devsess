@@ -1,8 +1,8 @@
 import { Effect, Schema } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { reportDaemonService } from '../dev/daemon-services';
-import { DevSessions, type DevSession } from '../dev-sessions';
 import { resolveSiblingDir } from '../dev/running-signal';
+import { type DevSession, DevSessions } from '../dev-sessions';
 import { ServiceError, validName } from './core';
 import { acquireHost, io, launchHost, startupLock } from './shared-protocol';
 
