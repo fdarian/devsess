@@ -23,15 +23,7 @@ struct ServiceRow: View {
     private var selected: Bool { armed || hovered || previewState == .hovered }
 
     private var statusColor: Color {
-        if service.isFailure || service.state == .failed || service.state == .orphaned {
-            return Color(nsColor: .systemRed)
-        }
-        switch service.state {
-        case .running: return Color(nsColor: .systemGreen)
-        case .starting, .stopping: return Color(nsColor: .systemOrange)
-        case .failed, .orphaned: return Color(nsColor: .systemRed)
-        case .exited, .unknown: return Color(nsColor: .tertiaryLabelColor)
-        }
+        service.state.statusColor(isFailure: service.isFailure)
     }
 
     private var detail: String? {
