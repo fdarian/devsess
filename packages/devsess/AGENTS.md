@@ -3,8 +3,8 @@
 Scaffold dev scripts with reusable dev sessions + a per-session PGlite/Drizzle adapter. Built on Effect; platform-agnostic (Node or Bun) — the caller supplies the platform.
 
 ## Stack
-- effect (v4 beta) — CLI (`effect/unstable/cli`) and process-spawn (`effect/unstable/process`) live in core `effect` now, no more `@effect/cli`/`@effect/platform`
-- The Effect entrypoint (`.`) doesn't wrap `effect/unstable/cli` — it exports `DevSessions`/`CurrentSession` (services + layers) and free functions (`getStickyPort`, `runManagedSubprocess`, `publishRunning`, `awaitRunning`); callers build a stock `Command.make(...)` themselves and provide `NodeServices.layer`/`BunServices.layer` for the `FileSystem | Path` (and friends) it needs. `@effect/platform-node` stays a devDependency, for tests only.
+- effect (v4) — CLI (`effect/cli`) and process-spawn (`effect/process`) live in core `effect`.
+- The Effect entrypoint (`.`) exports `DevSessions`/`CurrentSession` (services + layers) and free functions (`getStickyPort`, `runManagedSubprocess`, `publishRunning`, `awaitRunning`); callers build a stock `Command.make(...)` from `effect/cli` themselves and provide `NodeServices.layer`/`BunServices.layer` for the `FileSystem | Path` (and friends) it needs. `@effect/platform-node` is a devDependency, for tests only.
 - Only `devsess/async` still owns a `platform` config object (`DevPlatform` = `{ services, runMain }`, `DevServices` = `ChildProcessSpawner | FileSystem | Path | Stdio | Terminal`) — see `src/async/platform.ts`. It's the one facade that legitimately owns `main`.
 - @electric-sql/pglite + drizzle-orm — optional peers, only for the `devsess/pglite` entrypoint
 

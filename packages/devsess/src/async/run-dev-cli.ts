@@ -1,5 +1,5 @@
 import { Effect, Layer, type Scope } from 'effect';
-import * as cli from 'effect/unstable/cli';
+import * as cli from 'effect/cli';
 import { DevSessions } from '../dev-sessions';
 import type { DevPlatform, DevServices } from './platform';
 

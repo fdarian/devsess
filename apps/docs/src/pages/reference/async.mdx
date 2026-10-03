@@ -18,7 +18,7 @@ function defineDevCli(config: {
 }): (argv: string[]) => void
 ```
 
-Unlike the Effect API — which stops wrapping `effect/unstable/cli` and hands you services and layers instead (see [Writing a dev CLI](/writing-a-dev-cli)) — `devsess/async` keeps this config-object shape on purpose: it's the one facade that legitimately owns `main` for callers who'd rather not reach for `effect` at all. `run` returns `Promise<void> | void` instead of an `Effect`, and every `ctx` member returns a `Promise`. `--version` is hardcoded to `0.0.0` here (the Effect side's `Command.run`/`Command.runWith` takes a real version string; this facade doesn't expose an equivalent option).
+Unlike the Effect API — which stops wrapping `effect/cli` and hands you services and layers instead (see [Writing a dev CLI](/writing-a-dev-cli)) — `devsess/async` keeps this config-object shape on purpose: it's the one facade that legitimately owns `main` for callers who'd rather not reach for `effect` at all. `run` returns `Promise<void> | void` instead of an `Effect`, and every `ctx` member returns a `Promise`. `--version` is hardcoded to `0.0.0` here (the Effect side's `Command.run`/`Command.runWith` takes a real version string; this facade doesn't expose an equivalent option).
 
 Each `ctx` call runs against the single process-lifetime scope `defineDevCli` opens internally — not a fresh scope per call — so a subprocess started via `ctx.runManagedSubprocess` or a file written by `ctx.publishRunning` stays alive until the CLI process itself ends, not until that individual Promise settles.
 
@@ -109,4 +109,4 @@ Same behavior as the [Effect version](/reference/devsess): one shared `sess.json
 
 ## `cli`, `Schema`
 
-Re-exports of `effect/unstable/cli` and `effect/Schema` — so `defineDevCli`'s `options` and `SessionState.slot`'s schema can be declared without adding `effect` as a direct import. The core `devsess` entry point re-exports **neither** — Effect users build a `Command` straight from `effect/unstable/cli` and import `Schema` from `effect` directly.
+Re-exports of `effect/cli` and `effect/Schema` — so `defineDevCli`'s `options` and `SessionState.slot`'s schema can be declared without adding `effect` as a direct import. The core `devsess` entry point re-exports **neither** — Effect users build a `Command` straight from `effect/cli` and import `Schema` from `effect` directly.

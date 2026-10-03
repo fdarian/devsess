@@ -29,12 +29,12 @@ bun add @electric-sql/pglite drizzle-orm
 import { CurrentSession, DevSessions, getStickyPort, runManagedSubprocess } from 'devsess';
 import { NodeRuntime, NodeServices } from '@effect/platform-node';
 import { Effect } from 'effect';
-import { Command, Flag } from 'effect/unstable/cli';
+import { Command, Flag } from 'effect/cli';
 
 const web = Command.make(
 	'web',
 	{
-		lite: Flag.boolean('lite').pipe(
+		lite: Flag.Boolean('lite').pipe(
 			Flag.withDescription('Use a per-session PGlite database'),
 		),
 	},
@@ -99,7 +99,7 @@ From `devsess` (the Effect API):
 - `getStickyPort(session)`, `runManagedSubprocess(cmd, args, opts?)`, `publishRunning(data)`, `awaitRunning(pkg)` — free functions; only `getStickyPort` takes a `DevSession`
 - `SessionState.slot(schema)` — typed per-session JSON state
 
-Build your CLI with a stock `Command.make(...)` from `effect/unstable/cli` — devsess no longer wraps it.
+Build your CLI with a stock `Command.make(...)` from `effect/cli` — devsess no longer wraps it.
 
 From `devsess/pglite`:
 

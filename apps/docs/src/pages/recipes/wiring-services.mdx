@@ -15,7 +15,7 @@ title: Wiring services together
 import { CurrentSession, DevSessions, getStickyPort, publishRunning } from 'devsess'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
-import { Command } from 'effect/unstable/cli'
+import { Command } from 'effect/cli'
 
 const db = Command.make('db', {}, () =>
 	Effect.gen(function* () {
@@ -48,7 +48,7 @@ Command.run(db, { version: '0.1.0' }).pipe(
 import { DevSessions, awaitRunning, runManagedSubprocess } from 'devsess'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
-import { Command } from 'effect/unstable/cli'
+import { Command } from 'effect/cli'
 
 type DbRunning = { port: number }
 

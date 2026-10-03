@@ -4,7 +4,7 @@ title: devsess
 
 The Effect-based core: `DevSessions` and `CurrentSession` (services + layers), and free functions for sticky ports, managed subprocesses, and cross-package running signals. See [Writing a dev CLI](/writing-a-dev-cli) for how these fit around a stock `Command.make(...)`, and [Running your dev server](/recipes/dev-server) for subprocess lifetime.
 
-Peer: `effect` (`^4.0.0-beta.101`). No platform package is a peer — `devsess` depends on neither; provide something satisfying `FileSystem | Path` yourself (both `@effect/platform-node`'s `NodeServices.layer` and `@effect/platform-bun`'s `BunServices.layer` do, since each is a superset).
+Peer: `effect` (`^4.0.0`). No platform package is a peer — `devsess` depends on neither; provide something satisfying `FileSystem | Path` yourself (both `@effect/platform-node`'s `NodeServices.layer` and `@effect/platform-bun`'s `BunServices.layer` do, since each is a superset).
 
 ```bash
 bun add devsess effect @effect/platform-node
@@ -116,7 +116,7 @@ function runManagedSubprocess(
 ): Effect.Effect<ExitCode, PlatformError, ChildProcessSpawner | Scope.Scope>
 ```
 
-Takes no `DevSession` — it only needs a scope to register cleanup against and something to spawn a process with. `ExitCode` (`effect/unstable/process`) is a branded `number`.
+Takes no `DevSession` — it only needs a scope to register cleanup against and something to spawn a process with. `ExitCode` (`effect/process`) is a branded `number`.
 
 | Parameter | Type | |
 | --- | --- | --- |

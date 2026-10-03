@@ -58,7 +58,7 @@ import { CurrentSession, DevSessions, getStickyPort, runManagedSubprocess } from
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import { Effect } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
-import { Command } from 'effect/unstable/cli'
+import { Command } from 'effect/cli'
 
 const web = Command.make('web', {}, () =>
 	Effect.gen(function* () {
