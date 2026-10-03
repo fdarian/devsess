@@ -187,6 +187,7 @@ export const makeRunStart = (options: {
 	) =>
 		Effect.gen(function* () {
 			const shell = parseShellCommand(service.command);
+			const instanceId = crypto.randomUUID();
 			const terminal = yield* createPty({
 				command: shell[0],
 				args: [...shell[1]],
@@ -196,6 +197,7 @@ export const makeRunStart = (options: {
 					DEVSESS_SOCKET: options.socketPath,
 					DEVSESS_RUN_ID: run.runId,
 					DEVSESS_SERVICE: service.name,
+					DEVSESS_INSTANCE_ID: instanceId,
 				},
 				cols: 80,
 				rows: 24,
@@ -257,6 +259,7 @@ export const makeRunStart = (options: {
 			}
 			const ownership = captured.value;
 			const live: LiveService = {
+				instanceId,
 				address,
 				terminal,
 				ownership,

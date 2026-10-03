@@ -4,6 +4,8 @@ title: devsess/services
 
 Define scoped services with custom Effect handlers or Docker containers. Definitions do not start anything; use `Service.run(session, def)` directly or provide `def.layer` and yield `def.key`.
 
+Under `devsess start`, ready `Service.make` and `Service.container` services appear with their ports beneath the owning process in expanded `devsess status` and the menu bar. Child rows are informational; stop and restart act on the parent process. Closing a service's scope removes its row. Reporting is best-effort and requires no configuration.
+
 ## Handler services
 
 ```ts

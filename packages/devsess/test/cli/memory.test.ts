@@ -16,6 +16,7 @@ import {
 } from '../../src/cli/processes';
 import { Registry, type RunRecord } from '../../src/cli/registry';
 import { makeRequestDispatcher } from '../../src/cli/request-dispatch';
+import type { LiveService } from '../../src/cli/service-state';
 import { runTest } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
 
@@ -95,11 +96,16 @@ describe('service memory', () => {
 					);
 					yield* registry.reserve(run);
 					const read = vi.fn(() => Effect.succeed(tree));
+					const live = {
+						instanceId: 'instance',
+						exit: undefined,
+					} as LiveService;
+					const terminals = new Map([['run:web', live]]);
 					const create = (memorySample: ReturnType<typeof makeMemorySampler>) =>
 						makeRequestDispatcher({
 							registry,
 							memorySample,
-							terminals: new Map(),
+							terminals,
 							environments: new Map(),
 							sockets: new Map(),
 							output: {} as never,
@@ -111,6 +117,19 @@ describe('service memory', () => {
 							fail: () => Effect.void,
 						});
 					const dispatcher = create(makeMemorySampler(read));
+					const report = {
+						version: 1 as const,
+						requestId: 'report',
+						method: 'reportService' as const,
+						params: {
+							runId: 'run',
+							service: 'web',
+							name: 'postgres',
+							instanceId: 'instance',
+							ports: { sql: 5432 },
+						},
+					};
+					yield* dispatcher.processRequest(report, undefined);
 					const list = {
 						version: 1 as const,
 						requestId: 'list',
@@ -130,6 +149,56 @@ describe('service memory', () => {
 						.processRequest(get, undefined)
 						.pipe(Effect.flatMap(decodeRunResponse));
 					expect(listed[0]).toEqual(fetched);
+					expect(fetched.services[0]?.children).toEqual([
+						{ name: 'postgres', ports: { sql: 5432 } },
+					]);
+					yield* dispatcher.processRequest(
+						{ ...report, params: { ...report.params, ports: { sql: 5433 } } },
+						undefined,
+					);
+					expect(live.children).toEqual([
+						{ name: 'postgres', ports: { sql: 5433 } },
+					]);
+					yield* dispatcher.processRequest(
+						{
+							...report,
+							params: { ...report.params, instanceId: 'old', name: 'stale' },
+						},
+						undefined,
+					);
+					expect(live.children).toHaveLength(1);
+					yield* dispatcher.processRequest(
+						{
+							...report,
+							method: 'retractService',
+							params: {
+								runId: 'run',
+								service: 'web',
+								name: 'postgres',
+								instanceId: 'instance',
+							},
+						},
+						undefined,
+					);
+					expect(
+						(yield* dispatcher
+							.processRequest(get, undefined)
+							.pipe(Effect.flatMap(decodeRunResponse))).services[0],
+					).not.toHaveProperty('children');
+					yield* dispatcher.processRequest(report, undefined);
+					live.exit = { exitCode: 0 };
+					expect(
+						(yield* dispatcher
+							.processRequest(get, undefined)
+							.pipe(Effect.flatMap(decodeRunResponse))).services[0],
+					).not.toHaveProperty('children');
+					terminals.clear();
+					yield* dispatcher.processRequest(report, undefined);
+					expect(
+						(yield* dispatcher
+							.processRequest(get, undefined)
+							.pipe(Effect.flatMap(decodeRunResponse))).services[0],
+					).not.toHaveProperty('children');
 					expect(fetched.services[0]).toHaveProperty(
 						'memoryBytes',
 						15360 * 1024,
@@ -137,6 +206,9 @@ describe('service memory', () => {
 					expect(fetched.services[1]).not.toHaveProperty('memoryBytes');
 					expect(read).toHaveBeenCalledTimes(1);
 					const fileSystem = yield* FileSystem;
+					expect(
+						yield* fileSystem.readFileString(join(root, 'running.json')),
+					).not.toContain('children');
 					expect(
 						yield* fileSystem.readFileString(join(root, 'running.json')),
 					).not.toContain('memoryBytes');

@@ -4,6 +4,14 @@ import { RunRecordSchema, ServiceRecordSchema } from './registry';
 
 export const ServiceResponseSchema = Schema.Struct({
 	...ServiceRecordSchema.fields,
+	children: Schema.optionalKey(
+		Schema.Array(
+			Schema.Struct({
+				name: Identifier,
+				ports: Schema.optionalKey(Schema.Record(Schema.String, Schema.Int)),
+			}),
+		),
+	),
 	memoryBytes: Schema.optionalKey(
 		Schema.Int.check(Schema.makeFilter((value) => value >= 0)),
 	),
@@ -162,6 +170,29 @@ export const DetachRequest = Schema.Struct({
 	}),
 });
 export const DaemonRequest = Schema.Union([
+	Schema.Struct({
+		version: Schema.Literal(PROTOCOL_VERSION),
+		requestId: Identifier,
+		method: Schema.Literal('reportService'),
+		params: Schema.Struct({
+			runId: Identifier,
+			service: Identifier,
+			name: Identifier,
+			instanceId: Schema.optionalKey(Identifier),
+			ports: Schema.optionalKey(Schema.Record(Schema.String, Schema.Int)),
+		}),
+	}),
+	Schema.Struct({
+		version: Schema.Literal(PROTOCOL_VERSION),
+		requestId: Identifier,
+		method: Schema.Literal('retractService'),
+		params: Schema.Struct({
+			runId: Identifier,
+			service: Identifier,
+			name: Identifier,
+			instanceId: Schema.optionalKey(Identifier),
+		}),
+	}),
 	StartRunRequest,
 	ListRunsRequest,
 	GetRunRequest,

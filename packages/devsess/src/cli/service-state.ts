@@ -17,6 +17,11 @@ import {
 import { TERMINATION_TERM_SIGNAL } from './termination';
 
 export type LiveService = {
+	readonly instanceId?: string;
+	children?: Array<{
+		readonly name: string;
+		readonly ports?: Readonly<Record<string, number>>;
+	}>;
 	readonly terminal: IPty;
 	readonly address: LogAddress;
 	readonly ownership: LiveProcessOwnership;

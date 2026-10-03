@@ -103,7 +103,7 @@ export const makeRequestDispatcher = (options: {
 		options.memorySample === undefined
 			? makeMemorySampler()
 			: options.memorySample;
-	const withMemory = (runs: ReadonlyArray<RunRecord>) =>
+	const withTelemetry = (runs: ReadonlyArray<RunRecord>) =>
 		Effect.gen(function* () {
 			if (
 				!runs.some((run) =>
@@ -115,16 +115,27 @@ export const makeRequestDispatcher = (options: {
 			)
 				return runs;
 			const tree = yield* memorySample;
-			if (tree === undefined) return runs;
 			return runs.map((run) => ({
 				...run,
 				services: run.services.map((service) => {
 					if (!isActive(service.state) || service.process === undefined)
 						return service;
-					const memoryBytes = serviceMemoryBytes(tree, service.process);
+					const live = options.terminals.get(
+						serviceKey({ runId: run.runId, serviceName: service.name }),
+					);
+					const children =
+						live?.exit === undefined &&
+						live?.children !== undefined &&
+						live.children.length > 0
+							? { children: [...live.children] }
+							: {};
+					const memoryBytes =
+						tree === undefined
+							? undefined
+							: serviceMemoryBytes(tree, service.process);
 					return memoryBytes === undefined
-						? service
-						: { ...service, memoryBytes };
+						? { ...service, ...children }
+						: { ...service, ...children, memoryBytes };
 				}),
 			}));
 		});
@@ -148,10 +159,10 @@ export const makeRequestDispatcher = (options: {
 				return Effect.fail(new DaemonError({ message: 'Socket is closed' }));
 		}
 		if (incoming.method === 'listRuns')
-			return options.registry.list.pipe(Effect.flatMap(withMemory));
+			return options.registry.list.pipe(Effect.flatMap(withTelemetry));
 		if (incoming.method === 'getRun')
 			return options.registry.get(incoming.params.runId).pipe(
-				Effect.flatMap((run) => withMemory([run])),
+				Effect.flatMap((run) => withTelemetry([run])),
 				Effect.map((runs) => runs[0]),
 			);
 		if (incoming.method === 'info')
@@ -185,6 +196,45 @@ export const makeRequestDispatcher = (options: {
 				Effect.tap(() => bestEffortPrune(options.registry)),
 				Effect.tapError(() => bestEffortPrune(options.registry)),
 			);
+		if (
+			incoming.method === 'reportService' ||
+			incoming.method === 'retractService'
+		)
+			return Effect.sync(() => {
+				const live = options.terminals.get(
+					serviceKey({
+						runId: incoming.params.runId,
+						serviceName: incoming.params.service,
+					}),
+				);
+				if (
+					live === undefined ||
+					live.exit !== undefined ||
+					(live.instanceId !== undefined &&
+						incoming.params.instanceId !== live.instanceId)
+				)
+					return {};
+				const children = live.children ?? [];
+				if (incoming.method === 'retractService')
+					live.children = children.filter(
+						(child) => child.name !== incoming.params.name,
+					);
+				else {
+					const child = {
+						name: incoming.params.name,
+						...(incoming.params.ports === undefined
+							? {}
+							: { ports: incoming.params.ports }),
+					};
+					const index = children.findIndex(
+						(value) => value.name === child.name,
+					);
+					if (index === -1) children.push(child);
+					else children[index] = child;
+					live.children = children;
+				}
+				return {};
+			});
 		if (incoming.method === 'publish' || incoming.method === 'unpublish')
 			return Effect.gen(function* () {
 				const run = yield* options.registry.get(incoming.params.runId);

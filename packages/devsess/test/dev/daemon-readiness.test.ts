@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 import { Effect } from 'effect';
 import { afterEach, vi } from 'vitest';
+import { reportDaemonService } from '../../src/dev/daemon-services';
 import {
 	publishRunning,
 	runningSignalPath,
@@ -67,6 +68,39 @@ const serviceEnvironment = (socketPath: string) => {
 };
 
 describe('daemon readiness publishing', () => {
+	it.live(
+		'reports and retracts children silently, including unsupported and unreachable daemons',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					vi.stubEnv('DEVSESS_SOCKET', undefined);
+					yield* Effect.scoped(reportDaemonService('worker', {}));
+					const socketPath = join(root, 'children.sock');
+					serviceEnvironment(socketPath);
+					const requests: ReadinessRequest[] = [];
+					yield* serve(socketPath, (request, socket) => {
+						requests.push(request);
+						socket.end(
+							`${JSON.stringify({ version: 1, requestId: request.requestId, ok: request.params.service !== 'old', result: {} })}\n`,
+						);
+					});
+					yield* Effect.scoped(reportDaemonService('postgres', { sql: 5432 }));
+					expect(requests.map((request) => request.method)).toEqual([
+						'reportService',
+						'retractService',
+					]);
+					expect(requests[0]?.params).toMatchObject({
+						name: 'postgres',
+						ports: { sql: 5432 },
+					});
+					vi.stubEnv('DEVSESS_SERVICE', 'old');
+					yield* Effect.scoped(reportDaemonService('worker', {}));
+					vi.stubEnv('DEVSESS_SOCKET', join(root, 'missing.sock'));
+					yield* Effect.scoped(reportDaemonService('worker', {}));
+				}),
+			),
+	);
 	afterEach(() => {
 		vi.unstubAllEnvs();
 		vi.restoreAllMocks();

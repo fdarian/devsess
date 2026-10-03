@@ -138,7 +138,19 @@ const formatRun = (
 	`${run.projectName}/${run.presetName} ${isRunActive(run) ? 'running' : 'finished'} [${shortRunId(run, knownRuns)}]${location}`,
 	`  Started: ${run.startedAt}`,
 	...(isRunActive(run) ? [`  Uptime: ${elapsed(run.startedAt, now)}`] : []),
-	...run.services.map(formatService),
+	...run.services.flatMap((service) => [
+		formatService(service),
+		...(service.children ?? []).map(
+			(child) =>
+				`    ${child.name}${
+					child.ports === undefined
+						? ''
+						: ` ${Object.values(child.ports)
+								.map((port) => `:${port}`)
+								.join(' ')}`
+				}`,
+		),
+	]),
 ];
 
 export const status = (options: { project?: string; all: boolean }) =>

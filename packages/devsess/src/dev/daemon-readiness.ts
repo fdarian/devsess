@@ -23,18 +23,15 @@ type ServiceIdentity = {
 	readonly service: string;
 };
 
-const sendReadiness = (
+export const sendDaemonRequest = (
 	identity: ServiceIdentity,
 	request: {
 		readonly version: 1;
 		readonly requestId: string;
-		readonly method: 'publish' | 'unpublish';
-		readonly params: {
-			readonly runId: string;
-			readonly service: string;
-			readonly value?: Schema.Json;
-		};
+		readonly method: string;
+		readonly params: Readonly<Record<string, unknown>>;
 	},
+	timeoutMs = RESPONSE_TIMEOUT_MS,
 ) =>
 	Effect.tryPromise({
 		try: () =>
@@ -55,7 +52,7 @@ const sendReadiness = (
 						finish(() =>
 							reject(new Error('Daemon readiness request timed out')),
 						),
-					RESPONSE_TIMEOUT_MS,
+					timeoutMs,
 				);
 				socket.once('connect', () =>
 					socket.write(`${JSON.stringify(request)}\n`),
@@ -104,7 +101,7 @@ export const publishDaemonReadiness = (value: unknown) =>
 		return Effect.acquireRelease(
 			Schema.decodeUnknownEffect(Schema.Json)(value).pipe(
 				Effect.flatMap((json) =>
-					sendReadiness(identity, {
+					sendDaemonRequest(identity, {
 						version: 1,
 						requestId: crypto.randomUUID(),
 						method: 'publish',
@@ -115,7 +112,7 @@ export const publishDaemonReadiness = (value: unknown) =>
 			),
 			(result) =>
 				Exit.isSuccess(result)
-					? sendReadiness(identity, {
+					? sendDaemonRequest(identity, {
 							version: 1,
 							requestId: crypto.randomUUID(),
 							method: 'unpublish',
