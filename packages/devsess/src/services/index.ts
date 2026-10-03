@@ -3,6 +3,7 @@ import { FileSystem } from 'effect/FileSystem';
 import { Path } from 'effect/Path';
 import type { Scope } from 'effect/Scope';
 import { CurrentSession } from '../current-session';
+import { reportDaemonService } from '../dev/daemon-services';
 import { getStickyPort } from '../dev/sticky-port';
 import type { DevSession } from '../dev-sessions';
 import { type ContainerSpec, startContainer } from './container';
@@ -74,6 +75,7 @@ const run = <Name extends string, Port extends string, A, E, R>(
 			def
 				.start({ session, ports: prepared.ports, dataDir: prepared.dataDir })
 				.pipe(
+					Effect.tap(() => reportDaemonService(def.name, prepared.ports)),
 					Effect.map(
 						(value) =>
 							({

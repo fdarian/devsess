@@ -4,6 +4,8 @@ title: devsess/services
 
 Define scoped services with custom Effect handlers or Docker containers. Definitions do not start anything; use `Service.run(session, def)` directly or provide `def.layer` and yield `def.key`.
 
+When `DEVSESS_SOCKET`, `DEVSESS_RUN_ID`, and `DEVSESS_SERVICE` are set, ready `Service.make` and `Service.container` services report their names and ports to the daemon and retract them when their scopes close. Reporting is silent and best-effort; older daemons can ignore it.
+
 ## Handler services
 
 ```ts
