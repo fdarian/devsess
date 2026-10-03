@@ -3,6 +3,18 @@ import Testing
 @testable import DevsessBar
 
 struct ServiceRowLabelsTests {
+    @Test func decodesOptionalChildren() throws {
+        let service = try JSONDecoder().decode(ServiceRecord.self, from: Data("""
+        {"name":"web","command":"bun dev","cwd":"/repo","state":"running","children":[{"name":"vite","ports":{"http":5173}},{"name":"worker"}]}
+        """.utf8))
+        #expect(service.children?.map(\.name) == ["vite", "worker"])
+        #expect(service.children?.first?.ports == ["http": 5173])
+        #expect(service.children?.last?.ports == nil)
+        let legacy = try JSONDecoder().decode(ServiceRecord.self, from: Data("""
+        {"name":"web","command":"bun dev","cwd":"/repo","state":"running"}
+        """.utf8))
+        #expect(legacy.children == nil)
+    }
     @Test func localhostPortsAndOtherHosts() throws {
         for host in ["localhost", "LOCALHOST", "127.0.0.1", "[::1]"] {
             #expect(ServiceRowLabels.port(for: try #require(URL(string: "http://\(host):58356/path"))) == ":58356")

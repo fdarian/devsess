@@ -14,7 +14,9 @@ struct PanelView: View {
         let runs = store.groups.active
         if runs.isEmpty { return 30 }
         return runs.reduce(0) { height, run in
-            height + 20 + CGFloat(run.services.count) * 24
+            height + 20 + CGFloat(run.services.reduce(0) { count, service in
+                count + 1 + (service.children?.count ?? 0)
+            }) * ServiceRowGeometry.height
                 + (store.actionErrors[run.id] == nil ? 0 : 28)
         } + CGFloat(max(0, runs.count - 1)) * 6
     }

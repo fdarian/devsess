@@ -24,7 +24,14 @@ struct PublishedValue: Decodable, Sendable {
     private enum CodingKeys: String, CodingKey { case url }
 }
 
+struct ReportedService: Decodable, Sendable, Identifiable {
+    let name: String
+    let ports: [String: Int]?
+    var id: String { name }
+}
+
 struct ServiceRecord: Decodable, Sendable, Identifiable {
+    let children: [ReportedService]?
     let name: String
     let command: String
     let cwd: String
@@ -35,7 +42,8 @@ struct ServiceRecord: Decodable, Sendable, Identifiable {
     let memoryBytes: Double?
 
     init(name: String, command: String, cwd: String, state: ServiceState, exitCode: Int?, signal: Int?,
-         published: Published?, memoryBytes: Double? = nil) {
+         published: Published?, memoryBytes: Double? = nil, children: [ReportedService]? = nil) {
+        self.children = children
         self.name = name
         self.command = command
         self.cwd = cwd
@@ -49,6 +57,7 @@ struct ServiceRecord: Decodable, Sendable, Identifiable {
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         name = try values.decode(String.self, forKey: .name)
+        children = try values.decodeIfPresent([ReportedService].self, forKey: .children)
         command = try values.decode(String.self, forKey: .command)
         cwd = try values.decode(String.self, forKey: .cwd)
         state = try values.decode(ServiceState.self, forKey: .state)
@@ -60,7 +69,7 @@ struct ServiceRecord: Decodable, Sendable, Identifiable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, command, cwd, state, exitCode, signal, published, memoryBytes
+        case name, command, cwd, state, exitCode, signal, published, memoryBytes, children
     }
 
     var id: String { name }

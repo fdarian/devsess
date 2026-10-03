@@ -6,6 +6,8 @@ Runs in `.claude/worktrees` show a coral Claude starburst and muted count of non
 
 Requires Swift 6 and macOS Command Line Tools (no Xcode). From this directory:
 
+Ready in-process services appear as indented, lighter child rows with ports. Their status dots inherit the parent state; children have no click actions or context menus. Older daemons that omit `children` render unchanged.
+
 ```sh
 swift build
 swift test

@@ -6,7 +6,7 @@ enum Fixtures {
         let json = """
         [
           {"runId":"a","projectName":"nisi","presetName":"desktop","canonicalCwd":"\(home)/.claude/worktrees/nisi/desktop","state":"running","services":[
-            {"name":"desktop","command":"bun run scripts/dev.ts","cwd":"\(home)/.claude/worktrees/nisi/desktop","state":"running","memoryBytes":1288490188,"published":{"value":{"url":"http://localhost:50016/"}}}
+            {"name":"desktop","command":"bun run scripts/dev.ts","cwd":"\(home)/.claude/worktrees/nisi/desktop","state":"running","children":[{"name":"vite","ports":{"http":50016}},{"name":"postgres","ports":{"postgres":5432}}],"memoryBytes":1288490188,"published":{"value":{"url":"http://localhost:50016/"}}}
           ]},
           {"runId":"b","projectName":"devsess","presetName":"docs","canonicalCwd":"\(home)/.claude/worktrees/devsess/docs-site","state":"starting","services":[
             {"name":"docs","command":"bun run docs --host 127.0.0.1","cwd":"\(home)/.claude/worktrees/devsess/docs-site","state":"starting","memoryBytes":90177536}
