@@ -1,6 +1,6 @@
-import { spawn } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, open, readlink, rm, symlink } from 'node:fs/promises';
+import { mkdir, open, readFile, readlink, rm, symlink } from 'node:fs/promises';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -91,12 +91,30 @@ const unavailable = (cause: unknown) =>
 	'code' in cause &&
 	(cause.code === 'ENOENT' || cause.code === 'ECONNREFUSED');
 
-const startHost = (dataDir: string, launch: () => Promise<void>) =>
+type Launch = () => Promise<void> | Promise<ChildProcess>;
+
+const startHost = (dataDir: string, launch: Launch) =>
 	Effect.gen(function* () {
 		yield* io(() => rm(join(dataDir, 'host.sock'), { force: true }));
-		yield* io(launch);
+		const child = yield* io(() =>
+			launch().then((child) => (child === undefined ? undefined : child)),
+		);
 		const deadline = Date.now() + 60_000;
-		return yield* io(() => connectHost(dataDir)).pipe(
+		return yield* Effect.suspend(() => {
+			if (
+				child !== undefined &&
+				(child.exitCode !== null || child.signalCode !== null)
+			)
+				return io(() => readFile(join(dataDir, 'service.log'), 'utf8')).pipe(
+					Effect.flatMap(
+						(log) =>
+							new ServiceError({
+								message: `Shared host failed to start: ${log}`,
+							}),
+					),
+				);
+			return io(() => connectHost(dataDir));
+		}).pipe(
 			Effect.retry({
 				while: (error) => unavailable(error.cause) && Date.now() < deadline,
 				schedule: Schedule.spaced('50 millis'),
@@ -104,7 +122,7 @@ const startHost = (dataDir: string, launch: () => Promise<void>) =>
 		);
 	});
 
-const acquireHostUnderLock = (dataDir: string, launch: () => Promise<void>) =>
+const acquireHostUnderLock = (dataDir: string, launch: Launch) =>
 	Effect.gen(function* () {
 		yield* Effect.acquireRelease(startupLock(dataDir), (release) =>
 			io(release).pipe(Effect.orDie),
@@ -116,7 +134,7 @@ const acquireHostUnderLock = (dataDir: string, launch: () => Promise<void>) =>
 		);
 	}).pipe(Effect.scoped);
 
-export const acquireHost = (dataDir: string, launch: () => Promise<void>) =>
+export const acquireHost = (dataDir: string, launch: Launch) =>
 	Effect.gen(function* () {
 		yield* io(() => mkdir(dataDir, { recursive: true }));
 		return yield* io(() => connectHost(dataDir)).pipe(
@@ -153,6 +171,7 @@ export const launchHost = async (
 			child.once('error', reject);
 		});
 		child.unref();
+		return child;
 	} finally {
 		await log.close();
 	}

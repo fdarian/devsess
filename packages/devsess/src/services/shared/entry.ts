@@ -36,7 +36,7 @@ const program = Effect.gen(function* () {
 	const def = candidates[0];
 	if (candidates.length !== 1 || def === undefined || def.shared === undefined)
 		return yield* new ServiceError({
-			message: `Export exactly one shared service named ${args[1]} from ${args[0]}`,
+			message: `export the shared service \`${args[1]}\` from the file that calls Service.make (${args[0]}); exactly one matching export is required`,
 		});
 	const scope = yield* Scope.make();
 	const output = def.shared.output;

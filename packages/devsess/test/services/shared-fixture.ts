@@ -6,7 +6,6 @@ export const fixture = Service.make({
 	name: 'fixture',
 	ports: ['api'],
 	shared: {
-		module: import.meta.url,
 		output: Schema.Struct({ pid: Schema.Number }),
 	},
 	start: (ctx) =>

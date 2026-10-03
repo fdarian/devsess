@@ -1,9 +1,16 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import {
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	stat,
+	writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NodeServices } from '@effect/platform-node';
-import { Effect, Exit, Schema, Scope } from 'effect';
+import { Effect, Exit, Scope } from 'effect';
 import { describe, expect, it } from 'vitest';
 import { Service } from '../../src/services/index';
 import {
@@ -11,6 +18,8 @@ import {
 	type Lease,
 	launchHost,
 } from '../../src/services/shared/protocol';
+import { fixture } from './shared-fixture';
+import { getPrivateService } from './shared-private-fixture';
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const waitFor = async (predicate: () => Promise<boolean>) => {
@@ -60,35 +69,34 @@ describe('shared host protocol (real detached processes)', () => {
 			await rm(root, { recursive: true, force: true });
 		}
 	}, 15_000);
-	it('Service.run decodes output and concurrent home consumers select one home session', async () => {
+	it('Service.run imports the captured fixture and shares one fixed root session across projects', async () => {
 		const root = await mkdtemp(join(tmpdir(), 'devsess-home-'));
+		await writeFile(join(root, '.git'), 'gitdir: elsewhere');
+		await writeFile(join(root, 'package.json'), '{}');
+		for (const project of ['one', 'two']) {
+			await mkdir(join(root, 'packages', project), { recursive: true });
+			await writeFile(join(root, 'packages', project, 'package.json'), '{}');
+		}
 		const scopes = await Promise.all([
 			Effect.runPromise(Scope.make()),
 			Effect.runPromise(Scope.make()),
 		]);
-		const def = Service.make({
-			name: 'fixture',
-			ports: ['api'],
-			shared: {
-				module: new URL('./shared-fixture.ts', import.meta.url).href,
-				output: Schema.Struct({ pid: Schema.Number }),
-				home: join(root, 'home'),
-			},
-			start: (): Effect.Effect<{ pid: number }> =>
-				Effect.die('Consumer must not run start'),
-		});
-		const session = {
-			name: 'consumer',
-			lastModifiedAt: null,
-			path: (relative: string) =>
-				Effect.succeed(`${root}/consumer/.data/sessions/consumer/${relative}`),
-			toString: () => 'consumer',
-		};
 		try {
 			const values = await Promise.all(
-				scopes.map((scope) =>
+				scopes.map((scope, index) =>
 					Effect.runPromise(
-						Service.run(session, def).pipe(
+						Service.run(
+							{
+								name: `consumer-${index}`,
+								lastModifiedAt: null,
+								path: (relative) =>
+									Effect.succeed(
+										`${root}/packages/${index === 0 ? 'one' : 'two'}/.data/sessions/consumer-${index}/${relative}`,
+									),
+								toString: () => `consumer-${index}`,
+							},
+							fixture,
+						).pipe(
 							Effect.provideService(Scope.Scope, scope),
 							Effect.provide(NodeServices.layer),
 						),
@@ -97,7 +105,14 @@ describe('shared host protocol (real detached processes)', () => {
 			);
 			expect(values[0]).toEqual(values[1]);
 			expect(values[0]?.pid).toBeGreaterThan(0);
+			expect(values[0]?.pid).not.toBe(process.pid);
 			expect(values[0]?.ports.api).toBeGreaterThan(0);
+			expect(
+				await readFile(
+					join(root, '.data/sessions/shared-services/services/fixture/events'),
+					'utf8',
+				),
+			).toMatch(/^start /);
 		} finally {
 			await Promise.all(
 				scopes.map((scope) => Effect.runPromise(Scope.close(scope, Exit.void))),
@@ -106,6 +121,29 @@ describe('shared host protocol (real detached processes)', () => {
 			await rm(root, { recursive: true, force: true });
 		}
 	}, 15_000);
+	it('clearly rejects a definition not exported by the captured file', async () => {
+		const root = await mkdtemp(join(tmpdir(), 'devsess-private-'));
+		try {
+			const session = {
+				name: 'consumer',
+				lastModifiedAt: null,
+				path: (relative: string) =>
+					Effect.succeed(`${root}/.data/sessions/consumer/${relative}`),
+				toString: () => 'consumer',
+			};
+			await expect(
+				Effect.runPromise(
+					Effect.scoped(Service.run(session, getPrivateService())).pipe(
+						Effect.provide(NodeServices.layer),
+					),
+				),
+			).rejects.toThrow(
+				'export the shared service `private` from the file that calls Service.make',
+			);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 10_000);
 	it('concurrent consumers start one host, reuse it, and stop after the last lease plus grace', async () => {
 		const root = await mkdtemp(join(tmpdir(), 'devsess-shared-'));
 		const dir = join(root, 'services/fixture');

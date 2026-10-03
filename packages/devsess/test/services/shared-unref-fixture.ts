@@ -5,7 +5,6 @@ import { Service } from '../../dist/services/index.js';
 export const unref = Service.make({
 	name: 'unref',
 	shared: {
-		module: import.meta.url,
 		output: Schema.Struct({ pid: Schema.Number }),
 	},
 	start: (ctx) =>
