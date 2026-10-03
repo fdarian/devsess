@@ -1,5 +1,11 @@
 # devsess
 
+## 0.4.1
+
+### Patch Changes
+
+- 3d6afed: Report scoped services and their ports to the daemon on startup and retract them on scope close.
+
 ## 0.4.0
 
 ### Minor Changes
