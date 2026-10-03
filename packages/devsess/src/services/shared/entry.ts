@@ -72,7 +72,14 @@ const program = Effect.gen(function* () {
 	}).pipe(Effect.ensuring(close));
 }).pipe(Effect.provide(NodeServices.layer));
 
-Effect.runPromise(program).catch((cause) => {
+/** A pending Promise and unref'd handler resources cannot keep the process alive during scope close. */
+const lifetime = Effect.acquireUseRelease(
+	Effect.sync(() => setInterval(() => {}, 1_000)),
+	() => program,
+	(timer) => Effect.sync(() => clearInterval(timer)),
+);
+
+Effect.runPromise(lifetime).catch((cause) => {
 	Effect.runSync(Effect.logError(cause));
 	process.exitCode = 1;
 });

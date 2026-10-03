@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,6 +22,44 @@ const waitFor = async (predicate: () => Promise<boolean>) => {
 };
 
 describe('shared host protocol (real detached processes)', () => {
+	it('keeps the host alive until a slow finalizer with only unref’d resources completes', async () => {
+		const root = await mkdtemp(join(tmpdir(), 'devsess-unref-'));
+		const dir = join(root, 'services/unref');
+		const child = spawn(
+			process.execPath,
+			[
+				new URL('../../dist/services/shared/entry.js', import.meta.url)
+					.pathname,
+				new URL('./shared-unref-fixture.ts', import.meta.url).href,
+				'unref',
+				root,
+			],
+			{ stdio: 'ignore' },
+		);
+		const exited = new Promise<{
+			code: number | null;
+			signal: NodeJS.Signals | null;
+		}>((resolve, reject) => {
+			child.once('error', reject);
+			child.once('exit', (code, signal) => resolve({ code, signal }));
+		});
+		try {
+			const lease = await Effect.runPromise(acquireHost(dir, async () => {}));
+			lease.socket.destroy();
+			expect(await exited).toEqual({ code: 0, signal: null });
+			expect(await readFile(join(dir, 'events'), 'utf8')).toBe(
+				'stopping\nstop\n',
+			);
+			await expect(stat(join(dir, 'startup.lock'))).rejects.toMatchObject({
+				code: 'ENOENT',
+			});
+		} finally {
+			if (child.exitCode === null && child.signalCode === null)
+				child.kill('SIGKILL');
+			await exited;
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 15_000);
 	it('Service.run decodes output and concurrent home consumers select one home session', async () => {
 		const root = await mkdtemp(join(tmpdir(), 'devsess-home-'));
 		const scopes = await Promise.all([
