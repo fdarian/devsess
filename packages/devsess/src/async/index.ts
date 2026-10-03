@@ -1,5 +1,5 @@
 // Re-exported so consumers can declare CLI flags/arguments without a direct
-// dependency on `effect/cli`, e.g. `cli.Flag.string('local')`.
+// dependency on `effect/cli`, e.g. `cli.Flag.String('local')`.
 
 export { Schema } from 'effect';
 export * as cli from 'effect/cli';

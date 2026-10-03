@@ -34,7 +34,7 @@ import { Command, Flag } from 'effect/cli';
 const web = Command.make(
 	'web',
 	{
-		lite: Flag.boolean('lite').pipe(
+		lite: Flag.Boolean('lite').pipe(
 			Flag.withDescription('Use a per-session PGlite database'),
 		),
 	},
