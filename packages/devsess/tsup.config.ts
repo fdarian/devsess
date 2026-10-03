@@ -5,6 +5,7 @@ export default defineConfig({
 		index: 'src/index.ts',
 		'pglite/index': 'src/pglite/index.ts',
 		'services/index': 'src/services/index.ts',
+		'services/shared/entry': 'src/services/shared/entry.ts',
 		'async/index': 'src/async/index.ts',
 	},
 	format: ['esm'],
@@ -16,5 +17,10 @@ export default defineConfig({
 	// Declarations are emitted by `tsc -p tsconfig.build.json` (see build script).
 	dts: false,
 	// Peer dependencies must never be bundled — consumers provide a single instance.
-	external: ['effect', '@electric-sql/pglite', 'drizzle-orm'],
+	external: [
+		'effect',
+		'@effect/platform-node',
+		'@electric-sql/pglite',
+		'drizzle-orm',
+	],
 });
