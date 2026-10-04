@@ -1,11 +1,13 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, open, readFile, readlink, rm, symlink } from 'node:fs/promises';
+import { mkdir, open, readlink, rm, symlink } from 'node:fs/promises';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Effect, Schedule } from 'effect';
-import lockfile from 'proper-lockfile';
+import { acquireFileLock } from '../../lock';
+import { readSocketLine } from '../../socket-line';
 import { ServiceError } from '../core';
 
 export const sharedGraceMs = 5_000;
@@ -18,13 +20,14 @@ export const io = <A>(operation: () => Promise<A>) =>
 	});
 
 export const startupLock = (dataDir: string) =>
-	io(() =>
-		lockfile.lock(dataDir, {
-			realpath: false,
-			lockfilePath: join(dataDir, 'startup.lock'),
-			stale: 60_000,
-			retries: { retries: 600, minTimeout: 50, maxTimeout: 100 },
-		}),
+	acquireFileLock(dataDir, join(dataDir, 'startup.lock')).pipe(
+		Effect.mapError(
+			(cause) =>
+				new ServiceError({
+					message: 'Failed to acquire shared host lock',
+					cause,
+				}),
+		),
 	);
 
 export type Lease = { socket: Socket; line: string };
@@ -51,45 +54,51 @@ export const socketPath = async (dataDir: string) => {
 	return join(alias, 'host.sock');
 };
 
-const connectSocket = (address: string): Promise<Lease> =>
-	new Promise((resolve, reject) => {
-		const socket = connect(address);
-		const timer = setTimeout(
-			() => socket.destroy(new Error('Shared host readiness timed out')),
-			60_000,
-		);
-		let buffer = '';
-		const fail = (cause: Error) => {
-			clearTimeout(timer);
-			socket.destroy();
-			reject(cause);
-		};
-		socket.once('error', fail);
-		socket.once('close', () =>
-			fail(new Error('Shared host closed before readiness')),
-		);
-		socket.on('data', (chunk) => {
-			buffer += chunk.toString();
-			if (buffer.length > 1_048_576)
-				return fail(new Error('Shared output exceeds 1 MiB'));
-			const newline = buffer.indexOf('\n');
-			if (newline < 0) return;
-			clearTimeout(timer);
-			socket.removeAllListeners('data');
-			socket.removeListener('error', fail);
-			socket.on('error', () => socket.destroy());
-			resolve({ socket, line: buffer.slice(0, newline) });
-		});
-	});
+class HostUnavailable extends Error {}
 
-export const connectHost = async (dataDir: string) =>
-	connectSocket(await socketPath(dataDir));
+export const connectHost = async (
+	dataDir: string,
+	child?: ChildProcess,
+): Promise<Lease> => {
+	const socket = connect(await socketPath(dataDir));
+	const exited = () =>
+		socket.destroy(new Error('Host exited before readiness'));
+	child?.once('exit', exited);
+	try {
+		if (
+			child !== undefined &&
+			(child.exitCode !== null || child.signalCode !== null)
+		)
+			exited();
+		const line = await readSocketLine(socket);
+		socket.on('error', () => socket.destroy());
+		return { socket, line };
+	} catch (cause) {
+		socket.destroy();
+		throw new HostUnavailable('Host did not send readiness', { cause });
+	} finally {
+		child?.removeListener('exit', exited);
+	}
+};
 
-const unavailable = (cause: unknown) =>
-	typeof cause === 'object' &&
-	cause !== null &&
-	'code' in cause &&
-	(cause.code === 'ENOENT' || cause.code === 'ECONNREFUSED');
+const unavailable = (cause: unknown) => cause instanceof HostUnavailable;
+
+const logTail = async (dir: string) => {
+	const file = await open(join(dir, 'service.log'), 'r');
+	try {
+		const size = (await file.stat()).size;
+		const buffer = Buffer.alloc(Math.min(size, 8_192));
+		const read = await file.read(
+			buffer,
+			0,
+			buffer.length,
+			Math.max(0, size - buffer.length),
+		);
+		return buffer.subarray(0, read.bytesRead).toString('utf8');
+	} finally {
+		await file.close();
+	}
+};
 
 type Launch = () => Promise<void> | Promise<ChildProcess>;
 
@@ -99,13 +108,12 @@ const startHost = (dataDir: string, launch: Launch) =>
 		const child = yield* io(() =>
 			launch().then((child) => (child === undefined ? undefined : child)),
 		);
-		const deadline = Date.now() + 60_000;
 		return yield* Effect.suspend(() => {
 			if (
 				child !== undefined &&
 				(child.exitCode !== null || child.signalCode !== null)
 			)
-				return io(() => readFile(join(dataDir, 'service.log'), 'utf8')).pipe(
+				return io(() => logTail(dataDir)).pipe(
 					Effect.flatMap(
 						(log) =>
 							new ServiceError({
@@ -113,10 +121,10 @@ const startHost = (dataDir: string, launch: Launch) =>
 							}),
 					),
 				);
-			return io(() => connectHost(dataDir));
+			return io(() => connectHost(dataDir, child));
 		}).pipe(
 			Effect.retry({
-				while: (error) => unavailable(error.cause) && Date.now() < deadline,
+				while: (error) => unavailable(error.cause),
 				schedule: Schedule.spaced('50 millis'),
 			}),
 		);
@@ -160,9 +168,14 @@ export const launchHost = async (
 		);
 		const child = spawn(
 			process.execPath,
-			[...process.execArgv, entry.pathname, ...args],
+			[...process.execArgv, fileURLToPath(entry), ...args],
 			{
 				detached: true,
+				env: Object.fromEntries(
+					Object.entries(process.env).filter(
+						(entry) => !entry[0].startsWith('DEVSESS_'),
+					),
+				),
 				stdio: ['ignore', log.fd, log.fd],
 			},
 		);

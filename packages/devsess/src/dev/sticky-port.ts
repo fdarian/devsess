@@ -1,8 +1,11 @@
 import { Effect } from 'effect';
+import { FileSystem } from 'effect/FileSystem';
+import { Path } from 'effect/Path';
 import * as S from 'effect/Schema';
 import getPort from 'get-port';
 import type { DevSession } from '../dev-sessions';
-import { SessionState } from './session-state';
+import { acquireFileLock } from '../lock';
+import { SessionState, SessionStateError } from './session-state';
 
 const DEFAULT_NAME = 'default';
 
@@ -25,6 +28,22 @@ export const getStickyPort = (
 ) =>
 	Effect.gen(function* () {
 		const name = options?.name ?? DEFAULT_NAME;
+		const fs = yield* FileSystem;
+		const path = yield* Path;
+		const statePath = yield* session.path('sess.json');
+		yield* fs.makeDirectory(path.dirname(statePath), { recursive: true });
+		yield* Effect.acquireRelease(
+			acquireFileLock(statePath).pipe(
+				Effect.mapError(
+					(cause) =>
+						new SessionStateError({
+							message: 'Failed to lock sticky ports',
+							cause,
+						}),
+				),
+			),
+			(release) => Effect.promise(() => release()),
+		);
 
 		const file = yield* StickyPorts.read(session);
 		const ports =
@@ -46,4 +65,4 @@ export const getStickyPort = (
 		yield* StickyPorts.write(session, { ports: { ...ports, [name]: port } });
 
 		return port;
-	});
+	}).pipe(Effect.scoped);

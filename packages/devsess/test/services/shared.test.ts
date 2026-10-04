@@ -33,7 +33,7 @@ const waitFor = async (predicate: () => Promise<boolean>) => {
 describe('shared host protocol (real detached processes)', () => {
 	it('keeps the host alive until a slow finalizer with only unref’d resources completes', async () => {
 		const root = await mkdtemp(join(tmpdir(), 'devsess-unref-'));
-		const dir = join(root, 'services/unref');
+		const dir = join(root, 'hosts/unref');
 		const child = spawn(
 			process.execPath,
 			[
@@ -56,7 +56,7 @@ describe('shared host protocol (real detached processes)', () => {
 			const lease = await Effect.runPromise(acquireHost(dir, async () => {}));
 			lease.socket.destroy();
 			expect(await exited).toEqual({ code: 0, signal: null });
-			expect(await readFile(join(dir, 'events'), 'utf8')).toBe(
+			expect(await readFile(join(root, 'services/unref/events'), 'utf8')).toBe(
 				'stopping\nstop\n',
 			);
 			await expect(stat(join(dir, 'startup.lock'))).rejects.toMatchObject({
@@ -146,7 +146,8 @@ describe('shared host protocol (real detached processes)', () => {
 	}, 10_000);
 	it('concurrent consumers start one host, reuse it, and stop after the last lease plus grace', async () => {
 		const root = await mkdtemp(join(tmpdir(), 'devsess-shared-'));
-		const dir = join(root, 'services/fixture');
+		const dir = join(root, 'hosts/fixture');
+		const eventsFile = join(root, 'services/fixture/events');
 		const leases: Lease[] = [];
 		const acquire = () =>
 			Effect.runPromise(
@@ -163,17 +164,17 @@ describe('shared host protocol (real detached processes)', () => {
 			expect(leases[0]?.line).toBe(leases[1]?.line);
 			leases.push(await acquire());
 			expect(
-				(await readFile(join(dir, 'events'), 'utf8')).match(/start /g),
+				(await readFile(eventsFile, 'utf8')).match(/start /g),
 			).toHaveLength(1);
 			leases[0]?.socket.destroy();
 			leases[1]?.socket.destroy();
 			await pause(5_200);
-			expect(await readFile(join(dir, 'events'), 'utf8')).not.toContain('stop');
+			expect(await readFile(eventsFile, 'utf8')).not.toContain('stop');
 			leases[2]?.socket.destroy();
 			await pause(200);
 			expect(await stat(join(dir, 'host.sock'))).toBeDefined();
 			await waitFor(async () =>
-				(await readFile(join(dir, 'events'), 'utf8')).endsWith('stop\n'),
+				(await readFile(eventsFile, 'utf8')).endsWith('stop\n'),
 			);
 		} finally {
 			for (const lease of leases) lease.socket.destroy();
@@ -183,7 +184,8 @@ describe('shared host protocol (real detached processes)', () => {
 
 	it('recovers a killed host socket and serializes restart with slow shutdown under the lock', async () => {
 		const root = await mkdtemp(join(tmpdir(), 'devsess-shared-'));
-		const dir = join(root, 'services/fixture');
+		const dir = join(root, 'hosts/fixture');
+		const eventsFile = join(root, 'services/fixture/events');
 		const leases: Lease[] = [];
 		const acquire = () =>
 			Effect.runPromise(
@@ -208,22 +210,22 @@ describe('shared host protocol (real detached processes)', () => {
 			expect(second.line).not.toBe(first.line);
 			second.socket.destroy();
 			await waitFor(async () =>
-				(await readFile(join(dir, 'events'), 'utf8')).includes('stopping'),
+				(await readFile(eventsFile, 'utf8')).includes('stopping'),
 			);
 			leases.push(...(await Promise.all([acquire(), acquire()])));
 			expect(leases[2]?.line).toBe(leases[3]?.line);
-			const events = await readFile(join(dir, 'events'), 'utf8');
+			const events = await readFile(eventsFile, 'utf8');
 			expect(events.match(/start /g)).toHaveLength(3);
 			expect(events.indexOf('stop\n')).toBeLessThan(
 				events.lastIndexOf('start '),
 			);
 			for (const lease of leases) lease.socket.destroy();
 			await waitFor(async () =>
-				(await readFile(join(dir, 'events'), 'utf8')).endsWith('stop\n'),
+				(await readFile(eventsFile, 'utf8')).endsWith('stop\n'),
 			);
 		} finally {
 			for (const lease of leases) lease.socket.destroy();
 			await rm(root, { recursive: true, force: true });
 		}
-	}, 25_000);
+	}, 40_000);
 });

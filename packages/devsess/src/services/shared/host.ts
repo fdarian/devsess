@@ -25,9 +25,10 @@ export const serveHost = (
 				);
 				if (state.consumers !== 0) return;
 				state.stopping = true;
-				yield* io(() => rm(join(dataDir, 'host.sock'), { force: true }));
 				server.close();
-				yield* stop;
+				yield* io(() => rm(join(dataDir, 'host.sock'), { force: true })).pipe(
+					Effect.ensuring(stop),
+				);
 			}).pipe(
 				Effect.scoped,
 				Effect.matchCauseEffect({
@@ -59,9 +60,19 @@ export const serveHost = (
 			});
 			server.once('error', (cause) => resume(Effect.die(cause)));
 			server.listen(address, schedule);
-			return Effect.sync(() => {
-				if (state.timer !== undefined) clearTimeout(state.timer);
-				server.close();
-			});
+			return Effect.suspend(() =>
+				state.stopping
+					? Effect.void
+					: Effect.sync(() => {
+							if (state.timer !== undefined) clearTimeout(state.timer);
+							server.close();
+						}).pipe(
+							Effect.ensuring(
+								io(() => rm(join(dataDir, 'host.sock'), { force: true })).pipe(
+									Effect.orDie,
+								),
+							),
+						),
+			);
 		});
 	});

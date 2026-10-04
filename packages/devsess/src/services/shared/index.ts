@@ -5,6 +5,7 @@ import { reportDaemonService } from '../../dev/daemon-services';
 import type { DevSession } from '../../dev-sessions';
 import { ServiceError, validName } from '../core';
 import type { RunningService } from '../index';
+import { definitionModule } from './callsite';
 import { acquireHost, io, launchHost, startupLock } from './protocol';
 import { findSharedRoot } from './root';
 
@@ -34,22 +35,26 @@ export const runShared = <Port extends string, A>(
 	session: DevSession,
 	name: string,
 	options: SharedOptions<A>,
-	module: string | undefined,
+	stack: string | undefined,
 ) =>
 	Effect.gen(function* () {
 		if (!validName(name) || !validName(session.name))
 			return yield* new ServiceError({
 				message: 'Invalid shared service or session name',
 			});
-		if (module === undefined)
-			return yield* new ServiceError({
-				message: `Unable to locate the file that calls Service.make for shared service ${name}`,
-			});
+		const module = yield* Effect.try({
+			try: () => definitionModule(stack),
+			catch: (cause) =>
+				new ServiceError({
+					message: `Unable to locate the file that calls Service.make for shared service ${name}`,
+					cause,
+				}),
+		});
 		const sessionDir = yield* resolveSharedSession(session);
-		const dataDir = `${sessionDir}/services/${name}`;
+		const hostDir = `${sessionDir}/hosts/${name}`;
 		const lease = yield* Effect.acquireRelease(
-			acquireHost(dataDir, () =>
-				launchHost(dataDir, [module, name, sessionDir]),
+			acquireHost(hostDir, () =>
+				launchHost(hostDir, [module, name, sessionDir]),
 			),
 			(value) => Effect.sync(() => value.socket.destroy()),
 		);

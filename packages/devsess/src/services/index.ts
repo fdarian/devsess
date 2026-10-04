@@ -7,7 +7,6 @@ import type { DevSession } from '../dev-sessions';
 import { type ContainerSpec, startContainer } from './container';
 import { type ServiceContext, ServiceError } from './core';
 import { runLocal } from './local';
-import { definitionModule } from './shared/callsite';
 import { runShared, type SharedOptions } from './shared/index';
 
 export type { Healthcheck } from './docker-args';
@@ -31,7 +30,7 @@ export type ServiceDefinition<
 	readonly name: Name;
 	readonly ports: ReadonlyArray<Port>;
 	readonly shared?: SharedOptions<A>;
-	readonly definitionModule?: string;
+	readonly definitionStack?: string;
 	/** Resolves once the service is ready; its scope closing stops it. */
 	readonly start: (ctx: ServiceContext<Port>) => Effect.Effect<A, E, R>;
 	/** Yield inside another service's `start` (or any effect) to depend on this one. */
@@ -48,11 +47,11 @@ const run = <Name extends string, Port extends string, A, E, R>(
 	session: DevSession,
 	def: Pick<
 		ServiceDefinition<Name, Port, A, E, R>,
-		'name' | 'ports' | 'start' | 'shared' | 'definitionModule'
+		'name' | 'ports' | 'start' | 'shared' | 'definitionStack'
 	>,
 ) =>
 	def.shared !== undefined
-		? runShared<Port, A>(session, def.name, def.shared, def.definitionModule)
+		? runShared<Port, A>(session, def.name, def.shared, def.definitionStack)
 		: runLocal(session, def);
 
 const make = <
@@ -72,10 +71,7 @@ const make = <
 		ports: def.ports ?? [],
 		start: def.start,
 		shared: def.shared,
-		definitionModule:
-			def.shared === undefined
-				? undefined
-				: definitionModule(new Error().stack),
+		definitionStack: def.shared === undefined ? undefined : new Error().stack,
 	};
 	const key = Context.Service<ServiceIdentifier<Name>, RunningService<Port, A>>(
 		`devsess/services/${def.name}`,

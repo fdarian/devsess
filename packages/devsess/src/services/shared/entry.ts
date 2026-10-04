@@ -68,7 +68,7 @@ const program = Effect.gen(function* () {
 				}),
 			),
 		)({ output: original.value, ports: value.ports });
-		yield* serveHost(`${args[2]}/services/${def.name}`, line, close);
+		yield* serveHost(`${args[2]}/hosts/${def.name}`, line, close);
 	}).pipe(Effect.ensuring(close));
 }).pipe(Effect.provide(NodeServices.layer));
 
