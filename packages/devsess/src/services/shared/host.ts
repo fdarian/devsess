@@ -1,18 +1,25 @@
 import { rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
-import { join } from 'node:path';
 import { Effect } from 'effect';
 import type { ServiceError } from '../core';
-import { io, sharedGraceMs, socketPath, startupLock } from './protocol';
+import {
+	type HostPaths,
+	io,
+	sharedGraceMs,
+	socketPath,
+	startupLock,
+} from './protocol';
 
 export const serveHost = (
-	dataDir: string,
+	paths: HostPaths,
 	line: string,
 	stop: Effect.Effect<void>,
 	graceMs = sharedGraceMs,
 ) =>
 	Effect.gen(function* () {
-		const address = yield* io(() => socketPath(dataDir));
+		const address = yield* io('Failed to resolve shared host socket', () =>
+			socketPath(paths),
+		);
 		return yield* Effect.callback<void, ServiceError>((resume) => {
 			const state = {
 				consumers: 0,
@@ -20,15 +27,15 @@ export const serveHost = (
 				timer: undefined as ReturnType<typeof setTimeout> | undefined,
 			};
 			const shutdown = Effect.gen(function* () {
-				yield* Effect.acquireRelease(startupLock(dataDir), (release) =>
-					io(release).pipe(Effect.orDie),
+				yield* Effect.acquireRelease(startupLock(paths), (release) =>
+					io('Failed to release shared host lock', release).pipe(Effect.orDie),
 				);
 				if (state.consumers !== 0) return;
 				state.stopping = true;
 				server.close();
-				yield* io(() => rm(join(dataDir, 'host.sock'), { force: true })).pipe(
-					Effect.ensuring(stop),
-				);
+				yield* io('Failed to remove shared host socket', () =>
+					rm(paths.socket, { force: true }),
+				).pipe(Effect.ensuring(stop));
 			}).pipe(
 				Effect.scoped,
 				Effect.matchCauseEffect({
@@ -68,9 +75,9 @@ export const serveHost = (
 							server.close();
 						}).pipe(
 							Effect.ensuring(
-								io(() => rm(join(dataDir, 'host.sock'), { force: true })).pipe(
-									Effect.orDie,
-								),
+								io('Failed to remove shared host socket', () =>
+									rm(paths.socket, { force: true }),
+								).pipe(Effect.orDie),
 							),
 						),
 			);

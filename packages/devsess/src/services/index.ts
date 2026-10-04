@@ -5,7 +5,12 @@ import type { Scope } from 'effect/Scope';
 import { CurrentSession } from '../current-session';
 import type { DevSession } from '../dev-sessions';
 import { type ContainerSpec, startContainer } from './container';
-import { type ServiceContext, ServiceError } from './core';
+import {
+	runningService,
+	type ServiceContext,
+	ServiceError,
+	serviceBrand,
+} from './core';
 import { runLocal } from './local';
 import { runShared, type SharedOptions } from './shared/index';
 
@@ -27,6 +32,7 @@ export type ServiceDefinition<
 	E,
 	R,
 > = {
+	readonly [serviceBrand]: true;
 	readonly name: Name;
 	readonly ports: ReadonlyArray<Port>;
 	readonly shared?: SharedOptions<A>;
@@ -50,9 +56,10 @@ const run = <Name extends string, Port extends string, A, E, R>(
 		'name' | 'ports' | 'start' | 'shared' | 'definitionStack'
 	>,
 ) =>
-	def.shared !== undefined
+	(def.shared !== undefined
 		? runShared<Port, A>(session, def.name, def.shared, def.definitionStack)
-		: runLocal(session, def);
+		: runLocal(session, def)
+	).pipe(Effect.map(runningService<Port, A>));
 
 const make = <
 	const Name extends string,
@@ -67,6 +74,7 @@ const make = <
 	start: (ctx: ServiceContext<Port>) => Effect.Effect<A, E, R>;
 }): ServiceDefinition<Name, Port, A, E, R> => {
 	const base = {
+		[serviceBrand]: true as const,
 		name: def.name,
 		ports: def.ports ?? [],
 		start: def.start,

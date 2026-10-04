@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import {
 	cp,
+	mkdir,
 	mkdtemp,
 	readFile,
 	rm,
@@ -18,6 +19,7 @@ import { Service } from '../../src/services/index';
 import { serveHost } from '../../src/services/shared/host';
 import {
 	acquireHost,
+	hostPaths,
 	launchHost,
 	socketPath,
 	startupLock,
@@ -42,18 +44,19 @@ const runChild = (file: string, args: string[] = [], env = process.env) =>
 
 it('waits beyond a minute for startup and lock contention without spawning another host', async () => {
 	const root = await mkdtemp(join(tmpdir(), 'devsess-slow-'));
-	const hostDir = join(root, 'hosts/slow');
+	const paths = hostPaths(join(root, '.data/sessions/test'), 'slow');
 	const leases: import('../../src/services/shared/protocol').Lease[] = [];
 	const launches = { count: 0 };
 	const acquire = () =>
 		Effect.runPromise(
-			acquireHost(hostDir, async () => {
+			acquireHost(paths, async () => {
 				launches.count++;
-				return launchHost(hostDir, [
-					new URL('./shared-slow-fixture.ts', import.meta.url).href,
-					'slow',
+				return launchHost(paths, {
+					module: new URL('./shared-slow-fixture.ts', import.meta.url).href,
+					name: 'slow',
 					root,
-				]);
+					session: 'test',
+				});
 			}),
 		);
 	try {
@@ -69,19 +72,21 @@ it('waits beyond a minute for startup and lock contention without spawning anoth
 
 it('fails with a bounded log tail if the host exits while a readiness connection is open', async () => {
 	const root = await mkdtemp(join(tmpdir(), 'devsess-exit-'));
+	const paths = hostPaths(root, 'exit');
+	await mkdir(paths.dir, { recursive: true });
 	try {
 		const script = join(root, 'exit.ts');
-		const address = await socketPath(root);
+		const address = await socketPath(paths);
 		await writeFile(
 			script,
 			`import { createServer } from 'node:net';
 import { writeFileSync } from 'node:fs';
-writeFileSync(${JSON.stringify(join(root, 'service.log'))}, 'x'.repeat(20000) + 'startup failed at the end');
+writeFileSync(${JSON.stringify(paths.log)}, 'x'.repeat(20000) + 'startup failed at the end');
 createServer(() => { setTimeout(() => process.exit(1), 100); }).listen(${JSON.stringify(address)});
 `,
 		);
 		const result = await Effect.runPromise(
-			acquireHost(root, async () => {
+			acquireHost(paths, async () => {
 				const child = spawn(process.execPath, [script], { stdio: 'ignore' });
 				await new Promise<void>((resolve, reject) => {
 					child.once('spawn', resolve);
@@ -167,7 +172,7 @@ import { Effect, Schema } from 'effect';
 import { NodeServices } from '@effect/platform-node';
 import { readdir, writeFile } from 'node:fs/promises';
 export const service = Service.make({ name: 'space', shared: { output: Schema.Struct({ pid: Schema.Number }) }, start: (ctx) => Effect.acquireRelease(Effect.promise(async () => { const entries = await readdir(ctx.dataDir); const env = Object.keys(process.env).filter((key) => key.startsWith('DEVSESS_')); await writeFile(ctx.dataDir + '/result', JSON.stringify({ entries, env })); return { pid: process.pid }; }), () => Effect.promise(() => writeFile(ctx.dataDir + '/stopped', 'yes'))) });
-if (process.argv[2] === 'consume') await Effect.runPromise(Effect.scoped(Service.run({ name: 'test', lastModifiedAt: null, path: (relative) => Effect.succeed(${JSON.stringify(root)} + '/.data/sessions/test/' + relative), toString: () => 'test' }, service)).pipe(Effect.provide(NodeServices.layer)));
+if (process.argv[2] === 'consume') await Effect.runPromise(Effect.scoped(Service.run({ name: 'test', rootDir: ${JSON.stringify(root)}, lastModifiedAt: null, path: (relative) => Effect.succeed(${JSON.stringify(root)} + '/.data/sessions/test/' + relative), toString: () => 'test' }, service)).pipe(Effect.provide(NodeServices.layer)));
 `,
 		);
 		await runChild(script, ['consume'], {
@@ -195,17 +200,22 @@ if (process.argv[2] === 'consume') await Effect.runPromise(Effect.scoped(Service
 
 it('retries a connection closed during teardown after waiting for the shutdown lock', async () => {
 	const root = await mkdtemp(join(tmpdir(), 'devsess-drop-'));
-	const address = await socketPath(root);
+	const paths = hostPaths(root, 'drop');
+	await mkdir(paths.dir, { recursive: true });
+	const address = await socketPath(paths);
 	const server = createServer((socket) => socket.destroy());
 	await new Promise<void>((resolve) => server.listen(address, resolve));
-	const release = await Effect.runPromise(startupLock(root));
+	const release = await Effect.runPromise(startupLock(paths));
 	const host = { promise: undefined as Promise<void> | undefined };
 	try {
 		const acquiring = Effect.runPromise(
-			acquireHost(root, async () => {
+			acquireHost(paths, async () => {
 				host.promise = Effect.runPromise(
-					serveHost(root, 'ready', Effect.void, 20),
+					serveHost(paths, 'ready', Effect.void, 20),
 				);
+				return spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1000)'], {
+					stdio: 'ignore',
+				});
 			}),
 		);
 		await new Promise((resolve) => setTimeout(resolve, 100));
@@ -223,13 +233,15 @@ it('retries a connection closed during teardown after waiting for the shutdown l
 
 it('closes its listener even when stop fails', async () => {
 	const root = await mkdtemp(join(tmpdir(), 'devsess-stop-'));
+	const paths = hostPaths(root, 'stop');
+	await mkdir(paths.dir, { recursive: true });
 	try {
 		await expect(
 			Effect.runPromise(
-				serveHost(root, 'ready', Effect.die('stop failed'), 20),
+				serveHost(paths, 'ready', Effect.die('stop failed'), 20),
 			),
 		).rejects.toThrow('stop failed');
-		const address = await socketPath(root);
+		const address = await socketPath(paths);
 		const net = await import('node:net');
 		const socket = net.connect(address);
 		await expect(readSocketLine(socket)).rejects.toMatchObject({

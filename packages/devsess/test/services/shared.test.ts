@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 import { Service } from '../../src/services/index';
 import {
 	acquireHost,
+	hostPaths,
 	type Lease,
 	launchHost,
 } from '../../src/services/shared/protocol';
@@ -33,15 +34,19 @@ const waitFor = async (predicate: () => Promise<boolean>) => {
 describe('shared host protocol (real detached processes)', () => {
 	it('keeps the host alive until a slow finalizer with only unref’d resources completes', async () => {
 		const root = await mkdtemp(join(tmpdir(), 'devsess-unref-'));
-		const dir = join(root, 'hosts/unref');
+		const sessionDir = join(root, '.data/sessions/test');
+		const paths = hostPaths(sessionDir, 'unref');
 		const child = spawn(
 			process.execPath,
 			[
 				new URL('../../dist/services/shared/entry.js', import.meta.url)
 					.pathname,
-				new URL('./shared-unref-fixture.ts', import.meta.url).href,
-				'unref',
-				root,
+				JSON.stringify({
+					module: new URL('./shared-unref-fixture.ts', import.meta.url).href,
+					name: 'unref',
+					root,
+					session: 'test',
+				}),
 			],
 			{ stdio: 'ignore' },
 		);
@@ -53,13 +58,15 @@ describe('shared host protocol (real detached processes)', () => {
 			child.once('exit', (code, signal) => resolve({ code, signal }));
 		});
 		try {
-			const lease = await Effect.runPromise(acquireHost(dir, async () => {}));
+			const lease = await Effect.runPromise(
+				acquireHost(paths, async () => child),
+			);
 			lease.socket.destroy();
 			expect(await exited).toEqual({ code: 0, signal: null });
-			expect(await readFile(join(root, 'services/unref/events'), 'utf8')).toBe(
-				'stopping\nstop\n',
-			);
-			await expect(stat(join(dir, 'startup.lock'))).rejects.toMatchObject({
+			expect(
+				await readFile(join(sessionDir, 'services/unref/events'), 'utf8'),
+			).toBe('stopping\nstop\n');
+			await expect(stat(paths.lock)).rejects.toMatchObject({
 				code: 'ENOENT',
 			});
 		} finally {
@@ -88,6 +95,7 @@ describe('shared host protocol (real detached processes)', () => {
 						Service.run(
 							{
 								name: `consumer-${index}`,
+								rootDir: join(root, 'packages', index === 0 ? 'one' : 'two'),
 								lastModifiedAt: null,
 								path: (relative) =>
 									Effect.succeed(
@@ -125,6 +133,7 @@ describe('shared host protocol (real detached processes)', () => {
 		const root = await mkdtemp(join(tmpdir(), 'devsess-private-'));
 		try {
 			const session = {
+				rootDir: root,
 				name: 'consumer',
 				lastModifiedAt: null,
 				path: (relative: string) =>
@@ -146,17 +155,21 @@ describe('shared host protocol (real detached processes)', () => {
 	}, 10_000);
 	it('concurrent consumers start one host, reuse it, and stop after the last lease plus grace', async () => {
 		const root = await mkdtemp(join(tmpdir(), 'devsess-shared-'));
-		const dir = join(root, 'hosts/fixture');
-		const eventsFile = join(root, 'services/fixture/events');
+		const paths = hostPaths(join(root, '.data/sessions/test'), 'fixture');
+		const eventsFile = join(
+			root,
+			'.data/sessions/test/services/fixture/events',
+		);
 		const leases: Lease[] = [];
 		const acquire = () =>
 			Effect.runPromise(
-				acquireHost(dir, () =>
-					launchHost(dir, [
-						new URL('./shared-fixture.ts', import.meta.url).href,
-						'fixture',
+				acquireHost(paths, () =>
+					launchHost(paths, {
+						module: new URL('./shared-fixture.ts', import.meta.url).href,
+						name: 'fixture',
 						root,
-					]),
+						session: 'test',
+					}),
 				),
 			);
 		try {
@@ -172,7 +185,7 @@ describe('shared host protocol (real detached processes)', () => {
 			expect(await readFile(eventsFile, 'utf8')).not.toContain('stop');
 			leases[2]?.socket.destroy();
 			await pause(200);
-			expect(await stat(join(dir, 'host.sock'))).toBeDefined();
+			expect(await stat(paths.socket)).toBeDefined();
 			await waitFor(async () =>
 				(await readFile(eventsFile, 'utf8')).endsWith('stop\n'),
 			);
@@ -184,17 +197,21 @@ describe('shared host protocol (real detached processes)', () => {
 
 	it('recovers a killed host socket and serializes restart with slow shutdown under the lock', async () => {
 		const root = await mkdtemp(join(tmpdir(), 'devsess-shared-'));
-		const dir = join(root, 'hosts/fixture');
-		const eventsFile = join(root, 'services/fixture/events');
+		const paths = hostPaths(join(root, '.data/sessions/test'), 'fixture');
+		const eventsFile = join(
+			root,
+			'.data/sessions/test/services/fixture/events',
+		);
 		const leases: Lease[] = [];
 		const acquire = () =>
 			Effect.runPromise(
-				acquireHost(dir, () =>
-					launchHost(dir, [
-						new URL('./shared-fixture.ts', import.meta.url).href,
-						'fixture',
+				acquireHost(paths, () =>
+					launchHost(paths, {
+						module: new URL('./shared-fixture.ts', import.meta.url).href,
+						name: 'fixture',
 						root,
-					]),
+						session: 'test',
+					}),
 				),
 			);
 		try {
@@ -204,7 +221,7 @@ describe('shared host protocol (real detached processes)', () => {
 			expect(Number.isFinite(pid)).toBe(true);
 			process.kill(pid, 'SIGKILL');
 			await new Promise((resolve) => first.socket.once('close', resolve));
-			expect(await stat(join(dir, 'host.sock'))).toBeDefined();
+			expect(await stat(paths.socket)).toBeDefined();
 			const second = await acquire();
 			leases.push(second);
 			expect(second.line).not.toBe(first.line);

@@ -1,34 +1,35 @@
-import { Effect, Schema } from 'effect';
-import { FileSystem } from 'effect/FileSystem';
-import { Path } from 'effect/Path';
+import { Effect, Option, Schema } from 'effect';
 import { reportDaemonService } from '../../dev/daemon-services';
-import type { DevSession } from '../../dev-sessions';
-import { ServiceError, validName } from '../core';
-import type { RunningService } from '../index';
+import { type DevSession, DevSessions } from '../../dev-sessions';
+import { ServiceError, validName, withServiceError } from '../core';
 import { definitionModule } from './callsite';
-import { acquireHost, io, launchHost, startupLock } from './protocol';
+import { acquireHost, hostPaths, launchHost, readyMessage } from './protocol';
 import { findSharedRoot } from './root';
 
-export type SharedOptions<A> = {
-	readonly output: Schema.Codec<A, unknown>;
-};
-
-const resolveSharedSession = (session: DevSession) =>
+export type SharedOptions<A> = { readonly output: Schema.Codec<A, unknown> };
+const locateHost = (
+	session: DevSession,
+	name: string,
+	stack: string | undefined,
+) =>
 	Effect.gen(function* () {
-		const path = yield* Path;
-		const root = yield* findSharedRoot(
-			path.resolve(yield* session.path(''), '../../..'),
+		const module = yield* definitionModule(stack);
+		const sessions = Option.getOrUndefined(
+			yield* Effect.serviceOption(DevSessions),
 		);
-		const fs = yield* FileSystem;
-		yield* fs.makeDirectory(`${root}/.data/sessions`, { recursive: true });
-		return yield* Effect.gen(function* () {
-			yield* Effect.acquireRelease(startupLock(`${root}/.data`), (release) =>
-				io(release).pipe(Effect.orDie),
-			);
-			const sessionDir = path.join(root, '.data/sessions/shared-services');
-			yield* fs.makeDirectory(sessionDir, { recursive: true });
-			return sessionDir;
-		}).pipe(Effect.scoped);
+		const projectDir =
+			session.rootDir === undefined ? sessions?.dir : session.rootDir;
+		if (projectDir === undefined)
+			return yield* new ServiceError({
+				message:
+					'Shared services require a session project root or DevSessions',
+			});
+		const root = yield* findSharedRoot(projectDir);
+		const sharedSession = yield* DevSessions.use((store) =>
+			store.getOrCreate('shared-services'),
+		).pipe(Effect.provide(DevSessions.layerAt(root)));
+		const paths = hostPaths(yield* sharedSession.path(''), name);
+		return { paths, args: { module, name, root, session: sharedSession.name } };
 	});
 
 export const runShared = <Port extends string, A>(
@@ -42,20 +43,9 @@ export const runShared = <Port extends string, A>(
 			return yield* new ServiceError({
 				message: 'Invalid shared service or session name',
 			});
-		const module = yield* Effect.try({
-			try: () => definitionModule(stack),
-			catch: (cause) =>
-				new ServiceError({
-					message: `Unable to locate the file that calls Service.make for shared service ${name}`,
-					cause,
-				}),
-		});
-		const sessionDir = yield* resolveSharedSession(session);
-		const hostDir = `${sessionDir}/hosts/${name}`;
+		const host = yield* locateHost(session, name, stack);
 		const lease = yield* Effect.acquireRelease(
-			acquireHost(hostDir, () =>
-				launchHost(hostDir, [module, name, sessionDir]),
-			),
+			acquireHost(host.paths, () => launchHost(host.paths, host.args)),
 			(value) => Effect.sync(() => value.socket.destroy()),
 		);
 		yield* Effect.forkScoped(
@@ -70,39 +60,12 @@ export const runShared = <Port extends string, A>(
 				return Effect.sync(() => lease.socket.removeListener('close', closed));
 			}).pipe(Effect.catch((error) => Effect.logError(error))),
 		);
-		return yield* Schema.decodeUnknownEffect(
-			Schema.fromJsonString(
-				Schema.Struct({
-					output: options.output,
-					ports: Schema.Record(Schema.String, Schema.Number),
-				}),
-			),
-		)(lease.line).pipe(
-			Effect.tap((value) => reportDaemonService(name, value.ports)),
-			Effect.map(
-				(value) =>
-					({
-						...(typeof value.output === 'object' && value.output !== null
-							? value.output
-							: {}),
-						ports: value.ports,
-					}) as RunningService<Port, A>,
-			),
-			Effect.mapError(
-				(cause) =>
-					new ServiceError({
-						message: `Invalid shared output from ${name}`,
-						cause,
-					}),
-			),
-		);
-	}).pipe(
-		Effect.mapError((cause) =>
-			cause instanceof ServiceError
-				? cause
-				: new ServiceError({
-						message: `Failed to run shared service ${name}`,
-						cause,
-					}),
-		),
-	);
+		const ready = yield* Schema.decodeUnknownEffect(
+			readyMessage(options.output),
+		)(lease.line).pipe(withServiceError(`Invalid shared output from ${name}`));
+		yield* reportDaemonService(name, ready.ports);
+		return {
+			value: ready.output,
+			ports: ready.ports as Readonly<Record<Port, number>>,
+		};
+	}).pipe(withServiceError(`Failed to run shared service ${name}`));

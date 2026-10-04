@@ -54,6 +54,8 @@ it.each([
 	'Error\n    at make (file:///fixture/service.ts:10:2)',
 	'Error\nmake@file:///fixture/service.ts:10:2',
 	'Error\n    at /fixture/service.ts:10:2',
-])('captures Node/Bun callsite format: %s', (stack) => {
-	expect(definitionModule(stack)).toBe('file:///fixture/service.ts');
+])('captures Node/Bun callsite format: %s', async (stack) => {
+	expect(await Effect.runPromise(definitionModule(stack))).toBe(
+		'file:///fixture/service.ts',
+	);
 });

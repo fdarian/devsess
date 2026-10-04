@@ -14,6 +14,7 @@ namespace DevSession {
 
 	export function make(input: DevSessionInput) {
 		return {
+			rootDir: input.rootDir,
 			name: input.name,
 			lastModifiedAt: input.lastModifiedAt,
 			path: (relativePath: string) =>
@@ -23,7 +24,9 @@ namespace DevSession {
 	}
 }
 
-export type DevSession = ReturnType<typeof DevSession.make>;
+export type DevSession = Omit<ReturnType<typeof DevSession.make>, 'rootDir'> & {
+	readonly rootDir?: string;
+};
 
 export class DevSessions extends Context.Service<
 	DevSessions,
@@ -33,6 +36,9 @@ export class DevSessions extends Context.Service<
 		readonly getSessions: Effect.Effect<Array<DevSession>, PlatformError>;
 		readonly createSession: Effect.Effect<DevSession, PlatformError>;
 		readonly getLatestOrCreate: Effect.Effect<DevSession, PlatformError>;
+		readonly getOrCreate: (
+			name: string,
+		) => Effect.Effect<DevSession, PlatformError>;
 	}
 >()('devsess/DevSessions') {
 	/**
@@ -100,7 +106,7 @@ const findProjectRoot = Effect.gen(function* () {
 });
 
 /** The listing/creation logic shared by every `DevSessions` layer, parameterized on the literal directory session subdirs live under. */
-const buildDevSessionsCore = (sessionsDir: string) =>
+const buildDevSessionsCore = (sessionsDir: string, rootDir: string) =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem;
 		const path = yield* Path;
@@ -121,7 +127,7 @@ const buildDevSessionsCore = (sessionsDir: string) =>
 							DevSession.make({
 								name: entry,
 								lastModifiedAt: Option.getOrNull(stat.mtime),
-								rootDir: sessionsDir,
+								rootDir,
 								pathJoin: (relativePath: string) =>
 									path.join(sessionsDir, entry, relativePath),
 							}),
@@ -142,7 +148,7 @@ const buildDevSessionsCore = (sessionsDir: string) =>
 			return DevSession.make({
 				name: slug,
 				lastModifiedAt: null,
-				rootDir: sessionsDir,
+				rootDir,
 				pathJoin: (relativePath: string) =>
 					path.join(sessionsDir, slug, relativePath),
 			});
@@ -165,7 +171,20 @@ const buildDevSessionsCore = (sessionsDir: string) =>
 			return yield* createSession;
 		});
 
-		return { getSessions, createSession, getLatestOrCreate };
+		const getOrCreate = (name: string) =>
+			Effect.gen(function* () {
+				yield* fs.makeDirectory(path.join(sessionsDir, name), {
+					recursive: true,
+				});
+				return DevSession.make({
+					name,
+					rootDir,
+					lastModifiedAt: null,
+					pathJoin: (relativePath) =>
+						path.join(sessionsDir, name, relativePath),
+				});
+			});
+		return { getSessions, createSession, getLatestOrCreate, getOrCreate };
 	});
 
 /**
@@ -180,7 +199,7 @@ const buildDevSessionsLayer = (rootDir: string) =>
 		Effect.gen(function* () {
 			const path = yield* Path;
 			const sessionsDir = path.join(rootDir, '.data', 'sessions');
-			const core = yield* buildDevSessionsCore(sessionsDir);
+			const core = yield* buildDevSessionsCore(sessionsDir, rootDir);
 			return {
 				dir: rootDir,
 				path: (relativePath: string) => path.join(rootDir, relativePath),

@@ -1,20 +1,21 @@
-import { basename } from 'node:path';
 import { NodeServices } from '@effect/platform-node';
 import { Effect, Exit, Schema, Scope } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
-import { ServiceError } from '../core';
+import { DevSessions } from '../../dev-sessions';
+import { ServiceError, serviceBrand } from '../core';
 import type { ServiceDefinition } from '../index';
 import { runLocal } from '../local';
 import { serveHost } from './host';
-import { io } from './protocol';
+import { hostArguments, hostPaths, io, readyMessage } from './protocol';
 
 const program = Effect.gen(function* () {
-	const args = yield* Schema.decodeUnknownEffect(
-		Schema.Tuple([Schema.String, Schema.String, Schema.String]),
-	)(process.argv.slice(2));
+	const args = yield* Schema.decodeUnknownEffect(hostArguments)(
+		process.argv[2],
+	);
 	const module = yield* io(
-		() => import(args[0]) as Promise<Record<string, unknown>>,
+		'Failed to import shared service definition',
+		() => import(args.module) as Promise<Record<string, unknown>>,
 	);
 	const candidates = Object.values(module).filter(
 		(
@@ -28,47 +29,32 @@ const program = Effect.gen(function* () {
 		> =>
 			typeof value === 'object' &&
 			value !== null &&
+			serviceBrand in value &&
+			value[serviceBrand] === true &&
 			'name' in value &&
-			value.name === args[1] &&
-			'start' in value &&
-			'shared' in value,
+			value.name === args.name,
 	);
 	const def = candidates[0];
 	if (candidates.length !== 1 || def === undefined || def.shared === undefined)
 		return yield* new ServiceError({
-			message: `export the shared service \`${args[1]}\` from the file that calls Service.make (${args[0]}); exactly one matching export is required`,
+			message: `export the shared service \`${args.name}\` from the file that calls Service.make (${args.module}); exactly one matching export is required`,
 		});
 	const scope = yield* Scope.make();
 	const output = def.shared.output;
-	const session = {
-		name: basename(args[2]),
-		lastModifiedAt: null,
-		path: (relative: string) => Effect.succeed(`${args[2]}/${relative}`),
-		toString: () => basename(args[2]),
-	};
+	const session = yield* DevSessions.use((sessions) =>
+		sessions.getOrCreate(args.session),
+	).pipe(Effect.provide(DevSessions.layerAt(args.root)));
+	const paths = hostPaths(yield* session.path(''), def.name);
 	const close = Scope.close(scope, Exit.void);
 	yield* Effect.gen(function* () {
-		const original = { value: undefined as unknown };
-		const value = yield* runLocal(session, {
-			...def,
-			start: (ctx) =>
-				def.start(ctx).pipe(
-					Effect.tap((value) =>
-						Effect.sync(() => {
-							original.value = value;
-						}),
-					),
-				),
-		}).pipe(Effect.provideService(Scope.Scope, scope));
-		const line = yield* Schema.encodeEffect(
-			Schema.fromJsonString(
-				Schema.Struct({
-					output,
-					ports: Schema.Record(Schema.String, Schema.Number),
-				}),
-			),
-		)({ output: original.value, ports: value.ports });
-		yield* serveHost(`${args[2]}/hosts/${def.name}`, line, close);
+		const result = yield* runLocal(session, def).pipe(
+			Effect.provideService(Scope.Scope, scope),
+		);
+		const line = yield* Schema.encodeEffect(readyMessage(output))({
+			output: result.value,
+			ports: result.ports,
+		});
+		yield* serveHost(paths, line, close);
 	}).pipe(Effect.ensuring(close));
 }).pipe(Effect.provide(NodeServices.layer));
 

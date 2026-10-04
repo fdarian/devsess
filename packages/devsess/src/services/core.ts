@@ -1,5 +1,26 @@
-import { Data } from 'effect';
+import { Data, Effect } from 'effect';
 import type { DevSession } from '../dev-sessions';
+import type { RunningService } from './index';
+
+export const serviceBrand = Symbol.for('devsess/ServiceDefinition');
+
+export const withServiceError = (message: string) =>
+	Effect.mapError((cause: unknown) =>
+		cause instanceof ServiceError
+			? cause
+			: new ServiceError({ message, cause }),
+	);
+
+export const runningService = <Port extends string, A>(result: {
+	value: A;
+	ports: Readonly<Record<Port, number>>;
+}) =>
+	({
+		...(typeof result.value === 'object' && result.value !== null
+			? result.value
+			: {}),
+		ports: result.ports,
+	}) as RunningService<Port, A>;
 
 export class ServiceError extends Data.TaggedError('ServiceError')<{
 	message: string;

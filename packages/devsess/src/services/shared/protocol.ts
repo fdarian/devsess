@@ -3,64 +3,77 @@ import { createHash } from 'node:crypto';
 import { mkdir, open, readlink, rm, symlink } from 'node:fs/promises';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Effect, Schedule } from 'effect';
+import { Effect, Schedule, Schema } from 'effect';
 import { acquireFileLock } from '../../lock';
 import { readSocketLine } from '../../socket-line';
-import { ServiceError } from '../core';
+import { ServiceError, withServiceError } from '../core';
 
 export const sharedGraceMs = 5_000;
+export const hostPaths = (sessionDir: string, name: string) => {
+	const dir = join(sessionDir, 'hosts', name);
+	return {
+		dir,
+		socket: join(dir, 'host.sock'),
+		lock: join(dir, 'startup.lock'),
+		log: join(dir, 'service.log'),
+	};
+};
+export type HostPaths = ReturnType<typeof hostPaths>;
+export const hostArguments = Schema.fromJsonString(
+	Schema.Struct({
+		module: Schema.String,
+		name: Schema.String,
+		root: Schema.String,
+		session: Schema.String,
+	}),
+);
+type HostArguments = typeof hostArguments.Type;
+export const readyMessage = <A>(output: Schema.Codec<A, unknown>) =>
+	Schema.fromJsonString(
+		Schema.Struct({
+			output,
+			ports: Schema.Record(Schema.String, Schema.Number),
+		}),
+	);
 
-export const io = <A>(operation: () => Promise<A>) =>
+export const io = <A>(message: string, operation: () => Promise<A>) =>
 	Effect.tryPromise({
 		try: () => operation(),
-		catch: (cause) =>
-			new ServiceError({ message: 'Shared service protocol failed', cause }),
+		catch: (cause) => new ServiceError({ message, cause }),
 	});
-
-export const startupLock = (dataDir: string) =>
-	acquireFileLock(dataDir, join(dataDir, 'startup.lock')).pipe(
-		Effect.mapError(
-			(cause) =>
-				new ServiceError({
-					message: 'Failed to acquire shared host lock',
-					cause,
-				}),
-		),
+export const isErrno = (cause: unknown, code: string) =>
+	typeof cause === 'object' &&
+	cause !== null &&
+	'code' in cause &&
+	cause.code === code;
+export const startupLock = (paths: HostPaths) =>
+	acquireFileLock(paths.dir, paths.lock).pipe(
+		withServiceError('Failed to acquire shared host lock'),
 	);
-
 export type Lease = { socket: Socket; line: string };
 
-/** Unix sockets have tiny pathname limits; a short directory alias keeps the socket in dataDir. */
-export const socketPath = async (dataDir: string) => {
-	const direct = join(dataDir, 'host.sock');
-	if (Buffer.byteLength(direct) < 100) return direct;
+/** Unix sockets have tiny pathname limits; a short alias keeps the socket in the host directory. */
+export const socketPath = async (paths: HostPaths) => {
+	if (Buffer.byteLength(paths.socket) < 100) return paths.socket;
 	const alias = join(
 		tmpdir(),
-		`dvs-${createHash('sha256').update(dataDir).digest('hex').slice(0, 16)}`,
+		`dvs-${createHash('sha256').update(paths.dir).digest('hex').slice(0, 16)}`,
 	);
-	await symlink(dataDir, alias).catch(async (cause: unknown) => {
-		if (
-			typeof cause !== 'object' ||
-			cause === null ||
-			!('code' in cause) ||
-			cause.code !== 'EEXIST'
-		)
-			throw cause;
-		if ((await readlink(alias)) !== dataDir)
+	await symlink(paths.dir, alias).catch(async (cause: unknown) => {
+		if (!isErrno(cause, 'EEXIST')) throw cause;
+		if ((await readlink(alias)) !== paths.dir)
 			throw new Error(`Unexpected shared socket alias: ${alias}`);
 	});
-	return join(alias, 'host.sock');
+	return join(alias, basename(paths.socket));
 };
-
 class HostUnavailable extends Error {}
-
 export const connectHost = async (
-	dataDir: string,
+	paths: HostPaths,
 	child?: ChildProcess,
 ): Promise<Lease> => {
-	const socket = connect(await socketPath(dataDir));
+	const socket = connect(await socketPath(paths));
 	const exited = () =>
 		socket.destroy(new Error('Host exited before readiness'));
 	child?.once('exit', exited);
@@ -80,11 +93,9 @@ export const connectHost = async (
 		child?.removeListener('exit', exited);
 	}
 };
-
 const unavailable = (cause: unknown) => cause instanceof HostUnavailable;
-
-const logTail = async (dir: string) => {
-	const file = await open(join(dir, 'service.log'), 'r');
+const logTail = async (paths: HostPaths) => {
+	const file = await open(paths.log, 'r');
 	try {
 		const size = (await file.stat()).size;
 		const buffer = Buffer.alloc(Math.min(size, 8_192));
@@ -99,21 +110,16 @@ const logTail = async (dir: string) => {
 		await file.close();
 	}
 };
-
-type Launch = () => Promise<void> | Promise<ChildProcess>;
-
-const startHost = (dataDir: string, launch: Launch) =>
+type Launch = () => Promise<ChildProcess>;
+const startHost = (paths: HostPaths, launch: Launch) =>
 	Effect.gen(function* () {
-		yield* io(() => rm(join(dataDir, 'host.sock'), { force: true }));
-		const child = yield* io(() =>
-			launch().then((child) => (child === undefined ? undefined : child)),
+		yield* io('Failed to remove stale host socket', () =>
+			rm(paths.socket, { force: true }),
 		);
+		const child = yield* io('Failed to launch shared host', launch);
 		return yield* Effect.suspend(() => {
-			if (
-				child !== undefined &&
-				(child.exitCode !== null || child.signalCode !== null)
-			)
-				return io(() => logTail(dataDir)).pipe(
+			if (child.exitCode !== null || child.signalCode !== null)
+				return io('Failed to read shared host log', () => logTail(paths)).pipe(
 					Effect.flatMap(
 						(log) =>
 							new ServiceError({
@@ -121,7 +127,9 @@ const startHost = (dataDir: string, launch: Launch) =>
 							}),
 					),
 				);
-			return io(() => connectHost(dataDir, child));
+			return io('Failed to read shared host readiness', () =>
+				connectHost(paths, child),
+			);
 		}).pipe(
 			Effect.retry({
 				while: (error) => unavailable(error.cause),
@@ -129,36 +137,34 @@ const startHost = (dataDir: string, launch: Launch) =>
 			}),
 		);
 	});
-
-const acquireHostUnderLock = (dataDir: string, launch: Launch) =>
+const acquireHostUnderLock = (paths: HostPaths, launch: Launch) =>
 	Effect.gen(function* () {
-		yield* Effect.acquireRelease(startupLock(dataDir), (release) =>
-			io(release).pipe(Effect.orDie),
+		yield* Effect.acquireRelease(startupLock(paths), (release) =>
+			io('Failed to release shared host lock', release).pipe(Effect.orDie),
 		);
-		return yield* io(() => connectHost(dataDir)).pipe(
+		return yield* io('Failed to connect to shared host', () =>
+			connectHost(paths),
+		).pipe(
 			Effect.catch((error) =>
-				unavailable(error.cause) ? startHost(dataDir, launch) : error,
+				unavailable(error.cause) ? startHost(paths, launch) : error,
 			),
 		);
 	}).pipe(Effect.scoped);
-
-export const acquireHost = (dataDir: string, launch: Launch) =>
+export const acquireHost = (paths: HostPaths, launch: Launch) =>
 	Effect.gen(function* () {
-		yield* io(() => mkdir(dataDir, { recursive: true }));
-		return yield* io(() => connectHost(dataDir)).pipe(
+		yield* io('Failed to create shared host directory', () =>
+			mkdir(paths.dir, { recursive: true }),
+		);
+		return yield* io('Failed to connect to shared host', () =>
+			connectHost(paths),
+		).pipe(
 			Effect.catch((error) =>
-				unavailable(error.cause)
-					? acquireHostUnderLock(dataDir, launch)
-					: error,
+				unavailable(error.cause) ? acquireHostUnderLock(paths, launch) : error,
 			),
 		);
 	});
-
-export const launchHost = async (
-	dataDir: string,
-	args: ReadonlyArray<string>,
-) => {
-	const log = await open(join(dataDir, 'service.log'), 'a');
+export const launchHost = async (paths: HostPaths, args: HostArguments) => {
+	const log = await open(paths.log, 'a');
 	try {
 		const entry = new URL(
 			import.meta.url.endsWith('.ts')
@@ -168,7 +174,7 @@ export const launchHost = async (
 		);
 		const child = spawn(
 			process.execPath,
-			[...process.execArgv, fileURLToPath(entry), ...args],
+			[...process.execArgv, fileURLToPath(entry), JSON.stringify(args)],
 			{
 				detached: true,
 				env: Object.fromEntries(

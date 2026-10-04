@@ -3,7 +3,12 @@ import { FileSystem } from 'effect/FileSystem';
 import { Path } from 'effect/Path';
 import { ChildProcess } from 'effect/process';
 import { DevSessions } from '../dev-sessions';
-import { type ServiceContext, ServiceError, validName } from './core';
+import {
+	type ServiceContext,
+	ServiceError,
+	validName,
+	withServiceError,
+} from './core';
 import { buildRunArgs, type Healthcheck, selectOrphans } from './docker-args';
 
 export type ContainerSpec<Port extends string> = {
@@ -196,13 +201,4 @@ export const startContainer =
 			);
 			if (spec.healthcheck) yield* waitHealthy(name, container);
 			return { container };
-		}).pipe(
-			Effect.mapError((cause) =>
-				cause instanceof ServiceError
-					? cause
-					: new ServiceError({
-							message: `Failed to start container for service ${name}`,
-							cause,
-						}),
-			),
-		);
+		}).pipe(withServiceError(`Failed to start container for service ${name}`));

@@ -4,8 +4,8 @@ import { Path } from 'effect/Path';
 import { reportDaemonService } from '../dev/daemon-services';
 import { getStickyPort } from '../dev/sticky-port';
 import type { DevSession } from '../dev-sessions';
-import { ServiceError, validName } from './core';
-import type { RunningService, ServiceDefinition } from './index';
+import { ServiceError, validName, withServiceError } from './core';
+import type { ServiceDefinition } from './index';
 
 const prepareLocal = <Name extends string, Port extends string>(
 	session: DevSession,
@@ -28,16 +28,7 @@ const prepareLocal = <Name extends string, Port extends string>(
 			});
 		yield* fs.makeDirectory(dataDir, { recursive: true });
 		return { ports, dataDir };
-	}).pipe(
-		Effect.mapError((cause) =>
-			cause instanceof ServiceError
-				? cause
-				: new ServiceError({
-						message: `Failed to prepare service ${def.name}`,
-						cause,
-					}),
-		),
-	);
+	}).pipe(withServiceError(`Failed to prepare service ${def.name}`));
 
 export const runLocal = <Name extends string, Port extends string, A, E, R>(
 	session: DevSession,
@@ -51,8 +42,5 @@ export const runLocal = <Name extends string, Port extends string, A, E, R>(
 			dataDir: prepared.dataDir,
 		});
 		yield* reportDaemonService(def.name, prepared.ports);
-		return {
-			...(typeof value === 'object' && value !== null ? value : {}),
-			ports: prepared.ports,
-		} as RunningService<Port, A>;
+		return { value, ports: prepared.ports };
 	}).pipe(Effect.annotateLogs({ service: def.name }));
