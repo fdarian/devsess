@@ -40,6 +40,37 @@ The `start` handler receives a `ServiceContext<Port>`:
 
 Direct `run` calls require `FileSystem` and `Path`, plus whatever services the handler uses. Supply a scope when the handler acquires scoped resources. Each direct call runs the handler again; use layers to share an instance.
 
+## Shared services
+
+Use a shared handler for slow-to-start infrastructure needed by multiple dev processes. The first caller starts a detached host; later callers reuse it, without a daemon. `Service.run`, `def.key`, and `def.layer` keep the same consumer API.
+
+```ts
+import { Service } from 'devsess/services'
+import { Effect, Schema } from 'effect'
+
+export const engine = Service.make({
+	name: 'engine',
+	ports: ['api'],
+	shared: {
+		output: Schema.Struct({ url: Schema.String }),
+	},
+	start: (ctx) => Effect.gen(function* () {
+		// Acquire infrastructure and wait for readiness here.
+		return { url: `http://127.0.0.1:${ctx.ports.api}` }
+	}),
+})
+```
+
+`output` is the only shared option: a required Effect codec for the handler's return value. The host encodes it, consumers decode it, and devsess adds the allocated `ports`. `Service.make` captures its calling file automatically from the stack. Export the shared definition from that file, with exactly one matching export by service name, and keep it free of top-level CLI execution. The host imports that file using the caller's runtime and loader arguments; TypeScript modules need Bun, a Node TypeScript loader, or a Node version supporting their syntax. Supply any application-specific layers inside `start`; the host provides Node platform services, not the consumer's Effect context.
+
+Shared services always belong to the fixed `shared-services` session at the current worktree's monorepo root, independent of the caller's selected session. Starting at the caller's project directory, devsess walks upward to the **nearest** `.git` file or directory and selects the topmost directory containing `package.json` at or below that boundary. Without a `.git` boundary it uses the caller's project directory. A nested worktree's `.git` file stops the walk before the outer checkout, so worktrees remain isolated. This differs from `DevSessions.layer` (nearest package root); `--local` and `awaitRunning` routing do not change.
+
+Only the host allocates sticky ports and runs `start`. Sticky-port state updates are locked across processes, including for non-shared services. Each consumer holds a socket lease until its scope closes. Five seconds after the last consumer leaves, the host stops accepting connections and stops the service under the startup lock. A caller arriving during teardown waits for cleanup before starting a replacement. Startup and lock contention have no fixed timeout: callers wait for readiness or host exit, with the tail of the host log reported on failure. A killed host's stale socket is recovered by the next caller; existing consumers log an error rather than silently restarting.
+
+`ctx.dataDir` is `<root>/.data/sessions/shared-services/services/<name>/` and belongs exclusively to the handler. Host bookkeeping lives separately in `<root>/.data/sessions/shared-services/hosts/<name>/`: `host.sock` carries readiness and leases, `startup.lock` is a short-lived lock directory, and `service.log` appends host stdout/stderr. The fixed session is created on first use through `DevSessions.getOrCreate`; idempotent directory creation needs no lock. Service data survives shutdown. Daemon reporting remains best-effort and scoped to consumers; the host does not inherit their `DEVSESS_*` identity.
+
+For long directory paths, devsess connects through a stable, short symlink in the OS temporary directory to stay within Unix socket pathname limits; the socket itself remains in the host bookkeeping directory.
+
 ## Container services
 
 ```ts

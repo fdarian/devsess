@@ -27,6 +27,7 @@ class DevSessions extends Context.Service<
 		readonly getSessions: Effect.Effect<Array<DevSession>, PlatformError>
 		readonly createSession: Effect.Effect<DevSession, PlatformError>
 		readonly getLatestOrCreate: Effect.Effect<DevSession, PlatformError>
+		readonly getOrCreate: (name: string) => Effect.Effect<DevSession, PlatformError>
 	}
 >()('devsess/DevSessions') {
 	static readonly layerAt: (rootDir: string) => Layer.Layer<DevSessions, never, FileSystem | Path>
@@ -41,6 +42,7 @@ class DevSessions extends Context.Service<
 | `getSessions` | `Effect.Effect<Array<DevSession>, PlatformError>` | Lists session subdirectories with their mtimes. `[]` if the root doesn't exist yet — not an error |
 | `createSession` | `Effect.Effect<DevSession, PlatformError>` | Creates a new session directory with a fresh slug |
 | `getLatestOrCreate` | `Effect.Effect<DevSession, PlatformError>` | Ensures the root exists, then returns the session with the newest directory mtime — or creates one if none exist |
+| `getOrCreate(name)` | `Effect.Effect<DevSession, PlatformError>` | Returns the named session, creating its directory if needed; use a single directory name |
 
 `getSessions`, `createSession`, and `getLatestOrCreate` are Effects already bound to the resolved service instance, not functions — read them off the service, e.g. `(yield* DevSessions).getLatestOrCreate`.
 
@@ -81,6 +83,7 @@ class CurrentSession extends Context.Service<CurrentSession, DevSession>()('devs
 
 ```ts
 type DevSession = {
+	rootDir: string
 	name: string
 	lastModifiedAt: Date | null
 	path: (relativePath: string) => Effect.Effect<string, never, never>
@@ -92,6 +95,7 @@ type DevSession = {
 |---|---|
 | `name` | Session slug — a single noun, e.g. `walrus` |
 | `lastModifiedAt` | Directory mtime as of the last listing; `null` for a session just created in this call |
+| `rootDir` | Project directory carried by every session; shared services use it for root discovery |
 | `path(relativePath)` | Joins `relativePath` onto the session directory. Pure path math — does **not** create the directory or touch the filesystem |
 | `toString()` | Returns `name` |
 

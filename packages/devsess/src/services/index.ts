@@ -1,13 +1,18 @@
 import { Context, Effect, Layer } from 'effect';
-import { FileSystem } from 'effect/FileSystem';
-import { Path } from 'effect/Path';
+import type { FileSystem } from 'effect/FileSystem';
+import type { Path } from 'effect/Path';
 import type { Scope } from 'effect/Scope';
 import { CurrentSession } from '../current-session';
-import { reportDaemonService } from '../dev/daemon-services';
-import { getStickyPort } from '../dev/sticky-port';
 import type { DevSession } from '../dev-sessions';
 import { type ContainerSpec, startContainer } from './container';
-import { type ServiceContext, ServiceError, validName } from './core';
+import {
+	runningService,
+	type ServiceContext,
+	ServiceError,
+	serviceBrand,
+} from './core';
+import { runLocal } from './local';
+import { runShared, type SharedOptions } from './shared/index';
 
 export type { Healthcheck } from './docker-args';
 export { type ServiceContext, ServiceError };
@@ -27,8 +32,11 @@ export type ServiceDefinition<
 	E,
 	R,
 > = {
+	readonly [serviceBrand]: true;
 	readonly name: Name;
 	readonly ports: ReadonlyArray<Port>;
+	readonly shared?: SharedOptions<A>;
+	readonly definitionStack?: string;
 	/** Resolves once the service is ready; its scope closing stops it. */
 	readonly start: (ctx: ServiceContext<Port>) => Effect.Effect<A, E, R>;
 	/** Yield inside another service's `start` (or any effect) to depend on this one. */
@@ -43,50 +51,15 @@ export type ServiceDefinition<
 
 const run = <Name extends string, Port extends string, A, E, R>(
 	session: DevSession,
-	def: Pick<ServiceDefinition<Name, Port, A, E, R>, 'name' | 'ports' | 'start'>,
+	def: Pick<
+		ServiceDefinition<Name, Port, A, E, R>,
+		'name' | 'ports' | 'start' | 'shared' | 'definitionStack'
+	>,
 ) =>
-	Effect.gen(function* () {
-		if (!validName(def.name) || !validName(session.name)) {
-			return yield* new ServiceError({
-				message:
-					'Service and session names must contain only letters, numbers, dots, underscores, or hyphens',
-			});
-		}
-		const fs = yield* FileSystem;
-		const path = yield* Path;
-		const dataDir = path.join(yield* session.path(''), 'services', def.name);
-		const ports = {} as Record<Port, number>;
-		for (const port of def.ports)
-			ports[port] = yield* getStickyPort(session, {
-				name: `${def.name}:${port}`,
-			});
-		yield* fs.makeDirectory(dataDir, { recursive: true });
-		return { ports, dataDir };
-	}).pipe(
-		Effect.mapError((cause) =>
-			cause instanceof ServiceError
-				? cause
-				: new ServiceError({
-						message: `Failed to prepare service ${def.name}`,
-						cause,
-					}),
-		),
-		Effect.flatMap((prepared) =>
-			def
-				.start({ session, ports: prepared.ports, dataDir: prepared.dataDir })
-				.pipe(
-					Effect.tap(() => reportDaemonService(def.name, prepared.ports)),
-					Effect.map(
-						(value) =>
-							({
-								...(typeof value === 'object' && value !== null ? value : {}),
-								ports: prepared.ports,
-							}) as RunningService<Port, A>,
-					),
-				),
-		),
-		Effect.annotateLogs({ service: def.name }),
-	);
+	(def.shared !== undefined
+		? runShared<Port, A>(session, def.name, def.shared, def.definitionStack)
+		: runLocal(session, def)
+	).pipe(Effect.map(runningService<Port, A>));
 
 const make = <
 	const Name extends string,
@@ -97,9 +70,17 @@ const make = <
 >(def: {
 	name: Name;
 	ports?: ReadonlyArray<Port>;
+	shared?: SharedOptions<A>;
 	start: (ctx: ServiceContext<Port>) => Effect.Effect<A, E, R>;
 }): ServiceDefinition<Name, Port, A, E, R> => {
-	const base = { name: def.name, ports: def.ports ?? [], start: def.start };
+	const base = {
+		[serviceBrand]: true as const,
+		name: def.name,
+		ports: def.ports ?? [],
+		start: def.start,
+		shared: def.shared,
+		definitionStack: def.shared === undefined ? undefined : new Error().stack,
+	};
 	const key = Context.Service<ServiceIdentifier<Name>, RunningService<Port, A>>(
 		`devsess/services/${def.name}`,
 	);
