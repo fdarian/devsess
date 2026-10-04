@@ -1,5 +1,15 @@
 # devsess
 
+## 0.5.0
+
+### Minor Changes
+
+- fc74014: Add schema-backed shared services with automatic definition lookup, detached hosts, and cross-process leases in a fixed worktree-root session.
+
+### Patch Changes
+
+- 3d6afed: Report scoped services and their ports to the daemon on startup and retract them on scope close.
+
 ## 0.4.0
 
 ### Minor Changes
