@@ -83,7 +83,7 @@ class CurrentSession extends Context.Service<CurrentSession, DevSession>()('devs
 
 ```ts
 type DevSession = {
-	rootDir?: string
+	rootDir: string
 	name: string
 	lastModifiedAt: Date | null
 	path: (relativePath: string) => Effect.Effect<string, never, never>
@@ -95,7 +95,7 @@ type DevSession = {
 |---|---|
 | `name` | Session slug — a single noun, e.g. `walrus` |
 | `lastModifiedAt` | Directory mtime as of the last listing; `null` for a session just created in this call |
-| `rootDir` | Project directory carried by sessions from `DevSessions`; shared services use it for root discovery (or use `DevSessions.dir` for custom sessions without it) |
+| `rootDir` | Project directory carried by every session; shared services use it for root discovery |
 | `path(relativePath)` | Joins `relativePath` onto the session directory. Pure path math — does **not** create the directory or touch the filesystem |
 | `toString()` | Returns `name` |
 

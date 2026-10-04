@@ -1,8 +1,25 @@
 import { Data, Effect } from 'effect';
+import type { FileSystem } from 'effect/FileSystem';
+import type { Path } from 'effect/Path';
+import type { Scope } from 'effect/Scope';
 import type { DevSession } from '../dev-sessions';
-import type { RunningService } from './index';
+import type { RunningService, ServiceDefinition } from './index';
 
 export const serviceBrand = Symbol.for('devsess/ServiceDefinition');
+
+export const isServiceDefinition = (
+	value: unknown,
+): value is ServiceDefinition<
+	string,
+	string,
+	unknown,
+	unknown,
+	Scope | FileSystem | Path
+> =>
+	typeof value === 'object' &&
+	value !== null &&
+	serviceBrand in value &&
+	value[serviceBrand] === true;
 
 export const withServiceError = (message: string) =>
 	Effect.mapError((cause: unknown) =>

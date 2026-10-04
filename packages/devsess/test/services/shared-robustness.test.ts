@@ -129,7 +129,7 @@ it('preserves sticky-port entries written by concurrent processes', async () => 
 			`import { getStickyPort } from ${JSON.stringify(new URL('../../dist/index.js', import.meta.url).href)};
 import { Effect } from 'effect';
 import { NodeServices } from '@effect/platform-node';
-const session = { name: 'test', lastModifiedAt: null, path: (relative) => Effect.succeed(${JSON.stringify(root)} + '/' + relative), toString: () => 'test' };
+const session = { name: 'test', rootDir: ${JSON.stringify(root)}, lastModifiedAt: null, path: (relative) => Effect.succeed(${JSON.stringify(root)} + '/' + relative), toString: () => 'test' };
 await Effect.runPromise(getStickyPort(session, { name: process.argv[2] }).pipe(Effect.provide(NodeServices.layer)));
 `,
 		);
@@ -260,6 +260,7 @@ it('parses the captured stack lazily as a typed ServiceError', async () => {
 		start: () => Effect.succeed({}),
 	});
 	const session = {
+		rootDir: '/unused',
 		name: 'test',
 		lastModifiedAt: null,
 		path: () => Effect.succeed('/unused'),

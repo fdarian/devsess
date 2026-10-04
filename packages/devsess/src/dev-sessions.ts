@@ -24,9 +24,7 @@ namespace DevSession {
 	}
 }
 
-export type DevSession = Omit<ReturnType<typeof DevSession.make>, 'rootDir'> & {
-	readonly rootDir?: string;
-};
+export type DevSession = ReturnType<typeof DevSession.make>;
 
 export class DevSessions extends Context.Service<
 	DevSessions,

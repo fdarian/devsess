@@ -54,6 +54,18 @@ export const startupLock = (paths: HostPaths) =>
 	);
 export type Lease = { socket: Socket; line: string };
 
+export const failWhenHostExits = (lease: Lease, name: string) =>
+	Effect.callback<never, ServiceError>((resume) => {
+		const closed = () =>
+			resume(
+				new ServiceError({
+					message: `Shared host ${name} exited while this consumer was active`,
+				}),
+			);
+		lease.socket.once('close', closed);
+		return Effect.sync(() => lease.socket.removeListener('close', closed));
+	});
+
 /** Unix sockets have tiny pathname limits; a short alias keeps the socket in the host directory. */
 export const socketPath = async (paths: HostPaths) => {
 	if (Buffer.byteLength(paths.socket) < 100) return paths.socket;

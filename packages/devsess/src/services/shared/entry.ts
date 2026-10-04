@@ -1,10 +1,7 @@
 import { NodeServices } from '@effect/platform-node';
 import { Effect, Exit, Schema, Scope } from 'effect';
-import type { FileSystem } from 'effect/FileSystem';
-import type { Path } from 'effect/Path';
 import { DevSessions } from '../../dev-sessions';
-import { ServiceError, serviceBrand } from '../core';
-import type { ServiceDefinition } from '../index';
+import { isServiceDefinition, ServiceError } from '../core';
 import { runLocal } from '../local';
 import { serveHost } from './host';
 import { hostArguments, hostPaths, io, readyMessage } from './protocol';
@@ -17,23 +14,9 @@ const program = Effect.gen(function* () {
 		'Failed to import shared service definition',
 		() => import(args.module) as Promise<Record<string, unknown>>,
 	);
-	const candidates = Object.values(module).filter(
-		(
-			value,
-		): value is ServiceDefinition<
-			string,
-			string,
-			unknown,
-			unknown,
-			Scope.Scope | FileSystem | Path
-		> =>
-			typeof value === 'object' &&
-			value !== null &&
-			serviceBrand in value &&
-			value[serviceBrand] === true &&
-			'name' in value &&
-			value.name === args.name,
-	);
+	const candidates = Object.values(module)
+		.filter(isServiceDefinition)
+		.filter((value) => value.name === args.name);
 	const def = candidates[0];
 	if (candidates.length !== 1 || def === undefined || def.shared === undefined)
 		return yield* new ServiceError({

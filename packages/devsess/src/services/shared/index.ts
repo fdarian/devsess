@@ -1,9 +1,15 @@
-import { Effect, Option, Schema } from 'effect';
+import { Effect, Schema } from 'effect';
 import { reportDaemonService } from '../../dev/daemon-services';
 import { type DevSession, DevSessions } from '../../dev-sessions';
 import { ServiceError, validName, withServiceError } from '../core';
 import { definitionModule } from './callsite';
-import { acquireHost, hostPaths, launchHost, readyMessage } from './protocol';
+import {
+	acquireHost,
+	failWhenHostExits,
+	hostPaths,
+	launchHost,
+	readyMessage,
+} from './protocol';
 import { findSharedRoot } from './root';
 
 export type SharedOptions<A> = { readonly output: Schema.Codec<A, unknown> };
@@ -14,17 +20,7 @@ const locateHost = (
 ) =>
 	Effect.gen(function* () {
 		const module = yield* definitionModule(stack);
-		const sessions = Option.getOrUndefined(
-			yield* Effect.serviceOption(DevSessions),
-		);
-		const projectDir =
-			session.rootDir === undefined ? sessions?.dir : session.rootDir;
-		if (projectDir === undefined)
-			return yield* new ServiceError({
-				message:
-					'Shared services require a session project root or DevSessions',
-			});
-		const root = yield* findSharedRoot(projectDir);
+		const root = yield* findSharedRoot(session.rootDir);
 		const sharedSession = yield* DevSessions.use((store) =>
 			store.getOrCreate('shared-services'),
 		).pipe(Effect.provide(DevSessions.layerAt(root)));
@@ -49,16 +45,9 @@ export const runShared = <Port extends string, A>(
 			(value) => Effect.sync(() => value.socket.destroy()),
 		);
 		yield* Effect.forkScoped(
-			Effect.callback<never, ServiceError>((resume) => {
-				const closed = () =>
-					resume(
-						new ServiceError({
-							message: `Shared host ${name} exited while this consumer was active`,
-						}),
-					);
-				lease.socket.once('close', closed);
-				return Effect.sync(() => lease.socket.removeListener('close', closed));
-			}).pipe(Effect.catch((error) => Effect.logError(error))),
+			failWhenHostExits(lease, name).pipe(
+				Effect.catch((error) => Effect.logError(error)),
+			),
 		);
 		const ready = yield* Schema.decodeUnknownEffect(
 			readyMessage(options.output),
