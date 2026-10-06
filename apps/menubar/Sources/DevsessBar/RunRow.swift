@@ -1,6 +1,11 @@
 import AppKit
 import SwiftUI
 
+@MainActor enum RunHeaderStyle {
+    static let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+    static let color = NSColor.secondaryLabelColor
+}
+
 struct RunRow: View {
     let run: RunRecord
     let stopping: Bool
@@ -29,8 +34,8 @@ struct RunRow: View {
                 Button {} label: {
                     Text(runArmed ? RunHeaderGeometry.stopTitle(serviceCount: run.services.count)
                         : "\(run.projectName) — \((run.canonicalCwd as NSString).lastPathComponent)")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color(nsColor: runArmed ? .systemRed : .secondaryLabelColor))
+                        .font(Font(RunHeaderStyle.font))
+                        .foregroundStyle(Color(nsColor: runArmed ? .systemRed : RunHeaderStyle.color))
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .padding(.leading, ServiceRowGeometry.horizontalInset)

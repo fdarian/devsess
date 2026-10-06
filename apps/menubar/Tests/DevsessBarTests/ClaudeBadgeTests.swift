@@ -3,6 +3,18 @@ import Testing
 @testable import DevsessBar
 
 struct ClaudeBadgeTests {
+    @Test @MainActor func liveCountUsesHeaderTitleStyleInBothAppearances() throws {
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            let appearance = try #require(NSAppearance(named: name))
+            appearance.performAsCurrentDrawingAppearance {
+                let badge = ClaudeSessionBadge(sessions: [session("live", .live)])
+                let text = badge.countText
+                #expect(text.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == RunHeaderStyle.color)
+                #expect(text.attribute(.font, at: 0, effectiveRange: nil) as? NSFont == RunHeaderStyle.font)
+            }
+        }
+    }
+
     @Test @MainActor func hoverMakesArchivedCountReadableWithoutChangingBadgeSize() throws {
         let sessions = try #require(Fixtures.claudeSessions[Fixtures.twoServices.canonicalCwd])
         let resting = ClaudeSessionBadge(sessions: sessions)

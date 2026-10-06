@@ -17,13 +17,13 @@ struct ClaudeSessionBadge: View {
     }
 
     var countColor: NSColor {
-        state.archivedOnly && !hovered && !headerHighlighted ? .tertiaryLabelColor : .secondaryLabelColor
+        state.archivedOnly && !hovered && !headerHighlighted ? .tertiaryLabelColor : RunHeaderStyle.color
     }
 
-    private var countText: NSAttributedString {
+    var countText: NSAttributedString {
         NSAttributedString(string: "\(state.count)", attributes: [
             .foregroundColor: countColor,
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+            .font: RunHeaderStyle.font
         ])
     }
 
@@ -76,6 +76,7 @@ struct ClaudeSessionBadge: View {
                 context.fillPath()
             }
             context.restoreGState()
+            countColor.set()
             count.draw(at: NSPoint(x: 13, y: (rect.height - countSize.height) / 2))
             return true
         }
