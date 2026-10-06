@@ -8,11 +8,13 @@ import SwiftUI
 
 struct RunHeaderTextStyle: ViewModifier {
     var armed = false
+    var font: NSFont { RunHeaderStyle.font }
+    var color: NSColor { armed ? .systemRed : RunHeaderStyle.color }
 
     func body(content: Content) -> some View {
         content
-            .font(Font(RunHeaderStyle.font))
-            .foregroundStyle(Color(nsColor: armed ? .systemRed : RunHeaderStyle.color))
+            .font(Font(font))
+            .foregroundStyle(Color(nsColor: color))
     }
 }
 
@@ -35,7 +37,7 @@ struct RunRow: View {
     private var runArmed: Bool { headerArmed || previewState == .headerArmed }
     private var badge: ClaudeSessionBadge {
         ClaudeSessionBadge(sessions: claudeSessions, snapshotMode: snapshotMode,
-            previewHovered: previewState == .badgeHovered, headerHighlighted: headerSelected,
+            previewHovered: previewState == .badgeHovered,
             headerArmed: runArmed)
     }
 

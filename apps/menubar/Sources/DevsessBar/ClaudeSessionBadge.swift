@@ -5,7 +5,6 @@ struct ClaudeSessionBadge: View {
     let sessions: [ClaudeSession]
     var snapshotMode = false
     var previewHovered = false
-    var headerHighlighted = false
     var headerArmed = false
     @LegacyState private var pointerHovered = false
     private var hovered: Bool { pointerHovered || previewHovered }
@@ -14,18 +13,8 @@ struct ClaudeSessionBadge: View {
     private var state: ClaudeBadgeState { ClaudeBadgeState(sessions: sessions) }
 
     var restingSize: CGSize {
-        CGSize(width: 13 + countText.size().width + RunHeaderGeometry.badgeGlyphInset * 2, height: 18)
-    }
-
-    var countColor: NSColor {
-        headerArmed ? .systemRed : RunHeaderStyle.color
-    }
-
-    var countText: NSAttributedString {
-        NSAttributedString(string: "\(state.count)", attributes: [
-            .foregroundColor: countColor,
-            .font: RunHeaderStyle.font
-        ])
+        let countWidth = ("\(state.count)" as NSString).size(withAttributes: [.font: RunHeaderStyle.font]).width
+        return CGSize(width: 13 + countWidth + RunHeaderGeometry.badgeGlyphInset * 2, height: 18)
     }
 
     private var tooltip: String {
@@ -62,7 +51,7 @@ struct ClaudeSessionBadge: View {
             if state.archivedOnly {
                 Image(systemName: "archivebox")
                     .font(.system(size: 10))
-                    .foregroundStyle(Color(nsColor: countColor))
+                    .foregroundStyle(Color(nsColor: RunHeaderTextStyle(armed: headerArmed).color))
                     .frame(width: 10, height: 10)
             } else {
                 ClaudeMark().fill(Color(nsColor: Self.brandCoral))

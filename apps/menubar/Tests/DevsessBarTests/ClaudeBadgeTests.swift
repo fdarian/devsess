@@ -3,33 +3,30 @@ import Testing
 @testable import DevsessBar
 
 struct ClaudeBadgeTests {
-    @Test @MainActor func liveCountUsesHeaderTitleStyleInBothAppearances() throws {
+    @Test @MainActor func sharedHeaderStyleInBothAppearances() throws {
         for name in [NSAppearance.Name.aqua, .darkAqua] {
             let appearance = try #require(NSAppearance(named: name))
             appearance.performAsCurrentDrawingAppearance {
-                let badge = ClaudeSessionBadge(sessions: [session("live", .live)])
-                let text = badge.countText
-                #expect(text.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == RunHeaderStyle.color)
-                #expect(text.attribute(.font, at: 0, effectiveRange: nil) as? NSFont == RunHeaderStyle.font)
+                let resting = RunHeaderTextStyle()
+                let armed = RunHeaderTextStyle(armed: true)
+                #expect(resting.color == RunHeaderStyle.color)
+                #expect(armed.color == .systemRed)
+                #expect(resting.font == RunHeaderStyle.font)
+                #expect(armed.font == resting.font)
             }
         }
     }
 
-    @Test @MainActor func badgeCountsMatchHeaderColorAcrossInteractionStates() throws {
+    @Test @MainActor func badgeSizeIsStableAcrossInteractionStates() throws {
         let sessions = try #require(Fixtures.claudeSessions[Fixtures.twoServices.canonicalCwd])
         let resting = ClaudeSessionBadge(sessions: sessions)
         let hovered = ClaudeSessionBadge(sessions: sessions, previewHovered: true)
-        #expect(resting.countColor == RunHeaderStyle.color)
-        #expect(hovered.countColor == .secondaryLabelColor)
-        let headerHighlighted = ClaudeSessionBadge(sessions: sessions, headerHighlighted: true)
-        #expect(headerHighlighted.countColor == .secondaryLabelColor)
-        #expect(resting.restingSize == headerHighlighted.restingSize)
+        let armed = ClaudeSessionBadge(sessions: sessions, headerArmed: true)
+        #expect(resting.restingSize == armed.restingSize)
         #expect(resting.restingSize == hovered.restingSize)
         let live = [session("live", .live)]
-        #expect(ClaudeSessionBadge(sessions: live).countColor == .secondaryLabelColor)
-        #expect(ClaudeSessionBadge(sessions: live, previewHovered: true).countColor == .secondaryLabelColor)
-        #expect(ClaudeSessionBadge(sessions: live, headerArmed: true).countColor == .systemRed)
-        #expect(ClaudeSessionBadge(sessions: sessions, headerArmed: true).countColor == .systemRed)
+        #expect(ClaudeSessionBadge(sessions: live).restingSize == ClaudeSessionBadge(sessions: live, previewHovered: true).restingSize)
+        #expect(ClaudeSessionBadge(sessions: live).restingSize == ClaudeSessionBadge(sessions: live, headerArmed: true).restingSize)
     }
 
     private func session(_ id: String, _ state: ClaudeSessionState) -> ClaudeSession {
