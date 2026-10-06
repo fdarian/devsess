@@ -12,8 +12,8 @@ enum Fixtures {
             {"name":"docs","command":"bun run docs --host 127.0.0.1","cwd":"\(home)/.claude/worktrees/devsess/docs-site","state":"starting","memoryBytes":90177536}
           ]},
           {"runId":"c","projectName":"atlas","presetName":"api","canonicalCwd":"\(home)/.claude/worktrees/atlas/feat-auth","state":"running","services":[
-            {"name":"api","command":"bun run src/server.ts --watch","cwd":"\(home)/.claude/worktrees/atlas/feat-auth","state":"running","memoryBytes":356515840,"published":{"value":{"url":"http://localhost:3000/"}}},
-            {"name":"worker","command":"bun run src/worker.ts --queue background","cwd":"\(home)/.claude/worktrees/atlas/feat-auth","state":"failed","exitCode":1,"memoryBytes":90177536}
+            {"name":"api","command":"bun run src/server.ts --watch","cwd":"\(home)/.claude/worktrees/atlas/feat-auth","state":"running","children":[{"name":"hatchet","ports":{"http":63294,"grpc":63295}},{"name":"postgres","ports":{"postgres":5432}}],"memoryBytes":356515840,"published":{"value":{"url":"http://localhost:3000/"}}},
+            {"name":"worker","command":"bun run src/worker.ts --queue background","cwd":"\(home)/.claude/worktrees/atlas/feat-auth","state":"failed","children":[{"name":"hatchet","ports":{"grpc":63295,"http":63294}}],"exitCode":1,"memoryBytes":90177536}
           ]},
           {"runId":"d","projectName":"old-site","presetName":"dev","canonicalCwd":"\(home)/code/old-site","state":"exited","services":[{"name":"web","command":"bun dev","cwd":"\(home)/code/old-site","state":"exited","exitCode":0}]},
           {"runId":"e","projectName":"nisi","presetName":"tests","canonicalCwd":"\(home)/code/nisi","state":"exited","services":[{"name":"test","command":"bun test --watch","cwd":"\(home)/code/nisi","state":"exited","exitCode":0}]}

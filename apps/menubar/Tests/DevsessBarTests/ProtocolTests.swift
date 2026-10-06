@@ -3,6 +3,39 @@ import Testing
 @testable import DevsessBar
 
 struct ProtocolTests {
+    @Test func reportedServicesFlattenInFirstAppearanceOrder() {
+        let shared = ReportedService(name: "hatchet", ports: ["http": 63294, "grpc": 63295])
+        let reordered = ReportedService(name: "hatchet", ports: ["grpc": 63295, "http": 63294])
+        let distinct = ReportedService(name: "hatchet", ports: ["http": 63300])
+        let postgres = ReportedService(name: "postgres", ports: ["postgres": 5432])
+        let first = ServiceRecord(name: "engine", command: "run", cwd: "/tmp", state: .failed,
+            exitCode: 1, signal: nil, published: nil, children: [shared, postgres])
+        let second = ServiceRecord(name: "web", command: "run", cwd: "/tmp", state: .running,
+            exitCode: nil, signal: nil, published: nil, children: [reordered, distinct])
+        let run = RunRecord(runId: "flatten", projectName: "test", presetName: "dev",
+            canonicalCwd: "/tmp", state: .running, services: [first, second])
+        let reported = run.reportedServices
+        #expect(reported.map(\.child.name) == ["hatchet", "postgres", "hatchet"])
+        #expect(reported.map(\.state) == [.running, .failed, .running])
+        #expect(reported[0].child.ports == shared.ports)
+        #expect(reported[2].child.ports == distinct.ports)
+        #expect(Set(reported.map(\.id)).count == 3)
+        #expect(Fixtures.busy[2].reportedServices.count == 2)
+    }
+
+    @Test func reportedServicesRetainFirstNonRunningParentState() {
+        let child = ReportedService(name: "shared", ports: nil)
+        let services = [ServiceState.starting, .stopping, .failed].enumerated().map { entry in
+            ServiceRecord(name: "parent-\(entry.offset)", command: "run", cwd: "/tmp",
+                state: entry.element, exitCode: nil, signal: nil, published: nil, children: [child])
+        }
+        let run = RunRecord(runId: "states", projectName: "test", presetName: "dev",
+            canonicalCwd: "/tmp", state: .starting, services: services)
+        #expect(run.reportedServices.count == 1)
+        #expect(run.reportedServices.first?.state == .starting)
+        #expect(Fixtures.busy[1].reportedServices.isEmpty)
+    }
+
     @Test func decodeRealisticList() throws {
         let url = try #require(Bundle.module.url(forResource: "list-runs", withExtension: "json"))
         let runs = try JSONDecoder().decode([RunRecord].self, from: Data(contentsOf: url))

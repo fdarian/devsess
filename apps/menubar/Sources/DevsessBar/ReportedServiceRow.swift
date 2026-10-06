@@ -20,7 +20,7 @@ struct ReportedServiceRow: View {
         }
         .font(.system(size: 12))
         .foregroundStyle(Color(nsColor: .secondaryLabelColor))
-        .padding(.leading, ServiceRowGeometry.stopZoneWidth)
+        .padding(.leading, ServiceRowGeometry.horizontalInset)
         .padding(.trailing, ServiceRowGeometry.horizontalInset)
         .frame(height: ServiceRowGeometry.height)
         .allowsHitTesting(false)

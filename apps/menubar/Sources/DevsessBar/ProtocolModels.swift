@@ -30,6 +30,17 @@ struct ReportedService: Decodable, Sendable, Identifiable {
     var id: String { name }
 }
 
+struct RunReportedService: Sendable, Identifiable {
+    struct ID: Hashable, Sendable {
+        let name: String
+        let ports: [String: Int]?
+    }
+
+    let child: ReportedService
+    var state: ServiceState
+    var id: ID { ID(name: child.name, ports: child.ports) }
+}
+
 struct ServiceRecord: Decodable, Sendable, Identifiable {
     let children: [ReportedService]?
     let name: String
@@ -94,6 +105,21 @@ struct RunRecord: Decodable, Sendable, Identifiable {
     let services: [ServiceRecord]
 
     var id: String { runId }
+    var reportedServices: [RunReportedService] {
+        var result: [RunReportedService] = []
+        for service in services {
+            guard let children = service.children else { continue }
+            for child in children {
+                let reported = RunReportedService(child: child, state: service.state)
+                if let index = result.firstIndex(where: { $0.id == reported.id }) {
+                    if service.state == .running { result[index].state = .running }
+                } else {
+                    result.append(reported)
+                }
+            }
+        }
+        return result
+    }
     var isActive: Bool {
         services.contains { [.starting, .running, .stopping, .orphaned].contains($0.state) }
     }

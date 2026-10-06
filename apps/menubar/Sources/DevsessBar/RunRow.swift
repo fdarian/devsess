@@ -98,9 +98,9 @@ struct RunRow: View {
                     headerHovered: headerSelected, headerArmed: runArmed,
                     stop: { stopService(run.services[index]) },
                     restart: { restart(run.services[index]) }, openURL: openURL)
-                ForEach(run.services[index].children ?? []) { child in
-                    ReportedServiceRow(child: child, state: run.services[index].state)
-                }
+            }
+            ForEach(run.reportedServices) { reported in
+                ReportedServiceRow(child: reported.child, state: reported.state)
             }
             if let error {
                 Text(error)
