@@ -9,6 +9,7 @@ struct ClaudeSessionBadge: View {
     @LegacyState private var pointerHovered = false
     private var hovered: Bool { pointerHovered || previewHovered }
 
+    private static let brandCoral = NSColor(srgbRed: 217.0 / 255, green: 119.0 / 255, blue: 87.0 / 255, alpha: 1)
     private var state: ClaudeBadgeState { ClaudeBadgeState(sessions: sessions) }
 
     var restingSize: CGSize {
@@ -68,7 +69,7 @@ struct ClaudeSessionBadge: View {
                     .withSymbolConfiguration(configuration) else { preconditionFailure("Missing archivebox symbol") }
                 archive.draw(in: NSRect(x: 0, y: (rect.height - 10) / 2, width: 10, height: 10))
             } else {
-                RunHeaderStyle.color.setFill()
+                Self.brandCoral.setFill()
                 context.translateBy(x: 0, y: (rect.height + 10) / 2)
                 context.scaleBy(x: 1, y: -1)
                 context.addPath(ClaudeMark().path(in: CGRect(x: 0, y: 0, width: 10, height: 10)).cgPath)
