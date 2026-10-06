@@ -6,6 +6,7 @@ struct ClaudeSessionBadge: View {
     var snapshotMode = false
     var previewHovered = false
     var headerHighlighted = false
+    var headerArmed = false
     @LegacyState private var pointerHovered = false
     private var hovered: Bool { pointerHovered || previewHovered }
 
@@ -17,7 +18,7 @@ struct ClaudeSessionBadge: View {
     }
 
     var countColor: NSColor {
-        state.archivedOnly && !hovered && !headerHighlighted ? .tertiaryLabelColor : RunHeaderStyle.color
+        headerArmed ? .systemRed : RunHeaderStyle.color
     }
 
     var countText: NSAttributedString {
@@ -42,8 +43,9 @@ struct ClaudeSessionBadge: View {
                     }
                     .buttonStyle(.plain)
                 } else {
-                    ClaudeSessionMenu(state: state, image: badgeImage)
-                        .frame(width: restingSize.width, height: 18)
+                    mark().overlay {
+                        ClaudeSessionMenu(state: state)
+                    }
                 }
             }
         }
@@ -55,36 +57,20 @@ struct ClaudeSessionBadge: View {
         .accessibilityLabel(tooltip)
     }
 
-    private var badgeImage: NSImage {
-        let archivedOnly = state.archivedOnly
-        let count = countText
-        let countSize = count.size()
-        return NSImage(size: NSSize(width: 13 + countSize.width, height: 18), flipped: false) { rect in
-            guard let context = NSGraphicsContext.current?.cgContext else { return false }
-            context.saveGState()
-            if archivedOnly {
-                let configuration = NSImage.SymbolConfiguration(pointSize: 10, weight: .regular)
-                    .applying(NSImage.SymbolConfiguration(paletteColors: [countColor]))
-                guard let archive = NSImage(systemSymbolName: "archivebox", accessibilityDescription: "Archived")?
-                    .withSymbolConfiguration(configuration) else { preconditionFailure("Missing archivebox symbol") }
-                archive.draw(in: NSRect(x: 0, y: (rect.height - 10) / 2, width: 10, height: 10))
-            } else {
-                Self.brandCoral.setFill()
-                context.translateBy(x: 0, y: (rect.height + 10) / 2)
-                context.scaleBy(x: 1, y: -1)
-                context.addPath(ClaudeMark().path(in: CGRect(x: 0, y: 0, width: 10, height: 10)).cgPath)
-                context.fillPath()
-            }
-            context.restoreGState()
-            countColor.set()
-            count.draw(at: NSPoint(x: 13, y: (rect.height - countSize.height) / 2))
-            return true
-        }
-    }
-
     private func mark() -> some View {
-        Image(nsImage: badgeImage)
-            .renderingMode(.original)
+        HStack(spacing: 3) {
+            if state.archivedOnly {
+                Image(systemName: "archivebox")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color(nsColor: countColor))
+                    .frame(width: 10, height: 10)
+            } else {
+                ClaudeMark().fill(Color(nsColor: Self.brandCoral))
+                    .frame(width: 10, height: 10)
+            }
+            Text("\(state.count)")
+                .modifier(RunHeaderTextStyle(armed: headerArmed))
+        }
             .padding(.horizontal, RunHeaderGeometry.badgeGlyphInset)
             .frame(height: 18)
             .contentShape(Capsule())

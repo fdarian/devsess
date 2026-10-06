@@ -6,6 +6,16 @@ import SwiftUI
     static let color = NSColor.secondaryLabelColor
 }
 
+struct RunHeaderTextStyle: ViewModifier {
+    var armed = false
+
+    func body(content: Content) -> some View {
+        content
+            .font(Font(RunHeaderStyle.font))
+            .foregroundStyle(Color(nsColor: armed ? .systemRed : RunHeaderStyle.color))
+    }
+}
+
 struct RunRow: View {
     let run: RunRecord
     let stopping: Bool
@@ -25,7 +35,8 @@ struct RunRow: View {
     private var runArmed: Bool { headerArmed || previewState == .headerArmed }
     private var badge: ClaudeSessionBadge {
         ClaudeSessionBadge(sessions: claudeSessions, snapshotMode: snapshotMode,
-            previewHovered: previewState == .badgeHovered, headerHighlighted: headerSelected)
+            previewHovered: previewState == .badgeHovered, headerHighlighted: headerSelected,
+            headerArmed: runArmed)
     }
 
     private var header: some View {
@@ -34,8 +45,7 @@ struct RunRow: View {
                 Button {} label: {
                     Text(runArmed ? RunHeaderGeometry.stopTitle(serviceCount: run.services.count)
                         : "\(run.projectName) — \((run.canonicalCwd as NSString).lastPathComponent)")
-                        .font(Font(RunHeaderStyle.font))
-                        .foregroundStyle(Color(nsColor: runArmed ? .systemRed : RunHeaderStyle.color))
+                        .modifier(RunHeaderTextStyle(armed: runArmed))
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .padding(.leading, ServiceRowGeometry.horizontalInset)

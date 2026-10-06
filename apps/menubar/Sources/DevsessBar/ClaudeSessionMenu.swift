@@ -3,12 +3,12 @@ import SwiftUI
 
 struct ClaudeSessionMenu: NSViewRepresentable {
     let state: ClaudeBadgeState
-    let image: NSImage
 
     func makeCoordinator() -> Coordinator { Coordinator(state: state) }
 
     func makeNSView(context: Context) -> NSButton {
-        let button = NSButton(image: image, target: context.coordinator, action: #selector(Coordinator.showMenu(_:)))
+        let button = NSButton(title: "", target: context.coordinator, action: #selector(Coordinator.showMenu(_:)))
+        button.isTransparent = true
         button.isBordered = false
         button.imagePosition = .imageOnly
         button.imageScaling = .scaleNone
@@ -17,7 +17,6 @@ struct ClaudeSessionMenu: NSViewRepresentable {
     }
 
     func updateNSView(_ button: NSButton, context: Context) {
-        button.image = image
         context.coordinator.state = state
         button.setAccessibilityLabel(state.sessions.map { "\($0.title) — \($0.state.label)" }.joined(separator: "\n"))
     }

@@ -15,11 +15,11 @@ struct ClaudeBadgeTests {
         }
     }
 
-    @Test @MainActor func hoverMakesArchivedCountReadableWithoutChangingBadgeSize() throws {
+    @Test @MainActor func badgeCountsMatchHeaderColorAcrossInteractionStates() throws {
         let sessions = try #require(Fixtures.claudeSessions[Fixtures.twoServices.canonicalCwd])
         let resting = ClaudeSessionBadge(sessions: sessions)
         let hovered = ClaudeSessionBadge(sessions: sessions, previewHovered: true)
-        #expect(resting.countColor == .tertiaryLabelColor)
+        #expect(resting.countColor == RunHeaderStyle.color)
         #expect(hovered.countColor == .secondaryLabelColor)
         let headerHighlighted = ClaudeSessionBadge(sessions: sessions, headerHighlighted: true)
         #expect(headerHighlighted.countColor == .secondaryLabelColor)
@@ -28,6 +28,8 @@ struct ClaudeBadgeTests {
         let live = [session("live", .live)]
         #expect(ClaudeSessionBadge(sessions: live).countColor == .secondaryLabelColor)
         #expect(ClaudeSessionBadge(sessions: live, previewHovered: true).countColor == .secondaryLabelColor)
+        #expect(ClaudeSessionBadge(sessions: live, headerArmed: true).countColor == .systemRed)
+        #expect(ClaudeSessionBadge(sessions: sessions, headerArmed: true).countColor == .systemRed)
     }
 
     private func session(_ id: String, _ state: ClaudeSessionState) -> ClaudeSession {
