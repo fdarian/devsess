@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createConnection, createServer, Socket } from 'node:net';
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
@@ -864,6 +864,49 @@ describe('daemon lifetime and failure handling', () => {
 					}).pipe(Effect.ensuring(Effect.sync(() => kill.mockRestore())));
 				}),
 			),
+	);
+
+	it.live('records its PID beside the socket and removes it on exit', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				const socketPath = join(root, 'daemon.sock');
+				const pidfilePath = join(root, 'daemon.pid');
+				yield* Effect.gen(function* () {
+					yield* Daemon;
+					expect(readFileSync(pidfilePath, 'utf8').split('\n')[0]).toBe(
+						String(process.pid),
+					);
+				}).pipe(Effect.provide(state.layer(socketPath)));
+				expect(existsSync(pidfilePath)).toBe(false);
+			}),
+		),
+	);
+
+	it.live('does not remove the pidfile of a daemon that owns the socket', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				const socketPath = join(root, 'daemon.sock');
+				const pidfilePath = join(root, 'daemon.pid');
+				const owner = createServer();
+				yield* Effect.promise(
+					() =>
+						new Promise<void>((resolve) => owner.listen(socketPath, resolve)),
+				);
+				writeFileSync(pidfilePath, '4242\nbirth\n');
+				const exit = yield* Effect.exit(
+					Effect.gen(function* () {
+						yield* Daemon;
+					}).pipe(Effect.provide(state.layer(socketPath))),
+				);
+				owner.close();
+				expect(Exit.isFailure(exit)).toBe(true);
+				expect(readFileSync(pidfilePath, 'utf8')).toBe('4242\nbirth\n');
+			}),
+		),
 	);
 
 	it.live('releases close churn without waiting for lifecycle work', () =>
@@ -1967,6 +2010,10 @@ describe('daemon lifetime and failure handling', () => {
 						);
 						onData('x'.repeat(1024 * 1024));
 						onExit({ exitCode: 0 });
+						for (let attempt = 0; attempt < 200; attempt += 1) {
+							if ((yield* state.registry.get('run')).state === 'exited') break;
+							yield* Effect.sleep('5 millis');
+						}
 						const listed = (yield* daemon.request(list)) as Array<RunRecord>;
 						expect(listed.find((run) => run.runId === 'run')?.state).toBe(
 							'exited',

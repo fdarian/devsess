@@ -7,6 +7,7 @@ import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { Scope } from 'effect/Scope';
 import devsessPackageJson from '../../package.json' with { type: 'json' };
+import { removeOwnPidfile, writeDaemonPidfile } from './bootstrap';
 import { DaemonError, errorMessage } from './daemon-errors';
 import { Logs } from './logs';
 import { makeOutputWorker } from './output-worker';
@@ -396,6 +397,13 @@ export const makeDaemon = (options: {
 				}
 			});
 		});
+		// Registered before the shutdown finalizer so it runs after it: the pidfile has to
+		// outlive a hung shutdown, that is when a client needs it to find this process.
+		yield* Effect.addFinalizer(() =>
+			removeOwnPidfile(options.socketPath, process.pid).pipe(
+				Effect.catch((cause) => Effect.logError(cause)),
+			),
+		);
 		yield* Effect.addFinalizer(() =>
 			Effect.gen(function* () {
 				lifecycle.closing = true;
@@ -444,6 +452,7 @@ export const makeDaemon = (options: {
 			}),
 		);
 		yield* listen(server, options.socketPath);
+		yield* writeDaemonPidfile(options.socketPath);
 		return Daemon.of({
 			request: (incoming: DaemonRequest) =>
 				Effect.gen(function* () {

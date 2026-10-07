@@ -8,7 +8,7 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, parse } from 'node:path';
 import { Effect, Schema } from 'effect';
 import { callDaemon, DaemonClientError } from './client';
 
@@ -267,11 +267,11 @@ const removeStaleLock = (location: DaemonLocation) =>
 			}),
 	});
 
-const removeStaleSocket = (socketPath: string) =>
+const unlinkIfPresent = (path: string, description: string) =>
 	Effect.try({
 		try: () => {
 			try {
-				unlinkSync(socketPath);
+				unlinkSync(path);
 			} catch (cause) {
 				if (
 					cause instanceof Error &&
@@ -284,10 +284,104 @@ const removeStaleSocket = (socketPath: string) =>
 		},
 		catch: (cause) =>
 			new DaemonBootstrapError({
-				message: `Could not remove stale daemon socket at ${socketPath}`,
+				message: `Could not remove ${description} at ${path}`,
 				cause,
 			}),
 	});
+
+export const removeStaleSocket = (socketPath: string) =>
+	unlinkIfPresent(socketPath, 'stale daemon socket');
+
+/** Lives beside the socket and is derived from it, so a daemon on a temp socket never touches another daemon's pidfile. */
+export const daemonPidfilePath = (socketPath: string) => {
+	const parsed = parse(socketPath);
+	return join(parsed.dir, `${parsed.name}.pid`);
+};
+
+const readPidfile = (socketPath: string) =>
+	Effect.try({
+		try: () => {
+			try {
+				const lines = readFileSync(daemonPidfilePath(socketPath), 'utf8').split(
+					'\n',
+				);
+				const pid = Number(lines[0]);
+				const birth = lines[1];
+				if (
+					!Number.isSafeInteger(pid) ||
+					pid <= 1 ||
+					birth === undefined ||
+					birth.length === 0
+				)
+					return undefined;
+				return { pid, birth };
+			} catch (cause) {
+				if (
+					cause instanceof Error &&
+					'code' in cause &&
+					cause.code === 'ENOENT'
+				)
+					return undefined;
+				throw cause;
+			}
+		},
+		catch: (cause) =>
+			new DaemonBootstrapError({
+				message: `Could not read daemon pidfile at ${daemonPidfilePath(socketPath)}`,
+				cause,
+			}),
+	});
+
+/** Records the PID with its process birth value so a reused PID is never mistaken for the daemon. */
+export const writeDaemonPidfile = (socketPath: string) =>
+	processBirth(process.pid).pipe(
+		Effect.flatMap((birth) => {
+			if (birth === undefined)
+				return new DaemonBootstrapError({
+					message: `Could not record daemon PID ${process.pid}: process not found`,
+				});
+			return Effect.try({
+				try: () => {
+					const path = daemonPidfilePath(socketPath);
+					const staging = `${path}.${process.pid}.tmp`;
+					writeFileSync(staging, `${process.pid}\n${birth}\n`, { mode: 0o600 });
+					renameSync(staging, path);
+				},
+				catch: (cause) =>
+					new DaemonBootstrapError({
+						message: `Could not write daemon pidfile at ${daemonPidfilePath(socketPath)}`,
+						cause,
+					}),
+			});
+		}),
+	);
+
+export const removeStalePidfile = (socketPath: string) =>
+	unlinkIfPresent(daemonPidfilePath(socketPath), 'stale daemon pidfile');
+
+/** Removes the pidfile only if it still names `pid`, so a daemon that lost the socket never deletes the winner's. */
+export const removeOwnPidfile = (socketPath: string, pid: number) =>
+	readPidfile(socketPath).pipe(
+		Effect.flatMap((recorded) =>
+			recorded === undefined || recorded.pid !== pid
+				? Effect.void
+				: removeStalePidfile(socketPath),
+		),
+	);
+
+/** The PID recorded beside the socket, or undefined when there is no pidfile or that process is gone. */
+export const liveDaemonPid = (socketPath: string) =>
+	readPidfile(socketPath).pipe(
+		Effect.flatMap((recorded) =>
+			recorded === undefined
+				? Effect.succeed(undefined)
+				: processBirth(recorded.pid).pipe(
+						Effect.map((birth) =>
+							birth === recorded.birth ? recorded.pid : undefined,
+						),
+					),
+		),
+	);
 
 const endpointIsMissing = (error: DaemonBootstrapError) =>
 	error.cause instanceof DaemonClientError &&
