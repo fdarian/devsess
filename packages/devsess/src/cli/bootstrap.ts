@@ -390,6 +390,10 @@ const endpointIsMissing = (error: DaemonBootstrapError) =>
 	(error.cause.cause.code === 'ENOENT' ||
 		error.cause.cause.code === 'ECONNREFUSED');
 
+const endpointIsUnresponsive = (error: DaemonBootstrapError) =>
+	error.cause instanceof DaemonClientError &&
+	error.cause.kind === 'unresponsive';
+
 const bootstrapTimeoutMs = 10_000;
 
 const timeoutError = (
@@ -515,14 +519,28 @@ export const ensureDaemon = (options: {
 							}).pipe(
 								Effect.andThen(
 									handshake(150).pipe(
-										Effect.catch((error) =>
-											endpointIsMissing(error)
-												? removeStaleSocket(options.location.socketPath).pipe(
-														Effect.andThen(options.launch()),
-														Effect.andThen(handshake(5_000)),
-													)
-												: error,
-										),
+										Effect.catch((error) => {
+											const relaunch = removeStaleSocket(
+												options.location.socketPath,
+											).pipe(
+												Effect.andThen(options.launch()),
+												Effect.andThen(handshake(5_000)),
+											);
+											if (endpointIsMissing(error)) return relaunch;
+											if (!endpointIsUnresponsive(error)) return error;
+											return liveDaemonPid(options.location.socketPath).pipe(
+												Effect.flatMap((pid) =>
+													pid === undefined
+														? removeStalePidfile(
+																options.location.socketPath,
+															).pipe(Effect.andThen(relaunch))
+														: new DaemonBootstrapError({
+																message: `Daemon PID ${pid} accepts connections at ${options.location.socketPath} but does not reply. Run \`devsess daemon stop --force\` to terminate it, then retry.`,
+																cause: error,
+															}),
+												),
+											);
+										}),
 									),
 								),
 								Effect.ensuring(release),

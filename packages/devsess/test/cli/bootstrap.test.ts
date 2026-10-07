@@ -1,15 +1,16 @@
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
-import { Cause, Effect, Option } from 'effect';
+import { Cause, Effect, Exit, Option } from 'effect';
 import {
 	awaitDaemonHandshake,
 	DaemonBootstrapError,
 	ensureDaemon,
 	launchDetachedDaemon,
 } from '../../src/cli/bootstrap';
+import { processBirthOf } from '../support/process-birth';
 import { runTest } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
 
@@ -29,26 +30,6 @@ const listen = (server: ReturnType<typeof createServer>, socketPath: string) =>
 			}),
 		catch: (cause) => cause,
 	});
-
-const currentProcessBirth = () => {
-	if (process.platform === 'linux') {
-		const stat = readFileSync(`/proc/${process.pid}/stat`, 'utf8');
-		const fields = stat
-			.slice(stat.lastIndexOf(')') + 2)
-			.trim()
-			.split(/\s+/);
-		const startedAt = fields[19];
-		if (startedAt === undefined) throw new Error('Missing process birth value');
-		return `linux:${startedAt}`;
-	}
-	const startedAt = execFileSync(
-		'ps',
-		['-o', 'lstart=', '-p', String(process.pid)],
-		{ encoding: 'utf8' },
-	).trim();
-	if (startedAt.length === 0) throw new Error('Missing process birth value');
-	return `ps:${startedAt}`;
-};
 
 describe('daemon bootstrap', () => {
 	it.live('waits for the daemon handshake', () =>
@@ -307,7 +288,7 @@ describe('daemon bootstrap', () => {
 				mkdirSync(lockDirectory, { recursive: true, mode: 0o700 });
 				writeFileSync(
 					join(lockDirectory, 'owner'),
-					`${process.pid}\n${currentProcessBirth()}\nheld\n`,
+					`${process.pid}\n${processBirthOf(process.pid)}\nheld\n`,
 				);
 				const startedAt = Date.now();
 				const exit = yield* Effect.exit(
@@ -392,4 +373,131 @@ describe('daemon bootstrap', () => {
 				),
 			),
 	);
+
+	describe('an endpoint that accepts and then closes', () => {
+		const acceptThenClose = () =>
+			createServer((socket) => {
+				socket.once('data', () => socket.destroy());
+			});
+		const respondingServer = () =>
+			createServer((socket) => {
+				socket.once('data', (data) => {
+					const request = JSON.parse(data.toString()) as { requestId: string };
+					socket.end(
+						`${JSON.stringify({ version: 1, requestId: request.requestId, ok: true, result: [] })}\n`,
+					);
+				});
+			});
+		const deadPid = () => {
+			const finished = spawnSync(process.execPath, ['-e', '0']);
+			if (finished.pid === undefined) throw new Error('Missing child PID');
+			return finished.pid;
+		};
+
+		for (const scenario of [
+			{ name: 'a dead PID', pidfile: () => `${deadPid()}\nps:gone\n` },
+			{ name: 'no pidfile', pidfile: () => undefined },
+		])
+			it.live(`unlinks the socket and relaunches for ${scenario.name}`, () =>
+				runTest(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const rootDir = yield* makeTempDir;
+							const socketPath = join(rootDir, 'daemon.sock');
+							const pidfilePath = join(rootDir, 'daemon.pid');
+							const stale = acceptThenClose();
+							const replacement = respondingServer();
+							yield* listen(stale, socketPath);
+							yield* Effect.addFinalizer(() =>
+								Effect.sync(() => {
+									stale.close();
+									replacement.close();
+								}),
+							);
+							const pidfile = scenario.pidfile();
+							if (pidfile !== undefined) writeFileSync(pidfilePath, pidfile);
+							let launches = 0;
+							yield* ensureDaemon({
+								location: { dataDirectory: join(rootDir, 'state'), socketPath },
+								launch: () =>
+									Effect.sync(() => {
+										launches += 1;
+										replacement.listen(socketPath);
+									}),
+							});
+							expect(launches).toBe(1);
+							expect(existsSync(pidfilePath)).toBe(false);
+						}),
+					),
+				),
+			);
+
+		it.live('fails naming the PID and --force when that PID is alive', () =>
+			runTest(
+				Effect.scoped(
+					Effect.gen(function* () {
+						const rootDir = yield* makeTempDir;
+						const socketPath = join(rootDir, 'daemon.sock');
+						const server = acceptThenClose();
+						yield* listen(server, socketPath);
+						yield* Effect.addFinalizer(() => Effect.sync(() => server.close()));
+						writeFileSync(
+							join(rootDir, 'daemon.pid'),
+							`${process.pid}\n${processBirthOf(process.pid)}\n`,
+						);
+						let launches = 0;
+						const exit = yield* Effect.exit(
+							ensureDaemon({
+								location: { dataDirectory: join(rootDir, 'state'), socketPath },
+								launch: () =>
+									Effect.sync(() => {
+										launches += 1;
+									}),
+							}),
+						);
+						expect(launches).toBe(0);
+						expect(existsSync(socketPath)).toBe(true);
+						const error = Exit.isFailure(exit)
+							? Cause.squash(exit.cause)
+							: undefined;
+						expect(error).toBeInstanceOf(DaemonBootstrapError);
+						expect((error as DaemonBootstrapError).message).toContain(
+							`PID ${process.pid}`,
+						);
+						expect((error as DaemonBootstrapError).message).toContain(
+							'devsess daemon stop --force',
+						);
+					}),
+				),
+			),
+		);
+
+		it.live('treats a PID whose process birth differs as dead', () =>
+			runTest(
+				Effect.scoped(
+					Effect.gen(function* () {
+						const rootDir = yield* makeTempDir;
+						const socketPath = join(rootDir, 'daemon.sock');
+						const stale = acceptThenClose();
+						const replacement = respondingServer();
+						yield* listen(stale, socketPath);
+						yield* Effect.addFinalizer(() =>
+							Effect.sync(() => {
+								stale.close();
+								replacement.close();
+							}),
+						);
+						writeFileSync(
+							join(rootDir, 'daemon.pid'),
+							`${process.pid}\nps:reused\n`,
+						);
+						yield* ensureDaemon({
+							location: { dataDirectory: join(rootDir, 'state'), socketPath },
+							launch: () => Effect.sync(() => replacement.listen(socketPath)),
+						});
+					}),
+				),
+			),
+		);
+	});
 });

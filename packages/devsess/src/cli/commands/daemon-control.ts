@@ -3,6 +3,11 @@ import { Cause, Effect, Exit, Runtime, Schema } from 'effect';
 import { Command, Flag } from 'effect/cli';
 import { FileSystem } from 'effect/FileSystem';
 import devsessPackageJson from '../../../package.json' with { type: 'json' };
+import {
+	liveDaemonPid,
+	removeStalePidfile,
+	removeStaleSocket,
+} from '../bootstrap';
 import { callDaemon, DaemonClientError } from '../client';
 import { Processes } from '../processes';
 import type { DaemonInfo, DaemonRequest } from '../protocol';
@@ -24,6 +29,8 @@ import {
 
 const DAEMON_STOP_TIMEOUT_MS = 12_000;
 const DAEMON_POLL_INTERVAL_MS = 50;
+const UNRESPONSIVE_DAEMON_TERM_TIMEOUT_MS = 5_000;
+const UNRESPONSIVE_DAEMON_KILL_TIMEOUT_MS = 2_000;
 
 export class DaemonStatusError extends Schema.TaggedError<DaemonStatusError>()(
 	'DaemonStatusError',
@@ -35,7 +42,7 @@ export class DaemonStatusError extends Schema.TaggedError<DaemonStatusError>()(
 
 type DaemonProbe =
 	| { readonly _tag: 'not-running' }
-	| { readonly _tag: 'not-responding' }
+	| { readonly _tag: 'unresponsive'; readonly pid: number | undefined }
 	| { readonly _tag: 'running'; readonly info: DaemonInfo }
 	| {
 			readonly _tag: 'outdated';
@@ -164,12 +171,15 @@ const probeDaemon = (
 		if (Exit.isSuccess(info))
 			return { _tag: 'running', info: info.value } as const;
 		const error = Cause.squash(info.cause);
-		if (!(error instanceof DaemonClientError) || error.kind !== 'rejected')
-			return { _tag: 'not-responding' } as const;
-		const runs = yield* Effect.exit(readRuns(socketPath));
-		if (Exit.isSuccess(runs))
-			return { _tag: 'outdated', runs: runs.value } as const;
-		return { _tag: 'not-responding' } as const;
+		if (error instanceof DaemonClientError && error.kind === 'rejected') {
+			const runs = yield* Effect.exit(readRuns(socketPath));
+			if (Exit.isSuccess(runs))
+				return { _tag: 'outdated', runs: runs.value } as const;
+		}
+		return {
+			_tag: 'unresponsive',
+			pid: yield* liveDaemonPid(socketPath),
+		} as const;
 	});
 
 const uptime = (startedAt: string) => {
@@ -358,15 +368,115 @@ const stopRunning = (
 		yield* write('Daemon stopped.');
 	});
 
+const isProcessAlive = (pid: number) =>
+	Effect.try({
+		try: () => {
+			try {
+				process.kill(pid, 0);
+				return true;
+			} catch (cause) {
+				if (cause instanceof Error && 'code' in cause && cause.code === 'ESRCH')
+					return false;
+				throw cause;
+			}
+		},
+		catch: (cause) =>
+			new CommandError({
+				message: `Could not check whether daemon PID ${pid} is running`,
+				cause,
+			}),
+	});
+
+const signalProcess = (pid: number, signal: 'SIGTERM' | 'SIGKILL') =>
+	Effect.try({
+		try: () => {
+			try {
+				process.kill(pid, signal);
+			} catch (cause) {
+				if (cause instanceof Error && 'code' in cause && cause.code === 'ESRCH')
+					return;
+				throw cause;
+			}
+		},
+		catch: (cause) =>
+			new CommandError({
+				message: `Could not send ${signal} to daemon PID ${pid}`,
+				cause,
+			}),
+	});
+
+const waitForProcessExit = (
+	pid: number,
+	deadline: number,
+): Effect.Effect<boolean, CommandError> =>
+	Effect.gen(function* () {
+		if (!(yield* isProcessAlive(pid))) return true;
+		if (Date.now() >= deadline) return false;
+		yield* Effect.sleep(`${DAEMON_POLL_INTERVAL_MS} millis`);
+		return yield* waitForProcessExit(pid, deadline);
+	});
+
+const clearDaemonEndpoint = (socketPath: string) =>
+	removeStaleSocket(socketPath).pipe(
+		Effect.andThen(removeStalePidfile(socketPath)),
+		Effect.mapError(
+			(cause) => new CommandError({ message: cause.message, cause }),
+		),
+	);
+
+/** Handles a daemon whose socket exists but does not answer: a stale socket is cleared, a live PID needs --force. */
+export const stopUnresponsiveDaemon = (
+	socketPath: string,
+	pid: number | undefined,
+	force: boolean,
+	termTimeoutMs = UNRESPONSIVE_DAEMON_TERM_TIMEOUT_MS,
+) =>
+	Effect.gen(function* () {
+		if (pid === undefined) {
+			yield* clearDaemonEndpoint(socketPath);
+			yield* write(
+				`Removed stale daemon socket at ${socketPath}; no daemon process was running.`,
+			);
+			return;
+		}
+		if (!force)
+			return yield* new CommandError({
+				message: `Daemon PID ${pid} is not responding at ${socketPath}. Re-run with --force to terminate it.`,
+			});
+		yield* signalProcess(pid, 'SIGTERM');
+		const terminated = yield* waitForProcessExit(
+			pid,
+			Date.now() + termTimeoutMs,
+		);
+		if (!terminated) {
+			yield* signalProcess(pid, 'SIGKILL');
+			if (
+				!(yield* waitForProcessExit(
+					pid,
+					Date.now() + UNRESPONSIVE_DAEMON_KILL_TIMEOUT_MS,
+				))
+			)
+				return yield* new CommandError({
+					message: `Daemon PID ${pid} survived SIGKILL`,
+				});
+		}
+		yield* clearDaemonEndpoint(socketPath);
+		yield* write(
+			`Stopped unresponsive daemon PID ${pid} with ${terminated ? 'SIGTERM' : 'SIGKILL'}.`,
+		);
+	});
+
 export const status = () =>
 	Effect.gen(function* () {
 		const location = yield* resolveDaemonLocation;
 		const probe = yield* probeDaemon(location.socketPath);
 		if (probe._tag === 'not-running')
 			return yield* statusFailure('Daemon: not running');
-		if (probe._tag === 'not-responding')
+		if (probe._tag === 'unresponsive')
 			return yield* statusFailure(
-				`Daemon: not responding (socket exists at ${location.socketPath})`,
+				probe.pid === undefined
+					? `Daemon: not responding (socket exists at ${location.socketPath}, but no daemon process is running; \`devsess daemon start\` clears it)`
+					: `Daemon: unresponsive\nPID: ${probe.pid}\nSocket: ${location.socketPath}\nRun \`devsess daemon stop --force\` to terminate it.`,
 			);
 		if (probe._tag === 'outdated') {
 			yield* write('Daemon: running, outdated — run `devsess daemon restart`.');
@@ -410,10 +520,10 @@ export const stop = (force: boolean) =>
 			yield* write('Daemon is not running.');
 			return;
 		}
-		if (probe._tag === 'not-responding')
-			return yield* new CommandError({
-				message: `Daemon socket exists at ${location.socketPath}, but the daemon is not responding.`,
-			});
+		if (probe._tag === 'unresponsive') {
+			yield* stopUnresponsiveDaemon(location.socketPath, probe.pid, force);
+			return;
+		}
 		if (probe._tag === 'outdated') {
 			yield* stopOutdatedDaemon(location.socketPath, probe.runs, force);
 			return;

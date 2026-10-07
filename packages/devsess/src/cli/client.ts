@@ -16,6 +16,7 @@ export class DaemonClientError extends Schema.TaggedError<DaemonClientError>()(
 		kind: Schema.optional(
 			Schema.Union([
 				Schema.Literal('unreachable'),
+				Schema.Literal('unresponsive'),
 				Schema.Literal('invalid-response'),
 				Schema.Literal('incompatible'),
 				Schema.Literal('rejected'),
@@ -24,6 +25,9 @@ export class DaemonClientError extends Schema.TaggedError<DaemonClientError>()(
 		responseError: Schema.optional(Schema.String),
 	},
 ) {}
+
+/** The endpoint accepted the connection and then hung up, unlike ENOENT/ECONNREFUSED where nothing is listening. */
+class ConnectionClosedError extends Error {}
 
 const decodeResponse = Schema.decodeUnknownEffect(
 	Schema.fromJsonString(DaemonResponse),
@@ -66,7 +70,11 @@ export const callDaemon = (
 				});
 				socket.once('close', () =>
 					finish(() =>
-						reject(new Error('Daemon closed the connection before replying')),
+						reject(
+							new ConnectionClosedError(
+								'Daemon closed the connection before replying',
+							),
+						),
 					),
 				);
 				socket.once('error', (cause) => finish(() => reject(cause)));
@@ -75,7 +83,10 @@ export const callDaemon = (
 			new DaemonClientError({
 				message: `Could not contact daemon at ${socketPath}`,
 				cause,
-				kind: 'unreachable',
+				kind:
+					cause instanceof ConnectionClosedError
+						? 'unresponsive'
+						: 'unreachable',
 			}),
 	}).pipe(
 		Effect.flatMap((raw) =>
