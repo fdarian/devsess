@@ -1,7 +1,18 @@
+import { existsSync } from 'node:fs';
 import { createConnection, createServer, Socket } from 'node:net';
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Schema } from 'effect';
+import {
+	Cause,
+	Context,
+	Deferred,
+	Effect,
+	Exit,
+	Fiber,
+	Layer,
+	Schema,
+	Scope,
+} from 'effect';
 import { PlatformError, SystemError } from 'effect/PlatformError';
 import { vi } from 'vitest';
 import { callDaemon } from '../../src/cli/client';
@@ -318,13 +329,18 @@ const fixture = () => {
 	vi.mocked(createPty).mockReturnValue(Effect.succeed(terminal));
 	vi.mocked(createPty).mockClear();
 	vi.mocked(terminatePty).mockClear();
-	const layerWithLogs = (socketPath: string, configuredLogs: typeof logs) =>
-		Layer.effect(Daemon, makeDaemon({ socketPath })).pipe(
+	const layerWithLogs = (
+		socketPath: string,
+		configuredLogs: typeof logs,
+		shutdownTimeoutMs?: number,
+	) =>
+		Layer.effect(Daemon, makeDaemon({ socketPath, shutdownTimeoutMs })).pipe(
 			Layer.provide(Layer.succeed(Registry, registry)),
 			Layer.provide(Layer.succeed(Logs, configuredLogs)),
 			Layer.provide(Layer.succeed(Processes, processes)),
 		);
-	const layer = (socketPath: string) => layerWithLogs(socketPath, logs);
+	const layer = (socketPath: string, shutdownTimeoutMs?: number) =>
+		layerWithLogs(socketPath, logs, shutdownTimeoutMs);
 	return {
 		records,
 		registry,
@@ -792,6 +808,60 @@ describe('daemon lifetime and failure handling', () => {
 							state.layerWithLogs(join(root, 'daemon.sock'), logs),
 						),
 					);
+				}),
+			),
+	);
+
+	it.live(
+		'closes the socket first, answers in-flight requests, and kills groups that outlive the stop timeout',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const socketPath = join(root, 'daemon.sock');
+					const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+					yield* Effect.gen(function* () {
+						const scope = yield* Scope.make();
+						const context = yield* Layer.buildWithScope(
+							state.layer(socketPath, 500),
+							scope,
+						);
+						const daemon = Context.get(context, Daemon);
+						yield* daemon.request(start());
+						state.terminate.mockImplementation(() => Effect.never);
+						const client = createConnection(socketPath);
+						const received: Array<string> = [];
+						client.on('data', (chunk) => received.push(chunk.toString()));
+						client.on('error', () => undefined);
+						yield* Effect.promise(
+							() =>
+								new Promise<void>((resolve) => client.once('connect', resolve)),
+						);
+						client.write(`${JSON.stringify(stop)}\n`);
+						for (let attempt = 0; attempt < 200; attempt += 1) {
+							if (state.terminate.mock.calls.length > 0) break;
+							yield* Effect.sleep('5 millis');
+						}
+						expect(state.terminate).toHaveBeenCalled();
+						const closing = yield* Effect.forkDetach(
+							Scope.close(scope, Exit.void),
+						);
+						for (let attempt = 0; attempt < 200; attempt += 1) {
+							if (received.join('').includes('\n')) break;
+							yield* Effect.sleep('5 millis');
+						}
+						expect(JSON.parse(received.join('').trim())).toMatchObject({
+							requestId: 'stop',
+							ok: false,
+							error: 'Daemon is shutting down',
+						});
+						expect(lastServer().listening).toBe(false);
+						expect(existsSync(socketPath)).toBe(false);
+						expect(kill).not.toHaveBeenCalled();
+						yield* Fiber.join(closing).pipe(Effect.timeout('5 seconds'));
+						expect(kill).toHaveBeenCalledWith(-98765, 'SIGKILL');
+					}).pipe(Effect.ensuring(Effect.sync(() => kill.mockRestore())));
 				}),
 			),
 	);

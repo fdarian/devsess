@@ -1,7 +1,8 @@
+import { unlinkSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
-import { Context, Deferred, Effect, Fiber, Layer, Queue } from 'effect';
+import { Context, Deferred, Effect, Fiber, Layer, Option, Queue } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { Scope } from 'effect/Scope';
@@ -9,12 +10,13 @@ import devsessPackageJson from '../../package.json' with { type: 'json' };
 import { DaemonError, errorMessage } from './daemon-errors';
 import { Logs } from './logs';
 import { makeOutputWorker } from './output-worker';
-import { Processes } from './processes';
+import { Processes, type ProcessesService } from './processes';
 import {
 	type DaemonEvent,
 	type DaemonInfo,
 	type DaemonRequest,
 	type DaemonResponse,
+	decodeRequestId,
 	PROTOCOL_VERSION,
 	splitFrames,
 } from './protocol';
@@ -80,22 +82,66 @@ const listen = (server: Server, socketPath: string) =>
 			new DaemonError({ message: `Could not listen at ${socketPath}`, cause }),
 	});
 
-const closeServer = (server: Server) =>
-	Effect.tryPromise({
-		try: () =>
-			new Promise<void>((resolve, reject) =>
-				server.close((error) =>
-					error === undefined ? resolve() : reject(error),
-				),
-			),
+/** Bound on stopping runs during shutdown; whatever survives it gets SIGKILL so the daemon always exits. */
+export const SHUTDOWN_RUN_STOP_TIMEOUT_MS = 10_000;
+const SHUTDOWN_REPLY_FLUSH_TIMEOUT_MS = 1_000;
+const SHUTTING_DOWN_MESSAGE = 'Daemon is shutting down';
+
+/** Stops accepting connections right away without waiting for open ones to end. */
+const stopListening = (server: Server, socketPath: string) =>
+	Effect.try({
+		try: () => {
+			if (server.listening) server.close();
+			try {
+				unlinkSync(socketPath);
+			} catch (cause) {
+				if (
+					!(
+						cause instanceof Error &&
+						'code' in cause &&
+						cause.code === 'ENOENT'
+					)
+				)
+					throw cause;
+			}
+		},
 		catch: (cause) =>
 			new DaemonError({ message: 'Could not close daemon socket', cause }),
 	});
+
+const killProcessGroup = (processes: ProcessesService, live: LiveService) =>
+	processes.owns(live.ownership.identity).pipe(
+		Effect.flatMap((owned) =>
+			owned
+				? Effect.try({
+						try: () =>
+							process.kill(-live.ownership.identity.processGroupId, 'SIGKILL'),
+						catch: (cause) => cause,
+					})
+				: Effect.logWarning(
+						`Not killing process group ${live.ownership.identity.processGroupId}: its leader is gone or changed`,
+					),
+		),
+		Effect.catch((cause) =>
+			cause instanceof Error && 'code' in cause && cause.code === 'ESRCH'
+				? Effect.void
+				: Effect.logError(cause),
+		),
+	);
+
+const requestIdOf = (incoming: ClientRequestMessage['incoming']) =>
+	typeof incoming === 'string'
+		? decodeRequestId(incoming).pipe(
+				Effect.map((request) => request.requestId),
+				Effect.catch(() => Effect.succeed('invalid')),
+			)
+		: Effect.succeed(incoming.requestId);
 
 export const makeDaemon = (options: {
 	socketPath: string;
 	dataDirectory?: string;
 	logsDirectory?: string;
+	shutdownTimeoutMs?: number;
 }): Effect.Effect<
 	DaemonService,
 	unknown,
@@ -119,6 +165,9 @@ export const makeDaemon = (options: {
 		const environments = new Map<string, Readonly<Record<string, string>>>();
 		const sockets = new Map<Socket, SocketState>();
 		const lifecycle = { closing: false };
+		const inFlight: { current: ClientRequestMessage | undefined } = {
+			current: undefined,
+		};
 		const attachedClientCount = () =>
 			new Set(
 				Array.from(terminals.values()).flatMap((live) =>
@@ -268,18 +317,50 @@ export const makeDaemon = (options: {
 		yield* serviceState.reconcile;
 		yield* bestEffortPrune(registry);
 		const requestWorker = yield* Effect.forever(
-			Queue.take(requestQueue).pipe(Effect.flatMap(dispatcher.handleClient)),
+			Queue.take(requestQueue).pipe(
+				Effect.flatMap((message) => {
+					inFlight.current = message;
+					return dispatcher.handleClient(message).pipe(
+						Effect.andThen(
+							Effect.sync(() => {
+								inFlight.current = undefined;
+							}),
+						),
+					);
+				}),
+			),
 		).pipe(Effect.forkScoped);
 		const lifecycleWorker = yield* Effect.forever(
 			Queue.take(lifecycleQueue).pipe(
 				Effect.flatMap(dispatcher.handleLifecycle),
 			),
 		).pipe(Effect.forkScoped);
+		const rejectRequest = (message: ClientRequestMessage) =>
+			Effect.gen(function* () {
+				const error = new DaemonError({ message: SHUTTING_DOWN_MESSAGE });
+				if (message.reply !== undefined)
+					yield* Deferred.fail(message.reply, error);
+				if (message.socket !== undefined)
+					yield* fail(
+						message.socket,
+						yield* requestIdOf(message.incoming),
+						error,
+					);
+			});
+		const closeSocket = (socket: Socket) =>
+			Effect.suspend(() => {
+				const state = sockets.get(socket);
+				return state === undefined
+					? Effect.void
+					: state.writer.awaitIdle.pipe(
+							Effect.timeoutOption(SHUTDOWN_REPLY_FLUSH_TIMEOUT_MS),
+							Effect.asVoid,
+						);
+			}).pipe(
+				Effect.andThen(Effect.sync(() => socket.destroy())),
+				Effect.andThen(subscriptions.releaseSocket(socket)),
+			);
 		const server = createServer((socket) => {
-			if (lifecycle.closing) {
-				socket.destroy();
-				return;
-			}
 			const writer = makeSocketWriter(socket, {
 				onOverflow: () => subscriptions.releaseSocketOwnership(socket),
 				onClose: () => Effect.runFork(subscriptions.releaseSocket(socket)),
@@ -300,41 +381,66 @@ export const makeDaemon = (options: {
 					return;
 				}
 				remainder = frames.remainder;
-				for (const frame of frames.frames)
-					enqueueRequest({
+				for (const frame of frames.frames) {
+					const message: ClientRequestMessage = {
 						_tag: 'request',
 						incoming: frame,
 						socket,
 						reply: undefined,
-					});
+					};
+					if (lifecycle.closing)
+						Effect.runFork(
+							rejectRequest(message).pipe(Effect.andThen(closeSocket(socket))),
+						);
+					else enqueueRequest(message);
+				}
 			});
 		});
 		yield* Effect.addFinalizer(() =>
 			Effect.gen(function* () {
 				lifecycle.closing = true;
+				yield* stopListening(server, options.socketPath).pipe(
+					Effect.catch((cause) => Effect.logError(cause)),
+				);
 				yield* Fiber.interrupt(requestWorker);
 				yield* Fiber.interrupt(lifecycleWorker);
+				const unanswered = yield* Queue.clear(requestQueue);
+				if (inFlight.current !== undefined)
+					unanswered.unshift(inFlight.current);
+				yield* Effect.forEach(unanswered, rejectRequest, { discard: true });
 				yield* Queue.shutdown(requestQueue);
 				yield* Queue.shutdown(lifecycleQueue);
-				for (const socket of sockets.keys()) {
-					socket.destroy();
-					yield* subscriptions.releaseSocket(socket);
-				}
-				const runIds = new Set(
-					Array.from(terminals.values(), (live) => live.address.runId),
-				);
-				for (const runId of runIds)
-					yield* runStop
-						.stopRun(runId, false)
-						.pipe(Effect.catch((cause) => Effect.logError(cause)));
-				for (const live of terminals.values())
-					yield* runStop
-						.terminateRemaining(live)
-						.pipe(Effect.catch((cause) => Effect.logError(cause)));
-				if (server.listening)
-					yield* closeServer(server).pipe(
-						Effect.catch((cause) => Effect.logError(cause)),
+				yield* Effect.forEach(Array.from(sockets.keys()), closeSocket, {
+					concurrency: 'unbounded',
+					discard: true,
+				});
+				const stopTimeoutMs =
+					options.shutdownTimeoutMs === undefined
+						? SHUTDOWN_RUN_STOP_TIMEOUT_MS
+						: options.shutdownTimeoutMs;
+				const stopped = yield* Effect.gen(function* () {
+					const runIds = new Set(
+						Array.from(terminals.values(), (live) => live.address.runId),
 					);
+					for (const runId of runIds)
+						yield* runStop
+							.stopRun(runId, false)
+							.pipe(Effect.catch((cause) => Effect.logError(cause)));
+					for (const live of terminals.values())
+						yield* runStop
+							.terminateRemaining(live)
+							.pipe(Effect.catch((cause) => Effect.logError(cause)));
+				}).pipe(Effect.timeoutOption(stopTimeoutMs));
+				if (Option.isNone(stopped)) {
+					yield* Effect.logError(
+						`Stopping runs did not finish within ${stopTimeoutMs}ms; killing the remaining process groups`,
+					);
+					yield* Effect.forEach(
+						Array.from(terminals.values()),
+						(live) => killProcessGroup(processes, live),
+						{ discard: true },
+					);
+				}
 			}),
 		);
 		yield* listen(server, options.socketPath);
