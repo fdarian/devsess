@@ -1,7 +1,9 @@
 import { execFile, spawn } from 'node:child_process';
 import {
+	closeSync,
 	lstatSync,
 	mkdirSync,
+	openSync,
 	readFileSync,
 	renameSync,
 	rmSync,
@@ -82,23 +84,34 @@ export const awaitDaemonHandshake = (options: {
 	);
 };
 
+export const daemonLogPath = (logsDirectory: string) =>
+	join(logsDirectory, 'daemon.log');
+
+/** The daemon's stdout and stderr are appended to `daemon.log`, so a daemon that hangs or crashes leaves a trace. */
 export const launchDetachedDaemon = (options: {
 	command: string;
 	args: Array<string>;
+	logsDirectory: string;
 }) =>
 	Effect.try({
 		try: () => {
-			const child = spawn(options.command, options.args, {
-				detached: true,
-				stdio: 'ignore',
-			});
-			child.unref();
-			if (child.pid === undefined) {
-				throw new Error(
-					`Detached daemon ${options.command} did not receive a PID`,
-				);
+			mkdirSync(options.logsDirectory, { recursive: true, mode: 0o700 });
+			const log = openSync(daemonLogPath(options.logsDirectory), 'a', 0o600);
+			try {
+				const child = spawn(options.command, options.args, {
+					detached: true,
+					stdio: ['ignore', log, log],
+				});
+				child.unref();
+				if (child.pid === undefined) {
+					throw new Error(
+						`Detached daemon ${options.command} did not receive a PID`,
+					);
+				}
+				return child.pid;
+			} finally {
+				closeSync(log);
 			}
-			return child.pid;
 		},
 		catch: (cause) =>
 			new DaemonBootstrapError({

@@ -180,6 +180,32 @@ describe('daemon bootstrap', () => {
 		),
 	);
 
+	it.live('appends the daemon stdout and stderr to daemon.log', () =>
+		runTest(
+			Effect.gen(function* () {
+				const rootDir = yield* makeTempDir;
+				const logsDirectory = join(rootDir, 'logs');
+				const logPath = join(logsDirectory, 'daemon.log');
+				for (const run of ['first', 'second'])
+					yield* launchDetachedDaemon({
+						logsDirectory,
+						command: process.execPath,
+						args: [
+							'-e',
+							`console.log('${run} out'); console.error('${run} err');`,
+						],
+					});
+				yield* waitUntil(
+					() =>
+						existsSync(logPath) &&
+						['first out', 'first err', 'second out', 'second err'].every(
+							(line) => readFileSync(logPath, 'utf8').includes(line),
+						),
+				);
+			}),
+		),
+	);
+
 	it.live(
 		'leaves a detached daemon alive after the launcher scope closes',
 		() =>
@@ -190,6 +216,7 @@ describe('daemon bootstrap', () => {
 					const donePath = join(rootDir, 'daemon.done');
 					const launcher = yield* Effect.scoped(
 						launchDetachedDaemon({
+							logsDirectory: join(rootDir, 'logs'),
 							command: process.execPath,
 							args: [
 								'-e',

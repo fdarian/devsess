@@ -129,6 +129,7 @@ export const ensureDaemon = (location: DaemonLocation) =>
 		location,
 		launch: () =>
 			launchDetachedDaemon({
+				logsDirectory: location.logsDirectory,
 				command: process.execPath,
 				args: [
 					process.argv[1] ?? 'devsess',
