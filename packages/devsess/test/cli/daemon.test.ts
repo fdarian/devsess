@@ -93,6 +93,19 @@ const orphanedRun = (runId: string): RunRecord => ({
 		},
 	],
 });
+const stoppingRun = (runId: string): RunRecord => ({
+	...orphanedRun(runId),
+	state: 'stopping',
+	services: [
+		{
+			name: 'web',
+			command: 'sleep 30',
+			cwd: '/tmp',
+			state: 'stopping',
+			process: identity(98765),
+		},
+	],
+});
 const finishedRun = (runId: string): RunRecord => ({
 	...orphanedRun(runId),
 	state: 'failed',
@@ -278,7 +291,11 @@ const fixture = () => {
 		(pid: number): Effect.Effect<ReturnType<typeof identity>, ProcessError> =>
 			Effect.succeed(identity(pid)),
 	);
-	const owns = vi.fn(() => Effect.succeed(true));
+	const owns = vi.fn(
+		(
+			_identity?: ReturnType<typeof identity>,
+		): Effect.Effect<boolean, ProcessError> => Effect.succeed(true),
+	);
 	const kill = vi.fn(
 		(
 			_identity: ReturnType<typeof identity>,
@@ -1452,6 +1469,115 @@ describe('daemon lifetime and failure handling', () => {
 			}),
 		),
 	);
+
+	it.live(
+		'settles a persisted stopping run whose group is gone on startup',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					state.records.set('stuck', stoppingRun('stuck'));
+					state.groupAlive.mockReturnValue(Effect.succeed(false));
+					state.owns.mockReturnValue(
+						new ProcessError({ message: 'Could not inspect process 98765' }),
+					);
+					yield* Effect.gen(function* () {
+						yield* Daemon;
+						const settled = yield* state.registry.get('stuck');
+						expect(settled.state).toBe('exited');
+						expect(settled.services[0]?.state).toBe('exited');
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+
+	it.live(
+		'settles a stopping run whose group is gone when its preset starts again',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						state.records.set('stuck', stoppingRun('stuck'));
+						state.groupAlive.mockReturnValue(Effect.succeed(false));
+						state.owns.mockReturnValue(Effect.succeed(false));
+						yield* daemon.request(start('replacement'));
+						expect((yield* state.registry.get('stuck')).state).toBe('exited');
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+
+	describe('when process inspection fails as a service exits', () => {
+		const exitFailingInspection = (groupStillAlive: boolean) =>
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				const socketPath = join(root, 'daemon.sock');
+				return yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					yield* daemon.request(start());
+					state.terminate.mockReturnValue(
+						new ProcessError({ message: 'Could not inspect process tree' }),
+					);
+					state.groupAlive.mockReturnValue(Effect.succeed(groupStillAlive));
+					const onExit = state.terminal.onExit.mock.calls.at(-1)?.[0];
+					if (onExit === undefined)
+						return yield* Effect.die('Missing PTY exit callback');
+					onExit({ exitCode: 0 });
+					yield* Effect.gen(function* () {
+						while (
+							(yield* state.registry.get('run')).services[0]?.state ===
+							'running'
+						)
+							yield* Effect.sleep('10 millis');
+					}).pipe(Effect.timeout('2 seconds'));
+					expect(
+						yield* callDaemon(socketPath, {
+							version: 1,
+							requestId: 'info',
+							method: 'info',
+							params: {},
+						}),
+					).toMatchObject({ liveServiceCount: 0 });
+					const afterExit = (yield* state.registry.get('run')).services[0]
+						?.state;
+					if (groupStillAlive) return { afterExit };
+					const terminations = state.terminate.mock.calls.length;
+					const stopped = yield* daemon.request(stop);
+					expect(state.terminate.mock.calls.length).toBe(terminations);
+					return { afterExit, stopped };
+				}).pipe(Effect.provide(state.layer(socketPath)));
+			});
+
+		it.live(
+			'drops the terminal entry and ends a service whose group is gone',
+			() =>
+				runTest(
+					Effect.gen(function* () {
+						const result = yield* exitFailingInspection(false);
+						expect(result).toMatchObject({
+							afterExit: 'exited',
+							stopped: { state: 'exited' },
+						});
+					}),
+				),
+		);
+
+		it.live(
+			'drops the terminal entry of a service whose group is still alive and marks it orphaned',
+			() =>
+				runTest(
+					Effect.gen(function* () {
+						const result = yield* exitFailingInspection(true);
+						expect(result).toMatchObject({ afterExit: 'orphaned' });
+					}),
+				),
+		);
+	});
 
 	it.live('allows a new start after an orphaned group has disappeared', () =>
 		runTest(

@@ -351,7 +351,12 @@ export const makeDaemon = (options: {
 		);
 		const lifecycleWorker = yield* Effect.forever(
 			Queue.take(lifecycleQueue).pipe(
-				Effect.flatMap(dispatcher.handleLifecycle),
+				Effect.flatMap((message) =>
+					// One failed message must not end the worker, or no later exit would ever be processed.
+					dispatcher
+						.handleLifecycle(message)
+						.pipe(Effect.catchCause((cause) => Effect.logError(cause))),
+				),
 			),
 		).pipe(Effect.forkScoped);
 		const rejectRequest = (message: ClientRequestMessage) =>

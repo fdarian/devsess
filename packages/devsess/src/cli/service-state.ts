@@ -5,7 +5,11 @@ import type { Path } from 'effect/Path';
 import type { IPty } from 'node-pty';
 import { type ServiceExit, UNKNOWN_EXIT_CODE } from './exit-status';
 import type { LogAddress } from './logs';
-import type { LiveProcessOwnership, ProcessesService } from './processes';
+import type {
+	LiveProcessOwnership,
+	ProcessesService,
+	ProcessIdentity,
+} from './processes';
 import type { ServiceChild } from './protocol';
 import {
 	isActive,
@@ -140,21 +144,30 @@ export const makeServiceState = (options: {
 			}),
 		);
 	};
+	/** `ps` can fail under load; an unverified owner is treated as not owned, and the ps-free group probe then decides alive or dead. */
+	const ownsOrUnverified = (identity: ProcessIdentity) =>
+		options.processes
+			.owns(identity)
+			.pipe(
+				Effect.catchTag('ProcessError', (error) =>
+					Effect.logWarning(
+						`Could not verify process ${identity.pid}; falling back to its process group: ${error.message}`,
+					).pipe(Effect.as(false)),
+				),
+			);
 	const refreshServiceRecord = (
 		service: ServiceRecord,
 		verifyOwnership: boolean,
 	) => {
 		if (service.state === 'exited' || service.state === 'failed') {
 			if (service.process === undefined) return Effect.succeed(service);
-			return options.processes
-				.owns(service.process)
-				.pipe(
-					Effect.map((owned) =>
-						owned
-							? { ...service, state: 'orphaned' as const, published: undefined }
-							: service,
-					),
-				);
+			return ownsOrUnverified(service.process).pipe(
+				Effect.map((owned) =>
+					owned
+						? { ...service, state: 'orphaned' as const, published: undefined }
+						: service,
+				),
+			);
 		}
 		if (service.process === undefined)
 			return Effect.succeed(refreshService(service, 'missing'));
@@ -167,21 +180,19 @@ export const makeServiceState = (options: {
 						refreshService(service, alive ? 'alive' : 'dead'),
 					),
 				);
-		return options.processes
-			.owns(process)
-			.pipe(
-				Effect.flatMap((owned) =>
-					owned
-						? Effect.succeed(refreshService(service, 'owned'))
-						: options.processes
-								.groupAlive(process.processGroupId)
-								.pipe(
-									Effect.map((alive) =>
-										refreshService(service, alive ? 'alive' : 'dead'),
-									),
+		return ownsOrUnverified(process).pipe(
+			Effect.flatMap((owned) =>
+				owned
+					? Effect.succeed(refreshService(service, 'owned'))
+					: options.processes
+							.groupAlive(process.processGroupId)
+							.pipe(
+								Effect.map((alive) =>
+									refreshService(service, alive ? 'alive' : 'dead'),
 								),
-				),
-			);
+							),
+			),
+		);
 	};
 	const reconcileRuns = () =>
 		options.registry.list.pipe(

@@ -5,6 +5,7 @@ import type { Path } from 'effect/Path';
 import type { Scope } from 'effect/Scope';
 import { DaemonError, errorMessage } from './daemon-errors';
 import { type ServiceExit, serviceExitCode } from './exit-status';
+import type { LogAddress } from './logs';
 import type { OutputWorker } from './output-worker';
 import { makeMemorySampler, serviceMemoryBytes } from './processes';
 import { type DaemonRequest, decodeRequest, decodeRequestId } from './protocol';
@@ -469,6 +470,38 @@ export const makeRequestDispatcher = (options: {
 			incoming.params.rows,
 		).pipe(Effect.as({}));
 	};
+	/**
+	 * The exit handler failed, typically because `ps` did: the leader is dead either way. Keeping the
+	 * entry would leak it and let a later stop flip the service back to `stopping`, so it is dropped
+	 * first. node-pty only reports the exit after it has closed the master, so there is no PTY left to close.
+	 */
+	const releaseAfterFailedExit = (
+		address: LogAddress,
+		live: LiveService,
+		exit: ServiceExit,
+	) =>
+		Effect.gen(function* () {
+			const key = serviceKey(address);
+			if (options.terminals.get(key) !== live) return;
+			options.terminals.delete(key);
+			const gone = yield* options.runStop.groupGone(live.ownership.identity);
+			const state = !gone
+				? ('orphaned' as const)
+				: serviceExitCode(exit) === 0
+					? ('exited' as const)
+					: ('failed' as const);
+			const updated = yield* options.serviceState.replaceService(
+				address,
+				state,
+				exit,
+				live.ownership.identity.pid,
+			);
+			if (updated === undefined) return;
+			yield* options.runStop.finishService(address, exit, live.terminal);
+			if (state === 'orphaned') return;
+			yield* options.subscriptions.markPersisted(address);
+			yield* forgetFinished(address.runId);
+		});
 	const handleLifecycle = (message: LifecycleMessage) => {
 		if (message._tag === 'persistenceFailure')
 			return options.runStop
@@ -517,27 +550,10 @@ export const makeRequestDispatcher = (options: {
 				),
 				Effect.asVoid,
 				Effect.catch((cause) =>
-					(options.terminals.get(key) === live
-						? options.serviceState
-								.replaceService(
-									message.address,
-									'orphaned',
-									exit,
-									live.ownership.identity.pid,
-								)
-								.pipe(
-									Effect.flatMap((updated) =>
-										updated === undefined || options.terminals.get(key) !== live
-											? Effect.void
-											: options.runStop.finishService(
-													message.address,
-													exit,
-													live.terminal,
-												),
-									),
-								)
-						: Effect.void
-					).pipe(Effect.andThen(Effect.logError(cause))),
+					releaseAfterFailedExit(message.address, live, exit).pipe(
+						Effect.catch((releaseCause) => Effect.logError(releaseCause)),
+						Effect.andThen(Effect.logError(cause)),
+					),
 				),
 				Effect.andThen(bestEffortPrune(options.registry)),
 			);
