@@ -14,6 +14,7 @@ import type { DaemonInfo, DaemonRequest } from '../protocol';
 import { DaemonInfo as DaemonInfoSchema, PROTOCOL_VERSION } from '../protocol';
 import type { RunRecord } from '../registry';
 import {
+	DEFAULT_DAEMON_REQUEST_TIMEOUT_MS,
 	PROCESS_INSPECTION_TIMEOUT_MS,
 	TERMINATION_KILL_SIGNAL,
 } from '../termination';
@@ -86,8 +87,8 @@ const decodeInfo = (value: unknown) =>
 const readInfo = (socketPath: string) =>
 	callDaemon(socketPath, infoRequest()).pipe(Effect.flatMap(decodeInfo));
 
-const readRuns = (socketPath: string) =>
-	callDaemon(socketPath, listRunsRequest()).pipe(
+const readRuns = (socketPath: string, timeoutMs?: number) =>
+	callDaemon(socketPath, listRunsRequest(), timeoutMs).pipe(
 		Effect.flatMap(decodeRunListResponse),
 	);
 
@@ -259,25 +260,29 @@ const isUnreachable = (cause: unknown) =>
 
 const waitForStopped = (
 	socketPath: string,
-	deadline: number,
-): Effect.Effect<void, unknown> =>
-	Effect.gen(function* () {
-		const runs = yield* Effect.exit(readRuns(socketPath));
-		if (Exit.isFailure(runs)) {
-			const error = Cause.squash(runs.cause);
-			if (isUnreachable(error)) return;
-		} else if (Date.now() >= deadline) {
-			return yield* new CommandError({
-				message: `Daemon at ${socketPath} did not stop within ${DAEMON_STOP_TIMEOUT_MS}ms`,
-			});
-		}
+	timeoutMs: number,
+): Effect.Effect<void, unknown> => {
+	const deadline = Date.now() + timeoutMs;
+	const poll: Effect.Effect<void, unknown> = Effect.gen(function* () {
+		const runs = yield* Effect.exit(
+			readRuns(
+				socketPath,
+				Math.max(
+					1,
+					Math.min(deadline - Date.now(), DEFAULT_DAEMON_REQUEST_TIMEOUT_MS),
+				),
+			),
+		);
+		if (Exit.isFailure(runs) && isUnreachable(Cause.squash(runs.cause))) return;
 		if (Date.now() >= deadline)
 			return yield* new CommandError({
-				message: `Daemon at ${socketPath} did not stop within ${DAEMON_STOP_TIMEOUT_MS}ms`,
+				message: `Daemon at ${socketPath} did not stop within ${timeoutMs}ms`,
 			});
 		yield* Effect.sleep(`${DAEMON_POLL_INTERVAL_MS} millis`);
-		return yield* waitForStopped(socketPath, deadline);
+		return yield* poll;
 	});
+	return poll;
+};
 
 const activeLines = (runs: ReadonlyArray<RunRecord>) => [
 	'Live runs:',
@@ -338,16 +343,20 @@ export const stopOutdatedDaemon = (
 				message: `Could not stop outdated daemon PID ${ownerPid}: no signal was sent because its process identity could not be verified.`,
 			});
 		}
-		yield* waitForStopped(socketPath, Date.now() + DAEMON_STOP_TIMEOUT_MS);
+		yield* waitForStopped(socketPath, DAEMON_STOP_TIMEOUT_MS);
 		yield* write(
 			`Stopped outdated daemon PID ${ownerPid} with ${termination === TERMINATION_KILL_SIGNAL ? 'SIGKILL' : 'SIGTERM'}.`,
 		);
 	});
 
+const failureMessage = (cause: unknown) =>
+	cause instanceof Error ? cause.message : String(cause);
+
 const stopRunning = (
 	socketPath: string,
 	force: boolean,
 	runs: ReadonlyArray<RunRecord>,
+	stopTimeoutMs: number,
 ) =>
 	Effect.gen(function* () {
 		const active = runs.filter(isRunActive);
@@ -359,12 +368,27 @@ const stopRunning = (
 		if (Exit.isFailure(result)) {
 			if (active.length > 0 && !force) return yield* refusal(runs);
 			const error = Cause.squash(result.cause);
+			if (force)
+				return yield* terminateAfterFailedShutdown(
+					socketPath,
+					`the shutdown request failed: ${failureMessage(error)}`,
+				);
 			return yield* new CommandError({
-				message: `Could not shut down daemon: ${error instanceof Error ? error.message : String(error)}`,
+				message: `Could not shut down daemon: ${failureMessage(error)}`,
 				cause: error,
 			});
 		}
-		yield* waitForStopped(socketPath, Date.now() + DAEMON_STOP_TIMEOUT_MS);
+		const stopped = yield* Effect.exit(
+			waitForStopped(socketPath, stopTimeoutMs),
+		);
+		if (Exit.isFailure(stopped)) {
+			if (force)
+				return yield* terminateAfterFailedShutdown(
+					socketPath,
+					`it did not exit within ${stopTimeoutMs}ms of the shutdown request`,
+				);
+			return yield* Effect.failCause(stopped.cause);
+		}
 		yield* write('Daemon stopped.');
 	});
 
@@ -466,6 +490,20 @@ export const stopUnresponsiveDaemon = (
 		);
 	});
 
+/** `--force` has to land even when the daemon is too busy to shut itself down, so it falls back to signalling the pidfile PID. */
+const terminateAfterFailedShutdown = (socketPath: string, reason: string) =>
+	Effect.gen(function* () {
+		const pid = yield* liveDaemonPid(socketPath);
+		if (pid === undefined)
+			return yield* new CommandError({
+				message: `Could not shut down daemon at ${socketPath}: ${reason}, and no live daemon PID is recorded beside the socket, so nothing was terminated.`,
+			});
+		yield* write(
+			`Daemon did not shut down (${reason}); terminating PID ${pid}.`,
+		);
+		yield* stopUnresponsiveDaemon(socketPath, pid, true);
+	});
+
 export const status = () =>
 	Effect.gen(function* () {
 		const location = yield* resolveDaemonLocation;
@@ -512,7 +550,7 @@ export const start = () =>
 		});
 	});
 
-export const stop = (force: boolean) =>
+export const stop = (force: boolean, stopTimeoutMs = DAEMON_STOP_TIMEOUT_MS) =>
 	Effect.gen(function* () {
 		const location = yield* resolveDaemonLocation;
 		const probe = yield* probeDaemon(location.socketPath);
@@ -528,20 +566,23 @@ export const stop = (force: boolean) =>
 			yield* stopOutdatedDaemon(location.socketPath, probe.runs, force);
 			return;
 		}
-		const runs = yield* readRuns(location.socketPath).pipe(
-			Effect.mapError(
-				(cause) =>
-					new CommandError({
-						message: 'Could not read daemon runs before shutdown',
-						cause,
-					}),
-			),
-		);
-		yield* stopRunning(location.socketPath, force, runs);
+		// Only the refusal needs the run list, and a busy daemon may not answer it.
+		const runs = force
+			? []
+			: yield* readRuns(location.socketPath).pipe(
+					Effect.mapError(
+						(cause) =>
+							new CommandError({
+								message: 'Could not read daemon runs before shutdown',
+								cause,
+							}),
+					),
+				);
+		yield* stopRunning(location.socketPath, force, runs, stopTimeoutMs);
 	}).pipe(Effect.provide(Processes.layer));
 
-export const restart = (force: boolean) =>
-	stop(force).pipe(Effect.andThen(start()));
+export const restart = (force: boolean, stopTimeoutMs?: number) =>
+	stop(force, stopTimeoutMs).pipe(Effect.andThen(start()));
 
 const daemonStartCommand = Command.make('start', {}, () => start()).pipe(
 	Command.withDescription('Start the per-user daemon if it is not running.'),

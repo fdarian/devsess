@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createConnection, createServer } from 'node:net';
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
@@ -208,7 +208,7 @@ describe('daemon control', () => {
 						XDG_RUNTIME_DIR: runtimeDirectory,
 					},
 				});
-				return { socketPath, pidfilePath, child, config };
+				return { socketPath, pidfilePath, child, config, server };
 			});
 
 		const captureStdout = () => {
@@ -311,6 +311,154 @@ describe('daemon control', () => {
 					}),
 				),
 			),
+		);
+
+		/** Answers info and listRuns like a live daemon; `shutdown` is what the scenario varies. */
+		const setupResponsive = (shutdown: 'fails' | 'acknowledged') =>
+			Effect.gen(function* () {
+				const fixture = yield* setup({ fakeDaemon: true });
+				fixture.server.close();
+				const child = fixture.child as ChildProcess;
+				const responding = createServer((socket) => {
+					let input = '';
+					socket.on('data', (chunk) => {
+						input += chunk.toString();
+						const boundary = input.indexOf('\n');
+						if (boundary === -1) return;
+						const request = JSON.parse(input.slice(0, boundary)) as {
+							requestId: string;
+							method: string;
+						};
+						const reply = (frame: object) =>
+							socket.end(
+								`${JSON.stringify({ version: 1, requestId: request.requestId, ...frame })}\n`,
+							);
+						if (request.method === 'info')
+							reply({
+								ok: true,
+								result: {
+									pid: child.pid,
+									startedAt: new Date().toISOString(),
+									executable: process.execPath,
+									scriptPath: 'devsess',
+									packageVersion: '0.0.0',
+									protocolVersion: 1,
+									socketPath: fixture.socketPath,
+									dataDirectory: '/tmp',
+									runCount: 0,
+									liveServiceCount: 0,
+									attachedClientCount: 0,
+								},
+							});
+						else if (request.method === 'listRuns')
+							reply({ ok: true, result: [] });
+						else if (shutdown === 'fails')
+							reply({ ok: false, error: 'Daemon request queue is closed' });
+						else reply({ ok: true, result: {} });
+					});
+				});
+				rmSync(fixture.socketPath, { force: true });
+				yield* Effect.promise(
+					() =>
+						new Promise<void>((resolve) =>
+							responding.listen(fixture.socketPath, resolve),
+						),
+				);
+				yield* Effect.addFinalizer(() => Effect.sync(() => responding.close()));
+				return fixture;
+			});
+
+		it.live(
+			'stop --force terminates the pidfile PID when the shutdown request fails',
+			() =>
+				runTest(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const fixture = yield* setupResponsive('fails');
+							const child = fixture.child as ChildProcess;
+							const stdout = captureStdout();
+							yield* stop(true).pipe(
+								Effect.provide(ConfigProvider.layer(fixture.config)),
+								Effect.ensuring(Effect.sync(stdout.restore)),
+							);
+							yield* waitForExit(child);
+							expect(child.signalCode).toBe('SIGTERM');
+							expect(existsSync(fixture.socketPath)).toBe(false);
+							expect(existsSync(fixture.pidfilePath)).toBe(false);
+							expect(stdout.output()).toContain('the shutdown request failed');
+						}),
+					),
+				),
+		);
+
+		it.live(
+			'stop --force terminates the pidfile PID when the daemon outlives its grace period',
+			() =>
+				runTest(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const fixture = yield* setupResponsive('acknowledged');
+							const child = fixture.child as ChildProcess;
+							const stdout = captureStdout();
+							yield* stop(true, 150).pipe(
+								Effect.provide(ConfigProvider.layer(fixture.config)),
+								Effect.ensuring(Effect.sync(stdout.restore)),
+							);
+							yield* waitForExit(child);
+							expect(child.signalCode).toBe('SIGTERM');
+							expect(stdout.output()).toContain('did not exit within 150ms');
+						}),
+					),
+				),
+		);
+
+		it.live(
+			'stop without --force reports the failed shutdown and leaves the daemon alone',
+			() =>
+				runTest(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const fixture = yield* setupResponsive('fails');
+							const child = fixture.child as ChildProcess;
+							const exit = yield* Effect.exit(
+								stop(false).pipe(
+									Effect.provide(ConfigProvider.layer(fixture.config)),
+								),
+							);
+							expect(Exit.isFailure(exit)).toBe(true);
+							expect(
+								Exit.isFailure(exit) ? Cause.pretty(exit.cause) : '',
+							).toContain('Could not shut down daemon');
+							expect(child.exitCode).toBeNull();
+							expect(child.signalCode).toBeNull();
+						}),
+					),
+				),
+		);
+
+		it.live(
+			'stop --force does not terminate anything without a live pidfile PID',
+			() =>
+				runTest(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const fixture = yield* setupResponsive('fails');
+							const child = fixture.child as ChildProcess;
+							rmSync(fixture.pidfilePath);
+							const exit = yield* Effect.exit(
+								stop(true).pipe(
+									Effect.provide(ConfigProvider.layer(fixture.config)),
+								),
+							);
+							expect(Exit.isFailure(exit)).toBe(true);
+							expect(
+								Exit.isFailure(exit) ? Cause.pretty(exit.cause) : '',
+							).toContain('nothing was terminated');
+							expect(child.exitCode).toBeNull();
+							expect(existsSync(fixture.socketPath)).toBe(true);
+						}),
+					),
+				),
 		);
 
 		it.live('status reports it as unresponsive with the PID', () =>
