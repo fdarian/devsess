@@ -105,6 +105,7 @@ describe('picker cancellation', () => {
 								],
 								undefined,
 								true,
+								Effect.succeed([]),
 							),
 						),
 					});

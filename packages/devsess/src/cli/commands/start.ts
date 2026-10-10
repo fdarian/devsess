@@ -178,10 +178,21 @@ const clientEnvironment = () =>
 		}),
 	);
 
+const recentRuns = Effect.gen(function* () {
+	const location = yield* resolveDaemonLocation;
+	yield* ensureDaemon(location);
+	return yield* callDaemon(location.socketPath, {
+		version: 1,
+		requestId: requestId(),
+		method: 'listRuns',
+		params: {},
+	}).pipe(Effect.flatMap(decodeRunListResponse));
+});
+
 /** Starts a selected preset after capturing the client environment at this boundary. */
 export const start = (options: CommandOptions, interactive: boolean) =>
 	Effect.gen(function* () {
-		const resolved = yield* resolvePreset(options, interactive);
+		const resolved = yield* resolvePreset(options, interactive, recentRuns);
 		const location = yield* resolveDaemonLocation;
 		yield* ensureDaemon(location);
 		const request: DaemonRequest = {

@@ -47,6 +47,7 @@ describe('CLI available list', () => {
 				const selected = yield* resolvePreset(
 					{ configPath, preset: 'project/dev' },
 					false,
+					Effect.die('the preset is explicit, so recent runs are never read'),
 				);
 				expect(selected.preset.projectName).toBe('project');
 				expect(selected.preset.presetName).toBe('dev');

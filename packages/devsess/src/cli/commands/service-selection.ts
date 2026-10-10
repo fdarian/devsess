@@ -59,7 +59,7 @@ export const chooseServices = (
 		});
 	if (interactive)
 		return Prompt.run(
-			Prompt.Select({
+			Prompt.AutoComplete({
 				message: `Choose a service to ${command}${'selection' in run && !run.selection.local ? ` in ${run.selection.label}` : ''}`,
 				choices: [
 					...(command === 'tail'

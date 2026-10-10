@@ -346,7 +346,7 @@ export const chooseRun = (
 		});
 	if (interactive)
 		return Prompt.run(
-			Prompt.Select({
+			Prompt.AutoComplete({
 				message: 'Choose a running preset',
 				choices: choices.map((choice) => ({
 					title: choice.label,

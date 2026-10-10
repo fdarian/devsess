@@ -11,6 +11,7 @@ import {
 	matchProjects,
 	type ProjectMatches,
 } from './project-matching';
+import type { RunRecord } from './registry';
 import {
 	type QualifiedPreset,
 	qualifiedPresets,
@@ -61,10 +62,51 @@ export const resolvePresetCandidates = (
 		};
 	});
 
-export const choosePreset = (
+/** Most recently started first; presets that never ran keep their config order. */
+export const byRecentUse = (
+	candidates: ReadonlyArray<QualifiedPreset>,
+	runs: ReadonlyArray<
+		Pick<RunRecord, 'projectName' | 'presetName' | 'startedAt'>
+	>,
+) => {
+	const lastStarted = new Map<QualifiedPreset, string>();
+	for (const candidate of candidates)
+		for (const run of runs) {
+			if (
+				run.projectName !== candidate.projectName ||
+				run.presetName !== candidate.presetName
+			)
+				continue;
+			const previous = lastStarted.get(candidate);
+			if (previous === undefined || run.startedAt > previous)
+				lastStarted.set(candidate, run.startedAt);
+		}
+	return candidates.slice().sort((left, right) => {
+		const leftStarted = lastStarted.get(left);
+		const rightStarted = lastStarted.get(right);
+		if (leftStarted === rightStarted) return 0;
+		if (leftStarted === undefined) return 1;
+		if (rightStarted === undefined) return -1;
+		return rightStarted.localeCompare(leftStarted);
+	});
+};
+
+/** Qualifies a preset with its project only when another candidate shares its name. */
+export const presetLabel = (
+	candidate: QualifiedPreset,
+	candidates: ReadonlyArray<QualifiedPreset>,
+) =>
+	candidates.some(
+		(other) => other !== candidate && other.presetName === candidate.presetName,
+	)
+		? `${candidate.projectName}/${candidate.presetName}`
+		: candidate.presetName;
+
+export const choosePreset = <E, R>(
 	candidates: ReadonlyArray<QualifiedPreset>,
 	presetName: string | undefined,
 	interactive: boolean,
+	recentRuns: Effect.Effect<ReadonlyArray<RunRecord>, E, R>,
 ) => {
 	const selection = selectPreset(candidates, presetName);
 	if (selection._tag === 'Selected') return Effect.succeed(selection.preset);
@@ -78,25 +120,30 @@ export const choosePreset = (
 				message: `Preset is ambiguous: ${selection.candidates.map((candidate) => `${candidate.projectName}/${candidate.presetName}`).join(', ')}. Specify --project or a preset.`,
 			}),
 		);
-	return Prompt.run(
-		Prompt.Select({
-			message: 'Choose a preset',
-			choices: selection.candidates.map((candidate) => ({
-				title: `${candidate.projectName}/${candidate.presetName}`,
-				value: candidate,
-			})),
-		}),
-	).pipe(
-		Effect.catchTag('QuitError', cancelPicker),
-		Effect.mapError(
-			() => new CommandError({ message: 'Preset selection cancelled' }),
+	return recentRuns.pipe(
+		Effect.flatMap((runs) =>
+			Prompt.run(
+				Prompt.AutoComplete({
+					message: 'Choose a preset',
+					choices: byRecentUse(selection.candidates, runs).map((candidate) => ({
+						title: presetLabel(candidate, selection.candidates),
+						value: candidate,
+					})),
+				}),
+			).pipe(
+				Effect.catchTag('QuitError', cancelPicker),
+				Effect.mapError(
+					() => new CommandError({ message: 'Preset selection cancelled' }),
+				),
+			),
 		),
 	);
 };
 
-export const resolvePreset = (
+export const resolvePreset = <E, R>(
 	options: PresetResolutionOptions,
 	interactive: boolean,
+	recentRuns: Effect.Effect<ReadonlyArray<RunRecord>, E, R>,
 ) =>
 	Effect.gen(function* () {
 		const parts = options.preset?.split('/');
@@ -116,7 +163,12 @@ export const resolvePreset = (
 		const resolved = yield* resolvePresetCandidates({ ...options, project });
 		return {
 			invocation: resolved.invocation,
-			preset: yield* choosePreset(resolved.candidates, presetName, interactive),
+			preset: yield* choosePreset(
+				resolved.candidates,
+				presetName,
+				interactive,
+				recentRuns,
+			),
 		};
 	});
 
