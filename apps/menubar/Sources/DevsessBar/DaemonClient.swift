@@ -2,12 +2,12 @@ import Foundation
 import Network
 
 enum DaemonError: Error, LocalizedError {
-    case unavailable, timedOut, frameTooLarge, invalidResponse, server(String)
+    case unavailable, timedOut(TimeInterval), frameTooLarge, invalidResponse, server(String)
 
     var errorDescription: String? {
         switch self {
         case .unavailable: "The devsess daemon isn't running."
-        case .timedOut: "The daemon did not respond within 5 seconds."
+        case .timedOut(let seconds): "The daemon did not respond within \(Int(seconds)) seconds."
         case .frameTooLarge: "The daemon response exceeds 1 MiB."
         case .invalidResponse: "The daemon returned an invalid response."
         case .server(let message): message
@@ -46,6 +46,22 @@ private struct Response<Result: Decodable>: Decodable {
     let error: String?
 }
 
+enum DaemonMethod: String {
+    case listRuns, stopRun, stopServices, restartServices
+
+    static let readTimeout: TimeInterval = 5
+    // Must stay above the daemon's RUN_STOP_DEADLINE_MS (packages/devsess/src/cli/termination.ts, 10 s):
+    // a stop that escalates to SIGKILL still succeeds, and must not be reported as a timeout.
+    static let stopTimeout: TimeInterval = 15
+
+    var timeout: TimeInterval {
+        switch self {
+        case .listRuns: Self.readTimeout
+        case .stopRun, .stopServices, .restartServices: Self.stopTimeout
+        }
+    }
+}
+
 private struct EmptyParams: Encodable {}
 private struct StopParams: Encodable { let runId: String }
 private struct ServicesParams: Encodable { let runId: String; let serviceNames: [String] }
@@ -53,39 +69,39 @@ private struct EmptyResult: Decodable {}
 
 final class DaemonClient: Sendable {
     let socketPath: String
-    private let exchangeHandler: (@Sendable (Data) async throws -> Data)?
+    private let exchangeHandler: (@Sendable (Data, TimeInterval) async throws -> Data)?
 
     init(socketPath: String = DaemonLocation.socketPath(),
-         exchangeHandler: (@Sendable (Data) async throws -> Data)? = nil) {
+         exchangeHandler: (@Sendable (Data, TimeInterval) async throws -> Data)? = nil) {
         self.socketPath = socketPath
         self.exchangeHandler = exchangeHandler
     }
 
     func listRuns() async throws -> [RunRecord] {
-        try await call("listRuns", params: EmptyParams(), result: [RunRecord].self)
+        try await call(.listRuns, params: EmptyParams(), result: [RunRecord].self)
     }
 
     func stopRun(_ runId: String) async throws {
-        _ = try await call("stopRun", params: StopParams(runId: runId), result: EmptyResult.self)
+        _ = try await call(.stopRun, params: StopParams(runId: runId), result: EmptyResult.self)
     }
 
     func restart(_ service: String, in runId: String) async throws {
-        _ = try await call("restartServices", params: ServicesParams(runId: runId, serviceNames: [service]), result: EmptyResult.self)
+        _ = try await call(.restartServices, params: ServicesParams(runId: runId, serviceNames: [service]), result: EmptyResult.self)
     }
 
     func stopServices(runId: String, serviceNames: [String]) async throws {
-        _ = try await call("stopServices", params: ServicesParams(runId: runId, serviceNames: serviceNames), result: EmptyResult.self)
+        _ = try await call(.stopServices, params: ServicesParams(runId: runId, serviceNames: serviceNames), result: EmptyResult.self)
     }
 
     private func call<Params: Encodable, Result: Decodable>(
-        _ method: String, params: Params, result: Result.Type
+        _ method: DaemonMethod, params: Params, result: Result.Type
     ) async throws -> Result {
         let id = UUID().uuidString.lowercased()
-        var payload = try JSONEncoder().encode(Request(requestId: id, method: method, params: params))
+        var payload = try JSONEncoder().encode(Request(requestId: id, method: method.rawValue, params: params))
         payload.append(0x0A)
         let data: Data
-        if let exchangeHandler { data = try await exchangeHandler(payload) }
-        else { data = try await exchange(payload) }
+        if let exchangeHandler { data = try await exchangeHandler(payload, method.timeout) }
+        else { data = try await exchange(payload, timeout: method.timeout) }
         let response = try JSONDecoder().decode(Response<Result>.self, from: data)
         guard response.version == 1, response.requestId == id else { throw DaemonError.invalidResponse }
         guard response.ok else {
@@ -96,9 +112,9 @@ final class DaemonClient: Sendable {
         return value
     }
 
-    private func exchange(_ payload: Data) async throws -> Data {
+    private func exchange(_ payload: Data, timeout: TimeInterval) async throws -> Data {
         let connection = NWConnection(to: .unix(path: socketPath), using: .tcp)
-        let session = SocketSession(connection: connection, payload: payload)
+        let session = SocketSession(connection: connection, payload: payload, timeout: timeout)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 session.start(continuation)
@@ -112,23 +128,25 @@ final class DaemonClient: Sendable {
 private final class SocketSession: @unchecked Sendable {
     private let connection: NWConnection
     private let payload: Data
+    private let timeout: TimeInterval
     private let queue = DispatchQueue(label: "devsess.socket")
     private var continuation: CheckedContinuation<Data, Error>?
     private var buffer = Data()
     private var timer: DispatchSourceTimer?
     private var completed = false
 
-    init(connection: NWConnection, payload: Data) {
+    init(connection: NWConnection, payload: Data, timeout: TimeInterval) {
         self.connection = connection
         self.payload = payload
+        self.timeout = timeout
     }
 
     func start(_ continuation: CheckedContinuation<Data, Error>) {
         queue.async {
             self.continuation = continuation
             let timer = DispatchSource.makeTimerSource(queue: self.queue)
-            timer.schedule(deadline: .now() + 5)
-            timer.setEventHandler { self.finish(.failure(DaemonError.timedOut)) }
+            timer.schedule(deadline: .now() + self.timeout)
+            timer.setEventHandler { self.finish(.failure(DaemonError.timedOut(self.timeout))) }
             self.timer = timer
             timer.resume()
             self.connection.stateUpdateHandler = { state in

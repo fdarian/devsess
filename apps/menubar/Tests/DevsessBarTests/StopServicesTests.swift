@@ -23,7 +23,7 @@ struct StopServicesTests {
     private struct Empty: Encodable {}
 
     @Test func sendsSelectedServiceNames() async throws {
-        let client = DaemonClient(exchangeHandler: { payload in
+        let client = DaemonClient(exchangeHandler: { payload, _ in
             #expect(payload.last == 0x0A)
             let request = try JSONDecoder().decode(Request.self, from: payload)
             #expect(request.version == 1)
@@ -38,7 +38,7 @@ struct StopServicesTests {
     @Test @MainActor func unsupportedMethodShowsInlineActionError() async throws {
         let run = Fixtures.twoServices
         let service = try #require(run.services.first)
-        let client = DaemonClient(exchangeHandler: { payload in
+        let client = DaemonClient(exchangeHandler: { payload, _ in
             let request = try JSONDecoder().decode(Request.self, from: payload)
             #expect(request.method == "stopServices")
             #expect(request.params.runId == run.id)
