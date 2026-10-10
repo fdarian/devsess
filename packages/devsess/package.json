@@ -71,7 +71,7 @@
 		"@effect/platform-node-shared": "4.0.0",
 		"effect": "4.0.0",
 		"get-port": "^7.2.0",
-		"node-pty": "1.0.0",
+		"node-pty": "1.2.0-beta.15",
 		"random-word-slugs": "^0.1.7"
 	},
 	"peerDependencies": {

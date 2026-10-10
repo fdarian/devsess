@@ -1,9 +1,9 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 import { Effect } from 'effect';
 import type { IPty } from 'node-pty';
-import { resizePty, spawnPty, writePty } from '../../src/cli/pty';
+import { createPty, resizePty, spawnPty, writePty } from '../../src/cli/pty';
 import { runTest } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
 
@@ -109,6 +109,51 @@ describe('PTY adapter', () => {
 				const grandchildPid = Number(readFileSync(pidPath, 'utf8'));
 				yield* waitUntil(() => !isAlive(grandchildPid));
 				expect(isAlive(grandchildPid)).toBe(false);
+			}),
+		),
+	);
+
+	/** node-pty 1.0.0 leaked a ptmx, its slave and a kqueue per macOS spawn, so a long-lived daemon ran out of descriptors. */
+	it.live('leaves no file descriptors behind across PTY lifecycles', () =>
+		runTest(
+			Effect.gen(function* () {
+				const openDescriptors = () => readdirSync('/dev/fd').length;
+				const selfExiting = Effect.gen(function* () {
+					const terminal = yield* createPty({
+						command: '/bin/sh',
+						args: ['-c', 'sleep 0.1; exit 0'],
+						cwd: process.cwd(),
+						env: process.env,
+						cols: 80,
+						rows: 24,
+					});
+					yield* within(waitForExit(terminal), 'PTY did not exit');
+				});
+				const terminated = Effect.gen(function* () {
+					const exited = yield* Effect.scoped(
+						Effect.gen(function* () {
+							const terminal = yield* spawnPty({
+								command: '/bin/sh',
+								args: ['-c', 'sleep 30'],
+								cwd: process.cwd(),
+								env: process.env,
+								cols: 80,
+								rows: 24,
+							});
+							return waitForExit(terminal);
+						}),
+					);
+					yield* within(exited, 'PTY did not exit after termination');
+				});
+				// The first cycle may open descriptors the process keeps for good.
+				yield* selfExiting;
+				yield* terminated;
+				const before = openDescriptors();
+				for (let cycle = 0; cycle < 5; cycle += 1) {
+					yield* selfExiting;
+					yield* terminated;
+				}
+				expect(openDescriptors()).toBe(before);
 			}),
 		),
 	);
