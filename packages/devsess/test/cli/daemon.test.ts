@@ -279,6 +279,11 @@ const fixture = () => {
 			Effect.succeed(identity(pid)),
 	);
 	const owns = vi.fn(() => Effect.succeed(true));
+	const kill = vi.fn(
+		(
+			_identity: ReturnType<typeof identity>,
+		): Effect.Effect<boolean, ProcessError> => Effect.succeed(true),
+	);
 	const unsubscribe = vi.fn(() => undefined);
 	const captureLive = vi.fn((pid: number) =>
 		capture(pid).pipe(
@@ -293,6 +298,7 @@ const fixture = () => {
 		capture,
 		captureLive,
 		terminate,
+		kill,
 		groupAlive,
 		owns,
 	});
@@ -333,6 +339,7 @@ const fixture = () => {
 		socketPath: string,
 		configuredLogs: typeof logs,
 		shutdownTimeoutMs?: number,
+		runStopDeadlineMs?: number,
 	) =>
 		Layer.effect(
 			Daemon,
@@ -340,20 +347,25 @@ const fixture = () => {
 				socketPath,
 				dataDirectory: dirname(socketPath),
 				shutdownTimeoutMs,
+				runStopDeadlineMs,
 			}),
 		).pipe(
 			Layer.provide(Layer.succeed(Registry, registry)),
 			Layer.provide(Layer.succeed(Logs, configuredLogs)),
 			Layer.provide(Layer.succeed(Processes, processes)),
 		);
-	const layer = (socketPath: string, shutdownTimeoutMs?: number) =>
-		layerWithLogs(socketPath, logs, shutdownTimeoutMs);
+	const layer = (
+		socketPath: string,
+		shutdownTimeoutMs?: number,
+		runStopDeadlineMs?: number,
+	) => layerWithLogs(socketPath, logs, shutdownTimeoutMs, runStopDeadlineMs);
 	return {
 		records,
 		registry,
 		replace,
 		prune,
 		terminate,
+		kill,
 		groupAlive,
 		capture,
 		captureLive,
@@ -827,7 +839,6 @@ describe('daemon lifetime and failure handling', () => {
 					const root = yield* makeTempDir;
 					const state = fixture();
 					const socketPath = join(root, 'daemon.sock');
-					const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
 					yield* Effect.gen(function* () {
 						const scope = yield* Scope.make();
 						const context = yield* Layer.buildWithScope(
@@ -865,10 +876,10 @@ describe('daemon lifetime and failure handling', () => {
 						});
 						expect(lastServer().listening).toBe(false);
 						expect(existsSync(socketPath)).toBe(false);
-						expect(kill).not.toHaveBeenCalled();
+						expect(state.kill).not.toHaveBeenCalled();
 						yield* Fiber.join(closing).pipe(Effect.timeout('5 seconds'));
-						expect(kill).toHaveBeenCalledWith(-98765, 'SIGKILL');
-					}).pipe(Effect.ensuring(Effect.sync(() => kill.mockRestore())));
+						expect(state.kill).toHaveBeenCalledWith(identity(98765));
+					});
 				}),
 			),
 	);
@@ -905,7 +916,6 @@ describe('daemon lifetime and failure handling', () => {
 						method: 'info',
 						params: {},
 					};
-					const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
 					yield* Effect.gen(function* () {
 						const daemon = yield* Daemon;
 						yield* daemon.request(start());
@@ -922,10 +932,49 @@ describe('daemon lifetime and failure handling', () => {
 						);
 						expect(Exit.isFailure(blocked)).toBe(true);
 						expect(state.records.has('other')).toBe(false);
-					}).pipe(
-						Effect.provide(state.layer(socketPath, 100)),
-						Effect.ensuring(Effect.sync(() => kill.mockRestore())),
-					);
+					}).pipe(Effect.provide(state.layer(socketPath, 100)));
+				}),
+			),
+	);
+
+	it.live(
+		'settles a stop that never finishes: kills the group, drops the terminal, and keeps serving',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const socketPath = join(root, 'daemon.sock');
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						yield* daemon.request(start());
+						state.terminate.mockReturnValue(Effect.never);
+						state.kill.mockImplementation(() =>
+							Effect.sync(() => {
+								state.groupAlive.mockReturnValue(Effect.succeed(false));
+								return true;
+							}),
+						);
+						const stopped = (yield* daemon
+							.request(stop)
+							.pipe(Effect.timeout('3 seconds'))) as RunRecord;
+						expect(state.kill).toHaveBeenCalledWith(identity(98765));
+						expect(stopped.state).toBe('exited');
+						expect(stopped.services[0]).toMatchObject({
+							state: 'exited',
+							signal: 9,
+						});
+						expect(
+							yield* callDaemon(socketPath, {
+								version: 1,
+								requestId: 'info',
+								method: 'info',
+								params: {},
+							}),
+						).toMatchObject({ liveServiceCount: 0 });
+						state.owns.mockReturnValue(Effect.succeed(false));
+						yield* daemon.request(start('replacement'));
+					}).pipe(Effect.provide(state.layer(socketPath, undefined, 100)));
 				}),
 			),
 	);

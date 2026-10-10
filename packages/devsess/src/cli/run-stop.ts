@@ -7,8 +7,13 @@ import { DaemonError, errorMessage } from './daemon-errors';
 import type { ServiceExit } from './exit-status';
 import type { LogAddress } from './logs';
 import type { OutputWorker } from './output-worker';
-import type { ProcessesService } from './processes';
-import { isActive, type RegistryService, type RunRecord } from './registry';
+import type { ProcessesService, ProcessIdentity } from './processes';
+import {
+	isActive,
+	type RegistryService,
+	type RunRecord,
+	type ServiceRecord,
+} from './registry';
 import {
 	aggregateState,
 	type LiveService,
@@ -17,6 +22,12 @@ import {
 	stoppedExit,
 } from './service-state';
 import type { Subscriptions } from './subscriptions';
+import {
+	FORCE_KILL_SETTLE_TIMEOUT_MS,
+	RUN_STOP_DEADLINE_MS,
+	TERMINATION_KILL_SIGNAL,
+	TERMINATION_POLL_INTERVAL_MS,
+} from './termination';
 
 const failureReason = (cause: Cause.Cause<unknown>) =>
 	Option.match(Cause.findErrorOption(cause), {
@@ -39,6 +50,26 @@ export type RunStop = {
 	readonly terminateRemaining: (
 		live: LiveService,
 	) => Effect.Effect<RunRecord, unknown, FileSystem | Path | Scope>;
+	/** True only when the group is confirmed gone. The signal-0 probe does not shell out to `ps`, so it still answers while process inspection is failing. */
+	readonly groupGone: (identity: ProcessIdentity) => Effect.Effect<boolean>;
+};
+
+const completedService = (
+	service: ServiceRecord,
+	exit: ServiceExit,
+	failed: boolean,
+): ServiceRecord => ({
+	...service,
+	state: failed ? 'failed' : 'exited',
+	published: undefined,
+	exitCode: exit.exitCode,
+	signal: exit.signal,
+	exitStatus: undefined,
+});
+
+type SettledService = {
+	readonly record: ServiceRecord;
+	readonly failure: string | undefined;
 };
 
 export const makeRunStop = (options: {
@@ -47,7 +78,17 @@ export const makeRunStop = (options: {
 	readonly terminals: Map<string, LiveService>;
 	readonly output: OutputWorker;
 	readonly subscriptions: Subscriptions;
+	readonly deadlineMs?: number;
 }): RunStop => {
+	const deadlineMs =
+		options.deadlineMs === undefined
+			? RUN_STOP_DEADLINE_MS
+			: options.deadlineMs;
+	const groupGone = (identity: ProcessIdentity) =>
+		options.processes.groupAlive(identity.processGroupId).pipe(
+			Effect.map((alive) => !alive),
+			Effect.catch((cause) => Effect.logWarning(cause).pipe(Effect.as(false))),
+		);
 	const finishService = (
 		address: LogAddress,
 		exit: ServiceExit,
@@ -61,7 +102,7 @@ export const makeRunStop = (options: {
 					options.subscriptions.finishSubscriptions(address, exit),
 				),
 			);
-	const stopRun = (
+	const stopGracefully = (
 		runId: string,
 		force: boolean,
 		failedAddress?: LogAddress,
@@ -117,14 +158,7 @@ export const makeRunStop = (options: {
 							? { exitCode: 1, signal: undefined }
 							: stoppedExit(live);
 						yield* finishService(address, exit, live?.terminal);
-						return {
-							...service,
-							state: failed ? ('failed' as const) : ('exited' as const),
-							published: undefined,
-							exitCode: exit.exitCode,
-							signal: exit.signal,
-							exitStatus: undefined,
-						};
+						return completedService(service, exit, failed);
 					}
 					const result = yield* Effect.exit(
 						live === undefined
@@ -140,26 +174,32 @@ export const makeRunStop = (options: {
 							: live.ownership.terminate,
 					);
 					if (Exit.isFailure(result)) {
-						failures.push(result.cause);
-						failureMessages.push(
-							`Service ${service.name}: ${failureReason(result.cause)}`,
-						);
-						if (
-							!force &&
-							live === undefined &&
-							orphanedServices.has(service.name)
-						)
+						// A failed inspection says nothing about the process; a group that is provably gone is a stopped service, not a stuck one.
+						if (!(yield* groupGone(identity))) {
+							failures.push(result.cause);
 							failureMessages.push(
-								orphanRemedy(run, service, identity.processGroupId),
+								`Service ${service.name}: ${failureReason(result.cause)}`,
 							);
-						return {
-							...service,
-							process: identity,
-							state:
-								live === undefined
-									? ('orphaned' as const)
-									: ('stopping' as const),
-						};
+							if (
+								!force &&
+								live === undefined &&
+								orphanedServices.has(service.name)
+							)
+								failureMessages.push(
+									orphanRemedy(run, service, identity.processGroupId),
+								);
+							return {
+								...service,
+								process: identity,
+								state:
+									live === undefined
+										? ('orphaned' as const)
+										: ('stopping' as const),
+							};
+						}
+						yield* Effect.logWarning(
+							`Run ${runId} service ${service.name} is recorded as stopped because its process group is gone, although stopping it failed: ${failureReason(result.cause)}`,
+						);
 					}
 					if (options.terminals.get(serviceKey(address)) === live)
 						options.terminals.delete(serviceKey(address));
@@ -173,14 +213,7 @@ export const makeRunStop = (options: {
 						? { exitCode: 1, signal: terminationSignal }
 						: stoppedExit(live, terminationSignal);
 					yield* finishService(address, exit, live?.terminal);
-					return {
-						...service,
-						state: failed ? ('failed' as const) : ('exited' as const),
-						published: undefined,
-						exitCode: exit.exitCode,
-						signal: exit.signal,
-						exitStatus: undefined,
-					};
+					return completedService(service, exit, failed);
 				}),
 			);
 			const stored = yield* options.registry.replace({
@@ -207,6 +240,134 @@ export const makeRunStop = (options: {
 			}
 			return stored;
 		});
+	const awaitGroupGone = (identity: ProcessIdentity) =>
+		Effect.gen(function* () {
+			while (!(yield* groupGone(identity)))
+				yield* Effect.sleep(`${TERMINATION_POLL_INTERVAL_MS} millis`);
+		}).pipe(
+			Effect.timeoutOption(FORCE_KILL_SETTLE_TIMEOUT_MS),
+			Effect.map(Option.isSome),
+		);
+	const killUntilGone = (identity: ProcessIdentity) =>
+		Effect.gen(function* () {
+			if (yield* groupGone(identity)) return 'gone' as const;
+			const signalled = yield* options.processes.kill(identity);
+			if (!signalled)
+				return (yield* groupGone(identity))
+					? ('gone' as const)
+					: ('unverified' as const);
+			return (yield* awaitGroupGone(identity))
+				? ('killed' as const)
+				: ('survived' as const);
+		});
+	const settleService = (
+		runId: string,
+		service: ServiceRecord,
+		failedAddress: LogAddress | undefined,
+	): Effect.Effect<SettledService, never, FileSystem | Path | Scope> =>
+		Effect.gen(function* () {
+			const address = { runId, serviceName: service.name };
+			const live = options.terminals.get(serviceKey(address));
+			const identity =
+				live === undefined ? service.process : live.ownership.identity;
+			let terminationSignal: number | undefined;
+			if (identity !== undefined) {
+				const outcome = yield* Effect.exit(killUntilGone(identity));
+				if (Exit.isFailure(outcome))
+					return {
+						record: { ...service, process: identity, state: 'orphaned' },
+						failure: `Service ${service.name}: ${failureReason(outcome.cause)}`,
+					};
+				if (outcome.value === 'unverified' || outcome.value === 'survived')
+					return {
+						record: { ...service, process: identity, state: 'orphaned' },
+						failure:
+							outcome.value === 'survived'
+								? `Service ${service.name}: process group ${identity.processGroupId} survived SIGKILL`
+								: `Service ${service.name}: process group ${identity.processGroupId} is alive but its leader is gone or changed, so it was not killed`,
+					};
+				if (outcome.value === 'killed')
+					terminationSignal = TERMINATION_KILL_SIGNAL;
+			}
+			if (
+				live !== undefined &&
+				options.terminals.get(serviceKey(address)) === live
+			)
+				options.terminals.delete(serviceKey(address));
+			const failed =
+				failedAddress !== undefined &&
+				serviceKey(failedAddress) === serviceKey(address);
+			const exit = failed
+				? { exitCode: 1, signal: terminationSignal }
+				: stoppedExit(live, terminationSignal);
+			yield* finishService(address, exit, live?.terminal).pipe(
+				Effect.timeoutOption(FORCE_KILL_SETTLE_TIMEOUT_MS),
+				Effect.catch((cause) => Effect.logError(cause)),
+			);
+			return {
+				record: completedService(service, exit, failed),
+				failure: undefined,
+			};
+		});
+	/** Runs once the graceful stop blew its deadline: kill what is left and record every selected service as ended, so nothing stays `stopping` with dead PIDs. */
+	const settleAfterDeadline = (
+		runId: string,
+		failedAddress: LogAddress | undefined,
+		serviceNames: ReadonlySet<string> | undefined,
+	) =>
+		Effect.gen(function* () {
+			yield* Effect.logWarning(
+				`Stopping run ${runId} did not finish within ${deadlineMs}ms; killing what remains`,
+			);
+			const run = yield* options.registry.get(runId);
+			const settled = yield* Effect.forEach(
+				run.services,
+				(
+					service,
+				): Effect.Effect<SettledService, never, FileSystem | Path | Scope> =>
+					(serviceNames === undefined || serviceNames.has(service.name)) &&
+					(isActive(service.state) || service.state === 'orphaned')
+						? settleService(runId, service, failedAddress)
+						: Effect.succeed({ record: service, failure: undefined }),
+				{ concurrency: 'unbounded' },
+			);
+			const services = settled.map((entry) => entry.record);
+			const stored = yield* options.registry.replace({
+				...run,
+				services,
+				state: aggregateState(services),
+			});
+			for (const entry of settled) {
+				if (entry.record.state !== 'exited' && entry.record.state !== 'failed')
+					continue;
+				yield* options.subscriptions.markPersisted({
+					runId,
+					serviceName: entry.record.name,
+				});
+			}
+			const failures = settled.flatMap((entry) =>
+				entry.failure === undefined ? [] : [entry.failure],
+			);
+			if (failures.length > 0)
+				return yield* new DaemonError({
+					message: `Could not stop all services in run ${runId} within ${deadlineMs}ms.\n${failures.join('\n')}`,
+				});
+			return stored;
+		});
+	const stopRun = (
+		runId: string,
+		force: boolean,
+		failedAddress?: LogAddress,
+		serviceNames?: ReadonlySet<string>,
+	) =>
+		stopGracefully(runId, force, failedAddress, serviceNames).pipe(
+			Effect.timeoutOption(deadlineMs),
+			Effect.flatMap((stopped) =>
+				Option.isSome(stopped)
+					? Effect.succeed(stopped.value)
+					: settleAfterDeadline(runId, failedAddress, serviceNames),
+			),
+		);
 	const terminateRemaining = (live: LiveService) =>
 		Effect.gen(function* () {
 			const terminationSignal = yield* live.ownership.terminate;
@@ -235,5 +396,5 @@ export const makeRunStop = (options: {
 			yield* options.subscriptions.markPersisted(live.address);
 			return stored;
 		});
-	return { stopRun, terminateRemaining, finishService };
+	return { stopRun, terminateRemaining, finishService, groupGone };
 };

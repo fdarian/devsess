@@ -124,23 +124,15 @@ const stopListening = (server: Server, socketPath: string) =>
 	});
 
 const killProcessGroup = (processes: ProcessesService, live: LiveService) =>
-	processes.owns(live.ownership.identity).pipe(
-		Effect.flatMap((owned) =>
-			owned
-				? Effect.try({
-						try: () =>
-							process.kill(-live.ownership.identity.processGroupId, 'SIGKILL'),
-						catch: (cause) => cause,
-					})
+	processes.kill(live.ownership.identity).pipe(
+		Effect.flatMap((killed) =>
+			killed
+				? Effect.void
 				: Effect.logWarning(
 						`Not killing process group ${live.ownership.identity.processGroupId}: its leader is gone or changed`,
 					),
 		),
-		Effect.catch((cause) =>
-			cause instanceof Error && 'code' in cause && cause.code === 'ESRCH'
-				? Effect.void
-				: Effect.logError(cause),
-		),
+		Effect.catch((cause) => Effect.logError(cause)),
 	);
 
 const requestIdOf = (incoming: ClientRequestMessage['incoming']) =>
@@ -156,6 +148,7 @@ export const makeDaemon = (options: {
 	dataDirectory?: string;
 	logsDirectory?: string;
 	shutdownTimeoutMs?: number;
+	runStopDeadlineMs?: number;
 }): Effect.Effect<
 	DaemonService,
 	unknown,
@@ -297,6 +290,7 @@ export const makeDaemon = (options: {
 			terminals,
 			output,
 			subscriptions,
+			deadlineMs: options.runStopDeadlineMs,
 		});
 		const runStart = makeRunStart({
 			socketPath: options.socketPath,

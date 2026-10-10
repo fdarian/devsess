@@ -296,6 +296,28 @@ describe('live process group ownership', () => {
 		}),
 	);
 
+	it.live('kills a recovered group once its leader is verified', () =>
+		Effect.gen(function* () {
+			const group = fakeGroup();
+			const processes = yield* Processes.make;
+			const saved = yield* processes.capture(98765);
+			expect(yield* processes.kill(saved)).toBe(true);
+			expect(group.kill).toHaveBeenCalledWith(-98765, 'SIGKILL');
+			expect(group.kill).not.toHaveBeenCalledWith(-98765, 'SIGTERM');
+		}),
+	);
+
+	it.live('does not kill a group whose leader is gone or changed', () =>
+		Effect.gen(function* () {
+			const group = fakeGroup();
+			const processes = yield* Processes.make;
+			const saved = yield* processes.capture(98765);
+			group.state.leaderAlive = false;
+			expect(yield* processes.kill(saved)).toBe(false);
+			expect(group.kill).not.toHaveBeenCalled();
+		}),
+	);
+
 	it.live('reports SIGKILL for a SIGTERM-ignoring service', () =>
 		Effect.gen(function* () {
 			vi.useFakeTimers();

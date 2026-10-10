@@ -645,6 +645,21 @@ export class Processes extends Context.Service<Processes>()(
 						canEscalate,
 					});
 				});
+			/** SIGKILLs the group without waiting; false when its leader is gone or changed, since the group then cannot be told from a reused one. */
+			const kill = (
+				identity: ProcessIdentity,
+			): Effect.Effect<boolean, ProcessError> =>
+				Effect.gen(function* () {
+					if (!isValidIdentity(identity))
+						return yield* invalidIdentity(identity);
+					if (!(yield* owns(identity))) return false;
+					return yield* signalGroup(identity.processGroupId, 'SIGKILL').pipe(
+						Effect.as(true),
+						Effect.catchTag('ProcessError', (error) =>
+							isGoneCause(error.cause) ? Effect.succeed(false) : error,
+						),
+					);
+				});
 			const captureLive = (
 				pid: number,
 			): Effect.Effect<LiveProcessOwnership, ProcessError> =>
@@ -835,6 +850,7 @@ export class Processes extends Context.Service<Processes>()(
 				owns,
 				groupAlive,
 				terminate,
+				kill,
 				stopSampler: stopMonitor,
 			};
 		}),

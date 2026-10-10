@@ -1,9 +1,10 @@
-import { Deferred, Effect, Fiber, Queue } from 'effect';
+import { Deferred, Effect, Fiber, Option, Queue } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { Scope } from 'effect/Scope';
 import type { IPty } from 'node-pty';
 import type { LogAddress, LogsService } from './logs';
+import { OUTPUT_IDLE_TIMEOUT_MS } from './termination';
 
 export const MAX_OUTPUT_BACKLOG_BYTES = 256 * 1024;
 
@@ -42,6 +43,7 @@ export type OutputWorker = {
 export const makeOutputWorker = (options: {
 	readonly logs: LogsService;
 	readonly onPersistenceFailure: (address: LogAddress, cause: unknown) => void;
+	readonly idleTimeoutMs?: number;
 }): Effect.Effect<OutputWorker, never, FileSystem | Path | Scope> =>
 	Effect.gen(function* () {
 		const outputs = new Map<string, OutputState>();
@@ -57,6 +59,10 @@ export const makeOutputWorker = (options: {
 				{ discard: true },
 			);
 		};
+		const idleTimeoutMs =
+			options.idleTimeoutMs === undefined
+				? OUTPUT_IDLE_TIMEOUT_MS
+				: options.idleTimeoutMs;
 		const awaitIdle = (address: LogAddress, terminal?: IPty) =>
 			Effect.suspend(() => {
 				const output = outputs.get(serviceKey(address));
@@ -70,7 +76,14 @@ export const makeOutputWorker = (options: {
 					const waiter = yield* Deferred.make<void>();
 					output.pendingWaiters.add(waiter);
 					yield* settleOutputWaiters(output);
-					yield* Deferred.await(waiter);
+					const settled = yield* Deferred.await(waiter).pipe(
+						Effect.timeoutOption(idleTimeoutMs),
+					);
+					if (Option.isSome(settled)) return;
+					output.pendingWaiters.delete(waiter);
+					yield* Effect.logWarning(
+						`Abandoning unflushed output for ${serviceKey(address)} after ${idleTimeoutMs}ms`,
+					);
 				});
 			});
 		const close = (address: LogAddress, terminal?: IPty) =>

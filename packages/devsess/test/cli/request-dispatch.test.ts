@@ -46,6 +46,7 @@ const dispatcher = (runs: ReadonlyArray<RunRecord>) =>
 			stopRun: () => Effect.succeed(activeRun),
 			finishService: () => Effect.void,
 			terminateRemaining: () => Effect.succeed(activeRun),
+			groupGone: () => Effect.succeed(true),
 		};
 		const value = makeRequestDispatcher({
 			registry: {
