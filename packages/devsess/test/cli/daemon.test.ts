@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createConnection, createServer, Socket } from 'node:net';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 import {
 	Cause,
@@ -334,7 +334,14 @@ const fixture = () => {
 		configuredLogs: typeof logs,
 		shutdownTimeoutMs?: number,
 	) =>
-		Layer.effect(Daemon, makeDaemon({ socketPath, shutdownTimeoutMs })).pipe(
+		Layer.effect(
+			Daemon,
+			makeDaemon({
+				socketPath,
+				dataDirectory: dirname(socketPath),
+				shutdownTimeoutMs,
+			}),
+		).pipe(
 			Layer.provide(Layer.succeed(Registry, registry)),
 			Layer.provide(Layer.succeed(Logs, configuredLogs)),
 			Layer.provide(Layer.succeed(Processes, processes)),
@@ -882,6 +889,45 @@ describe('daemon lifetime and failure handling', () => {
 				expect(existsSync(pidfilePath)).toBe(false);
 			}),
 		),
+	);
+
+	it.live(
+		'answers info and run reads while a stop holds the request queue, and keeps mutations serial',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const socketPath = join(root, 'daemon.sock');
+					const info: DaemonRequest = {
+						version: 1,
+						requestId: 'info',
+						method: 'info',
+						params: {},
+					};
+					const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						yield* daemon.request(start());
+						state.terminate.mockReturnValue(Effect.never);
+						yield* Effect.forkChild(daemon.request(stop));
+						yield* Effect.sleep('100 millis');
+						expect(state.terminate).toHaveBeenCalledTimes(1);
+						expect(yield* callDaemon(socketPath, info, 1_000)).toMatchObject({
+							pid: process.pid,
+						});
+						expect(yield* callDaemon(socketPath, list, 1_000)).toHaveLength(1);
+						const blocked = yield* Effect.exit(
+							callDaemon(socketPath, start('other'), 200),
+						);
+						expect(Exit.isFailure(blocked)).toBe(true);
+						expect(state.records.has('other')).toBe(false);
+					}).pipe(
+						Effect.provide(state.layer(socketPath, 100)),
+						Effect.ensuring(Effect.sync(() => kill.mockRestore())),
+					);
+				}),
+			),
 	);
 
 	it.live('does not remove the pidfile of a daemon that owns the socket', () =>

@@ -29,6 +29,16 @@ import type { SocketState, Subscriptions } from './subscriptions';
 
 export { DaemonError } from './daemon-errors';
 
+const READ_ONLY_METHODS: ReadonlySet<DaemonRequest['method']> = new Set([
+	'info',
+	'listRuns',
+	'getRun',
+]);
+
+/** Requests that only read daemon state and change none, so they may run while a mutating request is in flight. */
+export const isReadOnlyRequest = (incoming: DaemonRequest) =>
+	READ_ONLY_METHODS.has(incoming.method);
+
 export type ClientRequestMessage = {
 	readonly _tag: 'request';
 	readonly incoming: DaemonRequest | string;

@@ -2,7 +2,16 @@ import { unlinkSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
-import { Context, Deferred, Effect, Fiber, Layer, Option, Queue } from 'effect';
+import {
+	Context,
+	Deferred,
+	Effect,
+	Exit,
+	Fiber,
+	Layer,
+	Option,
+	Queue,
+} from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { Scope } from 'effect/Scope';
@@ -17,6 +26,7 @@ import {
 	type DaemonInfo,
 	type DaemonRequest,
 	type DaemonResponse,
+	decodeRequest,
 	decodeRequestId,
 	PROTOCOL_VERSION,
 	splitFrames,
@@ -24,6 +34,7 @@ import {
 import { bestEffortPrune, Registry } from './registry';
 import {
 	type ClientRequestMessage,
+	isReadOnlyRequest,
 	type LifecycleMessage,
 	makeRequestDispatcher,
 } from './request-dispatch';
@@ -86,6 +97,8 @@ const listen = (server: Server, socketPath: string) =>
 /** Bound on stopping runs during shutdown; whatever survives it gets SIGKILL so the daemon always exits. */
 export const SHUTDOWN_RUN_STOP_TIMEOUT_MS = 10_000;
 const SHUTDOWN_REPLY_FLUSH_TIMEOUT_MS = 1_000;
+/** Read-only requests run beside the serial queue; a few workers keep one slow read from starving the rest. */
+const READ_WORKER_COUNT = 4;
 const SHUTTING_DOWN_MESSAGE = 'Daemon is shutting down';
 
 /** Stops accepting connections right away without waiting for open ones to end. */
@@ -161,6 +174,7 @@ export const makeDaemon = (options: {
 		const startedAt = new Date().toISOString();
 		const shutdownRequested = yield* Deferred.make<void>();
 		const requestQueue = yield* Queue.bounded<ClientRequestMessage>(256);
+		const readQueue = yield* Queue.bounded<ClientRequestMessage>(256);
 		const lifecycleQueue = yield* Queue.unbounded<LifecycleMessage>();
 		const terminals = new Map<string, LiveService>();
 		const environments = new Map<string, Readonly<Record<string, string>>>();
@@ -209,8 +223,11 @@ export const makeDaemon = (options: {
 		const enqueueLifecycle = (message: LifecycleMessage) => {
 			Queue.offerUnsafe(lifecycleQueue, message);
 		};
-		const enqueueRequest = (message: ClientRequestMessage) => {
-			if (Queue.offerUnsafe(requestQueue, message)) return;
+		const enqueueRequest = (
+			message: ClientRequestMessage,
+			queue = requestQueue,
+		) => {
+			if (Queue.offerUnsafe(queue, message)) return;
 			if (message.socket === undefined) {
 				if (message.reply !== undefined)
 					Effect.runFork(
@@ -224,7 +241,7 @@ export const makeDaemon = (options: {
 			const socket = message.socket;
 			socket.pause();
 			Effect.runFork(
-				Queue.offer(requestQueue, message).pipe(
+				Queue.offer(queue, message).pipe(
 					Effect.ensuring(
 						Effect.sync(() => {
 							if (!socket.destroyed) socket.resume();
@@ -331,6 +348,13 @@ export const makeDaemon = (options: {
 				}),
 			),
 		).pipe(Effect.forkScoped);
+		const readWorkers = yield* Effect.forEach(
+			Array.from({ length: READ_WORKER_COUNT }),
+			() =>
+				Effect.forever(
+					Queue.take(readQueue).pipe(Effect.flatMap(dispatcher.handleClient)),
+				).pipe(Effect.forkScoped),
+		);
 		const lifecycleWorker = yield* Effect.forever(
 			Queue.take(lifecycleQueue).pipe(
 				Effect.flatMap(dispatcher.handleLifecycle),
@@ -393,7 +417,16 @@ export const makeDaemon = (options: {
 						Effect.runFork(
 							rejectRequest(message).pipe(Effect.andThen(closeSocket(socket))),
 						);
-					else enqueueRequest(message);
+					else {
+						// A daemon busy with a long stop still has to complete handshakes and answer status.
+						const decoded = Effect.runSyncExit(decodeRequest(frame));
+						if (Exit.isSuccess(decoded) && isReadOnlyRequest(decoded.value))
+							enqueueRequest(
+								{ ...message, incoming: decoded.value },
+								readQueue,
+							);
+						else enqueueRequest(message);
+					}
 				}
 			});
 		});
@@ -412,11 +445,16 @@ export const makeDaemon = (options: {
 				);
 				yield* Fiber.interrupt(requestWorker);
 				yield* Fiber.interrupt(lifecycleWorker);
-				const unanswered = yield* Queue.clear(requestQueue);
+				yield* Effect.forEach(readWorkers, Fiber.interrupt, { discard: true });
+				const unanswered = [
+					...(yield* Queue.clear(requestQueue)),
+					...(yield* Queue.clear(readQueue)),
+				];
 				if (inFlight.current !== undefined)
 					unanswered.unshift(inFlight.current);
 				yield* Effect.forEach(unanswered, rejectRequest, { discard: true });
 				yield* Queue.shutdown(requestQueue);
+				yield* Queue.shutdown(readQueue);
 				yield* Queue.shutdown(lifecycleQueue);
 				yield* Effect.forEach(Array.from(sockets.keys()), closeSocket, {
 					concurrency: 'unbounded',
@@ -457,12 +495,15 @@ export const makeDaemon = (options: {
 			request: (incoming: DaemonRequest) =>
 				Effect.gen(function* () {
 					const response = yield* Deferred.make<unknown, DaemonError>();
-					const offered = yield* Queue.offer(requestQueue, {
-						_tag: 'request',
-						incoming,
-						socket: undefined,
-						reply: response,
-					});
+					const offered = yield* Queue.offer(
+						isReadOnlyRequest(incoming) ? readQueue : requestQueue,
+						{
+							_tag: 'request',
+							incoming,
+							socket: undefined,
+							reply: response,
+						},
+					);
 					if (!offered)
 						return yield* new DaemonError({
 							message: 'Daemon request queue is closed',
