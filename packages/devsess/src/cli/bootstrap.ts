@@ -36,6 +36,7 @@ export const awaitDaemonHandshake = (options: {
 				if (lastError !== undefined) return lastError;
 				return new DaemonClientError({
 					message: `Timed out contacting daemon at ${options.socketPath}`,
+					kind: 'timeout',
 				});
 			}
 			const timeoutMs = Math.min(remaining, 250);
@@ -407,6 +408,9 @@ const endpointIsUnresponsive = (error: DaemonBootstrapError) =>
 	error.cause instanceof DaemonClientError &&
 	error.cause.kind === 'unresponsive';
 
+const endpointTimedOut = (error: DaemonBootstrapError) =>
+	error.cause instanceof DaemonClientError && error.cause.kind === 'timeout';
+
 const bootstrapTimeoutMs = 10_000;
 
 const timeoutError = (
@@ -540,6 +544,17 @@ export const ensureDaemon = (options: {
 												Effect.andThen(handshake(5_000)),
 											);
 											if (endpointIsMissing(error)) return relaunch;
+											if (endpointTimedOut(error))
+												return liveDaemonPid(options.location.socketPath).pipe(
+													Effect.flatMap((pid) =>
+														pid === undefined
+															? error
+															: new DaemonBootstrapError({
+																	message: `Daemon PID ${pid} is busy or unresponsive at ${options.location.socketPath}: it did not complete the handshake in time. Retry shortly, or run \`devsess daemon restart --force\` to terminate it and stop its live runs.`,
+																	cause: error,
+																}),
+													),
+												);
 											if (!endpointIsUnresponsive(error)) return error;
 											return liveDaemonPid(options.location.socketPath).pipe(
 												Effect.flatMap((pid) =>

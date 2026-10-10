@@ -17,6 +17,7 @@ export class DaemonClientError extends Schema.TaggedError<DaemonClientError>()(
 			Schema.Union([
 				Schema.Literal('unreachable'),
 				Schema.Literal('unresponsive'),
+				Schema.Literal('timeout'),
 				Schema.Literal('invalid-response'),
 				Schema.Literal('incompatible'),
 				Schema.Literal('rejected'),
@@ -28,6 +29,9 @@ export class DaemonClientError extends Schema.TaggedError<DaemonClientError>()(
 
 /** The endpoint accepted the connection and then hung up, unlike ENOENT/ECONNREFUSED where nothing is listening. */
 class ConnectionClosedError extends Error {}
+
+/** The daemon accepted the connection but did not reply in time: busy, not gone, so it must not be mistaken for an unreachable endpoint. */
+class RequestTimeoutError extends Error {}
 
 const decodeResponse = Schema.decodeUnknownEffect(
 	Schema.fromJsonString(DaemonResponse),
@@ -55,7 +59,11 @@ export const callDaemon = (
 				const timer = setTimeout(
 					() =>
 						finish(() =>
-							reject(new Error(`Timed out contacting daemon at ${socketPath}`)),
+							reject(
+								new RequestTimeoutError(
+									`Timed out contacting daemon at ${socketPath}`,
+								),
+							),
 						),
 					timeoutMs,
 				);
@@ -86,7 +94,9 @@ export const callDaemon = (
 				kind:
 					cause instanceof ConnectionClosedError
 						? 'unresponsive'
-						: 'unreachable',
+						: cause instanceof RequestTimeoutError
+							? 'timeout'
+							: 'unreachable',
 			}),
 	}).pipe(
 		Effect.flatMap((raw) =>

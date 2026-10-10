@@ -401,6 +401,54 @@ describe('daemon bootstrap', () => {
 			),
 	);
 
+	describe('an endpoint that accepts and never replies', () => {
+		it.live(
+			'reports a busy daemon, names its PID, and neither kills nor relaunches it',
+			() =>
+				runTest(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const rootDir = yield* makeTempDir;
+							const socketPath = join(rootDir, 'daemon.sock');
+							const server = createServer(() => undefined);
+							yield* listen(server, socketPath);
+							yield* Effect.addFinalizer(() =>
+								Effect.sync(() => server.close()),
+							);
+							writeFileSync(
+								join(rootDir, 'daemon.pid'),
+								`${process.pid}\n${processBirthOf(process.pid)}\n`,
+							);
+							let launches = 0;
+							const exit = yield* Effect.exit(
+								ensureDaemon({
+									location: {
+										dataDirectory: join(rootDir, 'state'),
+										socketPath,
+									},
+									launch: () =>
+										Effect.sync(() => {
+											launches += 1;
+										}),
+								}),
+							);
+							const error = Exit.isFailure(exit)
+								? Cause.squash(exit.cause)
+								: undefined;
+							expect(error).toBeInstanceOf(DaemonBootstrapError);
+							const message = (error as DaemonBootstrapError).message;
+							expect(message).toContain(`PID ${process.pid}`);
+							expect(message).toContain('busy or unresponsive');
+							expect(message).toContain('devsess daemon restart --force');
+							expect(launches).toBe(0);
+							expect(server.listening).toBe(true);
+							expect(existsSync(join(rootDir, 'daemon.pid'))).toBe(true);
+						}),
+					),
+				),
+		);
+	});
+
 	describe('an endpoint that accepts and then closes', () => {
 		const acceptThenClose = () =>
 			createServer((socket) => {
