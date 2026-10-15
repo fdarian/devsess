@@ -1,5 +1,5 @@
 ---
-'devsess': minor
+"devsess": minor
 ---
 
-Publish service readiness to the daemon, show URLs in status, and optionally wait for readiness with `awaitPublish`.
+Show `publishRunning` readiness and URLs in `devsess status`, and let presets wait for it with `awaitPublish`.
