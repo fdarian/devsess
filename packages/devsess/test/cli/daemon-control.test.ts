@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { createConnection, createServer } from 'node:net';
+import { createConnection, createServer, type Socket } from 'node:net';
 import { join } from 'node:path';
 import type { NodeServices } from '@effect/platform-node';
 import { describe, expect, it } from '@effect/vitest';
@@ -48,6 +48,11 @@ const staleRun: RunRecord = {
 	],
 };
 
+/** A client may destroy its socket on timeout before the reply lands, so the write can EPIPE; the real daemon's socket writer tolerates that too. */
+const tolerateClientGone = (socket: Socket) => {
+	socket.on('error', () => {});
+};
+
 const spawnOutdatedDaemon = (socketPath: string, run: RunRecord) =>
 	Effect.try({
 		try: () => {
@@ -56,6 +61,7 @@ const net = require('node:net');
 const socketPath = ${JSON.stringify(socketPath)};
 const run = ${JSON.stringify(run)};
 const server = net.createServer((socket) => {
+  socket.on('error', () => {}); // client may destroy the socket on timeout before the reply
   let input = '';
   socket.on('data', (chunk) => {
     input += chunk.toString();
@@ -194,6 +200,7 @@ describe('daemon control', () => {
 				const socketPath = join(runtimeDirectory, 'devsess', 'devsess.sock');
 				mkdirSync(join(runtimeDirectory, 'devsess'), { recursive: true });
 				const server = createServer((socket) => {
+					tolerateClientGone(socket);
 					socket.once('data', () => socket.destroy());
 				});
 				yield* Effect.addFinalizer(() => Effect.sync(() => server.close()));
@@ -416,6 +423,7 @@ describe('daemon control', () => {
 				fixture.server.close();
 				const child = fixture.child as ChildProcess;
 				const responding = createServer((socket) => {
+					tolerateClientGone(socket);
 					let input = '';
 					socket.on('data', (chunk) => {
 						input += chunk.toString();
