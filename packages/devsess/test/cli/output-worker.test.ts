@@ -2,7 +2,10 @@ import { describe, expect, it } from '@effect/vitest';
 import { Effect } from 'effect';
 import { vi } from 'vitest';
 import { Logs } from '../../src/cli/logs';
-import { makeOutputWorker } from '../../src/cli/output-worker';
+import {
+	MAX_OUTPUT_BACKLOG_BYTES,
+	makeOutputWorker,
+} from '../../src/cli/output-worker';
 import { runTest } from '../support/run-test';
 
 describe('output worker', () => {
@@ -30,6 +33,34 @@ describe('output worker', () => {
 						.awaitIdle(address, terminal)
 						.pipe(Effect.timeout('2 seconds'));
 					expect(Date.now() - startedAt).toBeLessThan(1_000);
+				}),
+			),
+		),
+	);
+
+	it.live('stops pausing the terminal once backpressure is released', () =>
+		runTest(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const output = yield* makeOutputWorker({
+						logs: Logs.of({
+							append: () => Effect.never,
+							replayAndSubscribe: () => Effect.never,
+						}),
+						onPersistenceFailure: () => undefined,
+					});
+					const address = { runId: 'run', serviceName: 'web' };
+					const pause = vi.fn();
+					const resume = vi.fn();
+					const terminal = { pause, resume } as never;
+					const chunk = 'x'.repeat(MAX_OUTPUT_BACKLOG_BYTES + 1);
+					yield* output.start(address, terminal);
+					output.enqueue(address, terminal, chunk);
+					expect(pause).toHaveBeenCalledTimes(1);
+					yield* output.releaseBackpressure(address, terminal);
+					expect(resume).toHaveBeenCalledTimes(1);
+					output.enqueue(address, terminal, chunk);
+					expect(pause).toHaveBeenCalledTimes(1);
 				}),
 			),
 		),

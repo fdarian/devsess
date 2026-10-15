@@ -1,8 +1,7 @@
-import { Cause, Effect, Exit, Option } from 'effect';
+import { Cause, Deferred, Effect, Exit, Option } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { Scope } from 'effect/Scope';
-import type { IPty } from 'node-pty';
 import { DaemonError, errorMessage } from './daemon-errors';
 import type { ServiceExit } from './exit-status';
 import type { LogAddress } from './logs';
@@ -24,6 +23,7 @@ import {
 import type { Subscriptions } from './subscriptions';
 import {
 	FORCE_KILL_SETTLE_TIMEOUT_MS,
+	OUTPUT_IDLE_TIMEOUT_MS,
 	RUN_STOP_DEADLINE_MS,
 	TERMINATION_KILL_SIGNAL,
 	TERMINATION_POLL_INTERVAL_MS,
@@ -39,7 +39,7 @@ export type RunStop = {
 	readonly finishService: (
 		address: LogAddress,
 		exit: ServiceExit,
-		terminal?: IPty,
+		live?: LiveService,
 	) => Effect.Effect<void, unknown, FileSystem | Path | Scope>;
 	readonly stopRun: (
 		runId: string,
@@ -89,19 +89,35 @@ export const makeRunStop = (options: {
 			Effect.map((alive) => !alive),
 			Effect.catch((cause) => Effect.logWarning(cause).pipe(Effect.as(false))),
 		);
+	/** Stop applying backpressure before the process dies: node-pty destroys a paused PTY socket 200ms after the leader exits, dropping the bytes it had not read yet. */
+	const beginDrain = (live: LiveService | undefined) =>
+		live === undefined
+			? Effect.void
+			: options.output.releaseBackpressure(live.address, live.terminal);
+	/** The PTY exit event follows the last byte of output, so `awaitIdle` is only meaningful once it has fired. */
+	const awaitDrained = (address: LogAddress, live: LiveService | undefined) =>
+		live === undefined
+			? Effect.void
+			: Deferred.await(live.drained).pipe(
+					Effect.timeoutOption(OUTPUT_IDLE_TIMEOUT_MS),
+					Effect.flatMap((drained) =>
+						Option.isSome(drained)
+							? Effect.void
+							: Effect.logWarning(
+									`Abandoning undelivered output for ${serviceKey(address)} after ${OUTPUT_IDLE_TIMEOUT_MS}ms: the PTY never reported end of output`,
+								),
+					),
+				);
 	const finishService = (
 		address: LogAddress,
 		exit: ServiceExit,
-		terminal?: IPty,
+		live?: LiveService,
 	) =>
-		options.output
-			.awaitIdle(address, terminal)
-			.pipe(
-				Effect.andThen(options.output.close(address, terminal)),
-				Effect.andThen(
-					options.subscriptions.finishSubscriptions(address, exit),
-				),
-			);
+		awaitDrained(address, live).pipe(
+			Effect.andThen(options.output.awaitIdle(address, live?.terminal)),
+			Effect.andThen(options.output.close(address, live?.terminal)),
+			Effect.andThen(options.subscriptions.finishSubscriptions(address, exit)),
+		);
 	const stopGracefully = (
 		runId: string,
 		force: boolean,
@@ -157,7 +173,7 @@ export const makeRunStop = (options: {
 						const exit = failed
 							? { exitCode: 1, signal: undefined }
 							: stoppedExit(live);
-						yield* finishService(address, exit, live?.terminal);
+						yield* finishService(address, exit, live);
 						return completedService(service, exit, failed);
 					}
 					const result = yield* Effect.exit(
@@ -171,7 +187,7 @@ export const makeRunStop = (options: {
 												: Effect.succeed(undefined),
 										),
 									)
-							: live.ownership.terminate,
+							: beginDrain(live).pipe(Effect.andThen(live.ownership.terminate)),
 					);
 					if (Exit.isFailure(result)) {
 						// A failed inspection says nothing about the process; a group that is provably gone is a stopped service, not a stuck one.
@@ -212,7 +228,7 @@ export const makeRunStop = (options: {
 					const exit = failed
 						? { exitCode: 1, signal: terminationSignal }
 						: stoppedExit(live, terminationSignal);
-					yield* finishService(address, exit, live?.terminal);
+					yield* finishService(address, exit, live);
 					return completedService(service, exit, failed);
 				}),
 			);
@@ -272,6 +288,7 @@ export const makeRunStop = (options: {
 				live === undefined ? service.process : live.ownership.identity;
 			let terminationSignal: number | undefined;
 			if (identity !== undefined) {
+				yield* beginDrain(live);
 				const outcome = yield* Effect.exit(killUntilGone(identity));
 				if (Exit.isFailure(outcome))
 					return {
@@ -300,7 +317,7 @@ export const makeRunStop = (options: {
 			const exit = failed
 				? { exitCode: 1, signal: terminationSignal }
 				: stoppedExit(live, terminationSignal);
-			yield* finishService(address, exit, live?.terminal).pipe(
+			yield* finishService(address, exit, live).pipe(
 				Effect.timeoutOption(FORCE_KILL_SETTLE_TIMEOUT_MS),
 				Effect.catch((cause) => Effect.logError(cause)),
 			);
@@ -370,11 +387,12 @@ export const makeRunStop = (options: {
 		);
 	const terminateRemaining = (live: LiveService) =>
 		Effect.gen(function* () {
+			yield* beginDrain(live);
 			const terminationSignal = yield* live.ownership.terminate;
 			const exit = stoppedExit(live, terminationSignal);
 			if (options.terminals.get(serviceKey(live.address)) === live)
 				options.terminals.delete(serviceKey(live.address));
-			yield* finishService(live.address, exit, live.terminal);
+			yield* finishService(live.address, exit, live);
 			const run = yield* options.registry.get(live.address.runId);
 			const services = run.services.map((service) =>
 				service.name === live.address.serviceName

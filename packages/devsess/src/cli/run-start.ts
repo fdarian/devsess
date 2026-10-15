@@ -1,4 +1,4 @@
-import { Effect, Exit } from 'effect';
+import { Deferred, Effect, Exit } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { Scope } from 'effect/Scope';
@@ -203,6 +203,7 @@ export const makeRunStart = (options: {
 				rows: 24,
 			});
 			const address = { runId: run.runId, serviceName: service.name };
+			const drained = yield* Deferred.make<void>();
 			let observedExit: ServiceExit | undefined;
 			let registeredLive: LiveService | undefined;
 			let exitNotified = false;
@@ -217,6 +218,7 @@ export const makeRunStart = (options: {
 					signal: event.signal,
 				};
 				observedExit = exit;
+				Deferred.doneUnsafe(drained, Effect.void);
 				const live =
 					registeredLive ?? options.terminals.get(serviceKey(address));
 				if (live === undefined) return;
@@ -264,6 +266,7 @@ export const makeRunStart = (options: {
 				address,
 				terminal,
 				ownership,
+				drained,
 				exit: observedExit,
 				lease: undefined,
 			};
