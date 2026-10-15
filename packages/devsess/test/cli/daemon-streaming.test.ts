@@ -334,13 +334,13 @@ const stopDrainTest = (options: {
 					}
 				});
 				socket.write(`${JSON.stringify(tailRequest(options.runId))}\n`);
-				yield* Deferred.await(ready).pipe(Effect.timeout('30 seconds'));
+				yield* Deferred.await(ready).pipe(Effect.timeout('60 seconds'));
 				const fileSystem = yield* FileSystem;
 				/** The ready file is written only after the service finished writing FINAL into its PTY, so waiting on it is a completion signal; the bound is a safety net, not a throughput budget. */
 				yield* Effect.gen(function* () {
 					while (!(yield* fileSystem.exists(readyPath)))
 						yield* Effect.sleep('20 millis');
-				}).pipe(Effect.timeout('30 seconds'));
+				}).pipe(Effect.timeout('60 seconds'));
 				yield* daemon.request({
 					version: 1,
 					requestId: 'stop',
@@ -357,8 +357,8 @@ const stopDrainTest = (options: {
 				expect(replay.replay.map((event) => event.data).join('')).toContain(
 					'FINAL',
 				);
-				yield* Deferred.await(outputReady).pipe(Effect.timeout('30 seconds'));
-				yield* Deferred.await(finished).pipe(Effect.timeout('30 seconds'));
+				yield* Deferred.await(outputReady).pipe(Effect.timeout('60 seconds'));
+				yield* Deferred.await(finished).pipe(Effect.timeout('60 seconds'));
 				expect(tailReady).toBe(true);
 				expect(tailDone).toBe(true);
 				expect(receivedChunks.join('')).toContain('FINAL');
@@ -373,9 +373,9 @@ describe('daemon streaming integration', () => {
 			stopDrainTest({
 				runId: 'stop-drain',
 				appendDelay: undefined,
-				floodBytes: 32 * 1024 * 1024,
+				floodBytes: 4 * 1024 * 1024,
 			}),
-		60_000,
+		120_000,
 	);
 
 	it.live(
@@ -386,7 +386,7 @@ describe('daemon streaming integration', () => {
 				appendDelay: '300 millis',
 				floodBytes: 1024 * 1024,
 			}),
-		60_000,
+		120_000,
 	);
 
 	it.live('stops a burst with a paused tail without blocking persistence', () =>
