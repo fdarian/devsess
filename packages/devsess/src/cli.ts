@@ -2,7 +2,6 @@
 
 import { readFile } from 'node:fs/promises';
 import { posix } from 'node:path';
-import { getAsset, isSea } from 'node:sea';
 import { NodeRuntime, NodeServices, NodeTerminal } from '@effect/platform-node';
 import { Effect, Layer, Option } from 'effect';
 import { Argument, Command, Flag } from 'effect/cli';
@@ -24,6 +23,7 @@ import { status } from './cli/commands/status';
 import { stop } from './cli/commands/stop';
 import { tail } from './cli/commands/tail';
 import { Launchctl } from './cli/launchd';
+import { getSeaAsset, isSea } from './cli/sea';
 
 const optionalPreset = Argument.String('preset').pipe(
 	Argument.withDescription('Preset name or project/preset selector.'),
@@ -194,7 +194,7 @@ const readDoc = (filename: string) =>
 	Effect.tryPromise({
 		try: async () =>
 			isSea()
-				? getAsset(`docs/cli/${filename}`, 'utf8')
+				? getSeaAsset(`docs/cli/${filename}`)
 				: await readFile(
 						new URL(`../docs/cli/${filename}`, import.meta.url),
 						'utf8',

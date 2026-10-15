@@ -1,4 +1,4 @@
-import { isSea } from 'node:sea';
+import { isSea } from './sea';
 
 /** Inside a SEA binary `process.argv[1]` is just the invocation string, not a script to re-run. */
 export const selfInvocationArguments = (): Array<string> =>
