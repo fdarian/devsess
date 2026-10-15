@@ -88,6 +88,9 @@ export const awaitDaemonHandshake = (options: {
 export const daemonLogPath = (logsDirectory: string) =>
 	join(logsDirectory, 'daemon.log');
 
+/** Set in a detached daemon's environment so a daemon child mis-parsed into a normal command can tell it must not launch another daemon. */
+export const DAEMON_LAUNCH_ENV = 'DEVSESS_DAEMON_LAUNCH';
+
 /** The daemon's stdout and stderr are appended to `daemon.log`, so a daemon that hangs or crashes leaves a trace. */
 export const launchDetachedDaemon = (options: {
 	command: string;
@@ -101,6 +104,7 @@ export const launchDetachedDaemon = (options: {
 			try {
 				const child = spawn(options.command, options.args, {
 					detached: true,
+					env: { ...process.env, [DAEMON_LAUNCH_ENV]: '1' },
 					stdio: ['ignore', log, log],
 				});
 				child.unref();

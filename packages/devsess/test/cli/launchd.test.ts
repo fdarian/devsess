@@ -255,6 +255,33 @@ describe('ensureDaemon', () => {
 			),
 	);
 
+	it.live('refuses to launch when running inside a daemon process', () =>
+		runTest(
+			Effect.gen(function* () {
+				const directory = yield* makeTempDir;
+				const fake = makeFakeLaunchctl();
+				const exit = yield* ensureDaemon({
+					dataDirectory: join(directory, 'state'),
+					logsDirectory: join(directory, 'logs'),
+					socketPath: join(directory, 'daemon.sock'),
+				}).pipe(
+					Effect.provide(fake.layer),
+					Effect.provide(
+						ConfigProvider.layer(
+							ConfigProvider.fromEnv({
+								env: { XDG_STATE_HOME: directory, DEVSESS_DAEMON_LAUNCH: '1' },
+							}),
+						),
+					),
+					Effect.exit,
+				);
+				expect(exit._tag).toBe('Failure');
+				expect(fake.calls).toEqual([]);
+				expect(existsSync(join(directory, 'logs', 'daemon.log'))).toBe(false);
+			}),
+		),
+	);
+
 	it.live('never touches launchd when an XDG location is explicit', () =>
 		runTest(
 			Effect.scoped(

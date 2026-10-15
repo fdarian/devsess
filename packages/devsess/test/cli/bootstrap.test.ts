@@ -206,6 +206,29 @@ describe('daemon bootstrap', () => {
 		),
 	);
 
+	it.live('marks the detached daemon environment as a daemon launch', () =>
+		runTest(
+			Effect.gen(function* () {
+				const rootDir = yield* makeTempDir;
+				const logsDirectory = join(rootDir, 'logs');
+				const logPath = join(logsDirectory, 'daemon.log');
+				yield* launchDetachedDaemon({
+					logsDirectory,
+					command: process.execPath,
+					args: [
+						'-e',
+						`console.log('launch=' + process.env.DEVSESS_DAEMON_LAUNCH);`,
+					],
+				});
+				yield* waitUntil(
+					() =>
+						existsSync(logPath) &&
+						readFileSync(logPath, 'utf8').includes('launch=1'),
+				);
+			}),
+		),
+	);
+
 	it.live(
 		'leaves a detached daemon alive after the launcher scope closes',
 		() =>

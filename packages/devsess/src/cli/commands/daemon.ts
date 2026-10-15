@@ -6,6 +6,7 @@ import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { Terminal } from 'effect/Terminal';
 import {
+	DAEMON_LAUNCH_ENV,
 	ensureDaemon as ensureDaemonBootstrap,
 	launchDetachedDaemon,
 } from '../bootstrap';
@@ -151,6 +152,14 @@ export const daemonJob = (location: DaemonLocation): DaemonJob => ({
 /** Starts the daemon only when its socket cannot complete a handshake: under launchd on the default macOS location, detached everywhere else. */
 export const ensureDaemon = (location: DaemonLocation) =>
 	Effect.gen(function* () {
+		const launchedAsDaemon = yield* Config.String(DAEMON_LAUNCH_ENV).pipe(
+			Config.option,
+		);
+		if (Option.isSome(launchedAsDaemon))
+			return yield* new CommandError({
+				message:
+					'Refusing to start a daemon from inside a daemon process: the daemon command line was not parsed as `__daemon`.',
+			});
 		const launchctl = yield* Launchctl;
 		const managed = yield* usesLaunchd;
 		return yield* ensureDaemonBootstrap({
@@ -412,6 +421,8 @@ export const daemonCommand = Command.make(
 	},
 	(input) =>
 		Effect.gen(function* () {
+			// Services the daemon spawns must not inherit the respawn guard.
+			delete process.env[DAEMON_LAUNCH_ENV];
 			const lifecycle = yield* DaemonLifecycle;
 			yield* lifecycle.daemon.awaitShutdown;
 		}).pipe(
