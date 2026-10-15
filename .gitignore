@@ -146,3 +146,6 @@ vite.config.ts.timestamp-*
 # Blume generated runtime
 .blume/
 apps/docs/src/pages/reference/cli/
+
+# devsess SEA binary output
+packages/devsess/build/

@@ -8,6 +8,7 @@
 	"packageManager": "pnpm@12.8.1",
 	"scripts": {
 		"build": "pnpm --filter devsess build",
+		"build:exe": "pnpm --filter devsess build:exe",
 		"docs": "pnpm --filter docs dev",
 		"check": "turbo run check",
 		"test": "turbo run test",

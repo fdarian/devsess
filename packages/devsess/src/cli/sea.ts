@@ -8,3 +8,9 @@ export const getSeaAsset = (key: string) => {
 		throw new Error(`Cannot read SEA asset ${key}: node:sea is unavailable`);
 	return sea.getAsset(key, 'utf8');
 };
+
+export const getSeaAssetBytes = (key: string) => {
+	if (sea === undefined)
+		throw new Error(`Cannot read SEA asset ${key}: node:sea is unavailable`);
+	return new Uint8Array(sea.getRawAsset(key));
+};
