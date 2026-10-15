@@ -23,6 +23,7 @@ import { captureInvocation } from '../project-matching';
 import { RunResponseSchema } from '../protocol';
 import { isRunActive, type RunRecord } from '../registry';
 import { shortRunId } from '../run-id';
+import { selfInvocationArguments } from '../self-invocation';
 
 export class CommandError extends Schema.TaggedError<CommandError>()(
 	'devsess/cli/CommandError',
@@ -131,7 +132,7 @@ export const decodeRunListResponse = (value: unknown) =>
 	);
 
 const daemonProgramArguments = (location: DaemonLocation) => [
-	process.argv[1] ?? 'devsess',
+	...selfInvocationArguments(),
 	'__daemon',
 	'--data-directory',
 	location.dataDirectory,

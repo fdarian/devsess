@@ -22,6 +22,7 @@ import { Processes } from '../processes';
 import type { DaemonInfo, DaemonRequest } from '../protocol';
 import { DaemonInfo as DaemonInfoSchema, PROTOCOL_VERSION } from '../protocol';
 import type { RunRecord } from '../registry';
+import { selfScriptPath } from '../self-invocation';
 import {
 	DEFAULT_DAEMON_REQUEST_TIMEOUT_MS,
 	PROCESS_INSPECTION_TIMEOUT_MS,
@@ -217,7 +218,7 @@ const uptime = (startedAt: string) => {
 };
 
 const currentScriptPath = () => {
-	const scriptPath = process.argv[1];
+	const scriptPath = selfScriptPath();
 	return scriptPath === undefined
 		? Effect.fail(
 				new CommandError({
