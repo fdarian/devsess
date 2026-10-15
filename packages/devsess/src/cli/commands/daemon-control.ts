@@ -4,11 +4,20 @@ import { Command, Flag } from 'effect/cli';
 import { FileSystem } from 'effect/FileSystem';
 import devsessPackageJson from '../../../package.json' with { type: 'json' };
 import {
+	type DaemonBootstrapError,
 	liveDaemonPid,
 	removeStalePidfile,
 	removeStaleSocket,
 } from '../bootstrap';
 import { callDaemon, DaemonClientError } from '../client';
+import {
+	bootoutDaemonJob,
+	DAEMON_LAUNCHD_LABEL,
+	inspectDaemonJob,
+	installDaemonJob,
+	removeDaemonJobPlist,
+	usesLaunchd,
+} from '../launchd';
 import { Processes } from '../processes';
 import type { DaemonInfo, DaemonRequest } from '../protocol';
 import { DaemonInfo as DaemonInfoSchema, PROTOCOL_VERSION } from '../protocol';
@@ -20,6 +29,7 @@ import {
 } from '../termination';
 import {
 	CommandError,
+	daemonJob,
 	decodeRunListResponse,
 	ensureDaemon as ensureDaemonCommand,
 	isRunActive,
@@ -311,6 +321,7 @@ export const stopOutdatedDaemon = (
 			return yield* refusal(runs);
 		}
 		const ownerPid = yield* readSocketOwnerPid(socketPath);
+		yield* releaseLaunchdJob;
 		const processes = yield* Processes;
 		const identity = yield* processes.capture(ownerPid).pipe(
 			Effect.mapError(
@@ -348,6 +359,21 @@ export const stopOutdatedDaemon = (
 			`Stopped outdated daemon PID ${ownerPid} with ${termination === TERMINATION_KILL_SIGNAL ? 'SIGKILL' : 'SIGTERM'}.`,
 		);
 	});
+
+const fromBootstrapError = (cause: DaemonBootstrapError) =>
+	new CommandError({ message: cause.message, cause });
+
+/** KeepAlive would relaunch a daemon killed by a signal, so the job has to be unloaded before any signal is sent. */
+const releaseLaunchdJob = Effect.gen(function* () {
+	if (!(yield* usesLaunchd)) return;
+	const unloaded = yield* bootoutDaemonJob.pipe(
+		Effect.mapError(fromBootstrapError),
+	);
+	if (unloaded)
+		yield* write(
+			`Unloaded launchd job ${DAEMON_LAUNCHD_LABEL} so it does not restart the daemon.`,
+		);
+});
 
 const failureMessage = (cause: unknown) =>
 	cause instanceof Error ? cause.message : String(cause);
@@ -443,9 +469,7 @@ const waitForProcessExit = (
 const clearDaemonEndpoint = (socketPath: string) =>
 	removeStaleSocket(socketPath).pipe(
 		Effect.andThen(removeStalePidfile(socketPath)),
-		Effect.mapError(
-			(cause) => new CommandError({ message: cause.message, cause }),
-		),
+		Effect.mapError(fromBootstrapError),
 	);
 
 /** Handles a daemon whose socket exists but does not answer: a stale socket is cleared, a live PID needs --force. */
@@ -467,6 +491,7 @@ export const stopUnresponsiveDaemon = (
 			return yield* new CommandError({
 				message: `Daemon PID ${pid} is not responding at ${socketPath}. Re-run with --force to terminate it.`,
 			});
+		yield* releaseLaunchdJob;
 		yield* signalProcess(pid, 'SIGTERM');
 		const terminated = yield* waitForProcessExit(
 			pid,
@@ -504,25 +529,52 @@ const terminateAfterFailedShutdown = (socketPath: string, reason: string) =>
 		yield* stopUnresponsiveDaemon(socketPath, pid, true);
 	});
 
+const launchdStatusLines = (location: Parameters<typeof daemonJob>[0]) =>
+	Effect.gen(function* () {
+		if (!(yield* usesLaunchd)) return [];
+		const state = yield* inspectDaemonJob(daemonJob(location)).pipe(
+			Effect.mapError(fromBootstrapError),
+		);
+		const reload =
+			state.plist === 'current'
+				? ''
+				: ' (`devsess daemon restart` brings it up to date)';
+		return [
+			`Launchd: ${DAEMON_LAUNCHD_LABEL} ${state.loaded ? 'loaded' : 'not loaded'}, plist ${state.plist}${reload}`,
+		];
+	});
+
 export const status = () =>
 	Effect.gen(function* () {
 		const location = yield* resolveDaemonLocation;
 		const probe = yield* probeDaemon(location.socketPath);
+		const launchdLines = yield* launchdStatusLines(location);
+		const failure = (message: string) =>
+			statusFailure([message, ...launchdLines].join('\n'));
 		if (probe._tag === 'not-running')
-			return yield* statusFailure('Daemon: not running');
+			return yield* failure('Daemon: not running');
 		if (probe._tag === 'unresponsive')
-			return yield* statusFailure(
+			return yield* failure(
 				probe.pid === undefined
 					? `Daemon: not responding (socket exists at ${location.socketPath}, but no daemon process is running; \`devsess daemon start\` clears it)`
 					: `Daemon: unresponsive\nPID: ${probe.pid}\nSocket: ${location.socketPath}\nRun \`devsess daemon stop --force\` to terminate it.`,
 			);
 		if (probe._tag === 'outdated') {
-			yield* write('Daemon: running, outdated — run `devsess daemon restart`.');
+			yield* Effect.forEach(
+				[
+					'Daemon: running, outdated — run `devsess daemon restart`.',
+					...launchdLines,
+				],
+				write,
+				{ discard: true },
+			);
 			return;
 		}
-		yield* Effect.forEach(yield* infoLines(probe.info), write, {
-			discard: true,
-		});
+		yield* Effect.forEach(
+			[...(yield* infoLines(probe.info)), ...launchdLines],
+			write,
+			{ discard: true },
+		);
 	});
 
 export const start = () =>
@@ -584,6 +636,44 @@ export const stop = (force: boolean, stopTimeoutMs = DAEMON_STOP_TIMEOUT_MS) =>
 export const restart = (force: boolean, stopTimeoutMs?: number) =>
 	stop(force, stopTimeoutMs).pipe(Effect.andThen(start()));
 
+const requireLaunchd = Effect.gen(function* () {
+	if (!(yield* usesLaunchd))
+		return yield* new CommandError({
+			message:
+				'launchd manages the daemon only on macOS with the default state and runtime locations; XDG_STATE_HOME or XDG_RUNTIME_DIR opts out.',
+		});
+});
+
+export const install = (force: boolean, stopTimeoutMs?: number) =>
+	Effect.gen(function* () {
+		yield* requireLaunchd;
+		const location = yield* resolveDaemonLocation;
+		const job = daemonJob(location);
+		const state = yield* inspectDaemonJob(job).pipe(
+			Effect.mapError(fromBootstrapError),
+		);
+		// Reloading a changed job stops the daemon it supervises, so stop it the safe way first.
+		if (state.loaded && state.plist !== 'current')
+			yield* stop(force, stopTimeoutMs);
+		yield* installDaemonJob(job).pipe(Effect.mapError(fromBootstrapError));
+		yield* write(`Launchd job ${DAEMON_LAUNCHD_LABEL} is installed.`);
+		yield* start();
+	});
+
+export const uninstall = (force: boolean, stopTimeoutMs?: number) =>
+	Effect.gen(function* () {
+		yield* requireLaunchd;
+		const location = yield* resolveDaemonLocation;
+		yield* stop(force, stopTimeoutMs);
+		yield* bootoutDaemonJob.pipe(Effect.mapError(fromBootstrapError));
+		yield* removeDaemonJobPlist(daemonJob(location)).pipe(
+			Effect.mapError(fromBootstrapError),
+		);
+		yield* write(
+			`Launchd job ${DAEMON_LAUNCHD_LABEL} is uninstalled; the next devsess command that needs the daemon installs it again.`,
+		);
+	});
+
 const daemonStartCommand = Command.make('start', {}, () => start()).pipe(
 	Command.withDescription('Start the per-user daemon if it is not running.'),
 );
@@ -611,6 +701,37 @@ const daemonRestartCommand = Command.make(
 	(input) => restart(input.force),
 ).pipe(Command.withDescription('Stop and start the per-user daemon.'));
 
+const daemonInstallCommand = Command.make(
+	'install',
+	{
+		force: Flag.Boolean('force').pipe(
+			Flag.withDefault(false),
+			Flag.withDescription(
+				'Stop live runs when a changed job must be reloaded.',
+			),
+		),
+	},
+	(input) => install(input.force),
+).pipe(
+	Command.withDescription(
+		'Install the launchd job that supervises the daemon (macOS).',
+	),
+);
+const daemonUninstallCommand = Command.make(
+	'uninstall',
+	{
+		force: Flag.Boolean('force').pipe(
+			Flag.withDefault(false),
+			Flag.withDescription('Stop live runs before uninstalling.'),
+		),
+	},
+	(input) => uninstall(input.force),
+).pipe(
+	Command.withDescription(
+		'Stop the daemon and remove its launchd job (macOS).',
+	),
+);
+
 export const daemonControlCommand = Command.make('daemon', {}).pipe(
 	Command.withDescription('Manage the shared per-user daemon.'),
 	Command.withSubcommands([
@@ -618,5 +739,7 @@ export const daemonControlCommand = Command.make('daemon', {}).pipe(
 		daemonStopCommand,
 		daemonStatusCommand,
 		daemonRestartCommand,
+		daemonInstallCommand,
+		daemonUninstallCommand,
 	]),
 );

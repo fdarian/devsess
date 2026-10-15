@@ -10,7 +10,11 @@ import devsessPackageJson from '../package.json' with { type: 'json' };
 import { reportCliCause } from './cli/cli-errors';
 import { attach } from './cli/commands/attach';
 import { completionsCommand } from './cli/commands/completions';
-import { CommandError, daemonCommand } from './cli/commands/daemon';
+import {
+	CommandError,
+	daemonCommand,
+	daemonTeardown,
+} from './cli/commands/daemon';
 import { daemonControlCommand } from './cli/commands/daemon-control';
 import { list } from './cli/commands/list';
 import { restart } from './cli/commands/restart';
@@ -18,6 +22,7 @@ import { start } from './cli/commands/start';
 import { status } from './cli/commands/status';
 import { stop } from './cli/commands/stop';
 import { tail } from './cli/commands/tail';
+import { Launchctl } from './cli/launchd';
 
 const optionalPreset = Argument.String('preset').pipe(
 	Argument.withDescription('Preset name or project/preset selector.'),
@@ -273,6 +278,7 @@ const app = Command.make('devsess', {}).pipe(
 
 const services = Layer.mergeAll(
 	NodeServices.layer,
+	Launchctl.layer,
 	Layer.effect(Terminal, NodeTerminal.make()),
 );
 
@@ -284,5 +290,8 @@ NodeRuntime.runMain(
 		Effect.provide(services),
 		Effect.tapCause(reportCliCause),
 	),
-	{ disableErrorReporting: true },
+	{
+		disableErrorReporting: true,
+		teardown: process.argv[2] === '__daemon' ? daemonTeardown : undefined,
+	},
 );

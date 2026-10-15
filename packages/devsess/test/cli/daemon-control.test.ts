@@ -2,21 +2,31 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createConnection, createServer } from 'node:net';
 import { join } from 'node:path';
+import type { NodeServices } from '@effect/platform-node';
 import { describe, expect, it } from '@effect/vitest';
 import { Cause, ConfigProvider, Effect, Exit } from 'effect';
 import { vi } from 'vitest';
 import {
+	install,
 	restart,
 	status,
 	stop,
 	stopOutdatedDaemon,
 	stopUnresponsiveDaemon,
+	uninstall,
 } from '../../src/cli/commands/daemon-control';
+import { DAEMON_LAUNCHD_LABEL, type Launchctl } from '../../src/cli/launchd';
 import { Processes } from '../../src/cli/processes';
 import type { RunRecord } from '../../src/cli/registry';
+import { makeFakeLaunchctl } from '../support/fake-launchctl';
 import { processBirthOf } from '../support/process-birth';
-import { runTest } from '../support/run-test';
+import { runTest as runWithPlatform } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
+
+/** Every control path takes Launchctl; a fresh fake per test keeps any launchd call away from the real gui domain. */
+const runTest = <A, E, R>(
+	effect: Effect.Effect<A, E, R | Launchctl | NodeServices.NodeServices>,
+) => runWithPlatform(effect.pipe(Effect.provide(makeFakeLaunchctl().layer)));
 
 const staleRun: RunRecord = {
 	runId: 'stale-run',
@@ -268,6 +278,92 @@ describe('daemon control', () => {
 				),
 			),
 		);
+
+		it.live.skipIf(process.platform !== 'darwin')(
+			'unloads the launchd job before signalling so KeepAlive cannot resurrect the daemon',
+			() =>
+				runTest(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const fixture = yield* setup({ fakeDaemon: true });
+							const child = fixture.child as ChildProcess;
+							const aliveAtBootout: Array<boolean> = [];
+							const fake = makeFakeLaunchctl({
+								loaded: true,
+								onBootout: () =>
+									aliveAtBootout.push(
+										child.exitCode === null && child.signalCode === null,
+									),
+							});
+							const stdout = captureStdout();
+							yield* stopUnresponsiveDaemon(
+								fixture.socketPath,
+								child.pid,
+								true,
+							).pipe(
+								Effect.provide(fake.layer),
+								Effect.provide(
+									ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })),
+								),
+								Effect.ensuring(Effect.sync(stdout.restore)),
+							);
+							yield* waitForExit(child);
+							expect(aliveAtBootout).toEqual([true]);
+							expect(fake.calls).toContain(`bootout ${DAEMON_LAUNCHD_LABEL}`);
+							expect(child.signalCode).toBe('SIGTERM');
+							expect(stdout.output()).toContain('Unloaded launchd job');
+						}),
+					),
+				),
+		);
+
+		it.live('leaves launchd alone when an XDG location is explicit', () =>
+			runTest(
+				Effect.scoped(
+					Effect.gen(function* () {
+						const fixture = yield* setup({ fakeDaemon: true });
+						const fake = makeFakeLaunchctl({ loaded: true });
+						const stdout = captureStdout();
+						yield* stop(true).pipe(
+							Effect.provide(fake.layer),
+							Effect.provide(ConfigProvider.layer(fixture.config)),
+							Effect.ensuring(Effect.sync(stdout.restore)),
+						);
+						expect(fake.calls).toEqual([]);
+					}),
+				),
+			),
+		);
+
+		for (const command of [
+			{ name: 'install', run: () => install(false) },
+			{ name: 'uninstall', run: () => uninstall(false) },
+		])
+			it.live(`${command.name} refuses when launchd does not apply`, () =>
+				runTest(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const fixture = yield* setup({ fakeDaemon: true });
+							const child = fixture.child as ChildProcess;
+							const fake = makeFakeLaunchctl();
+							const exit = yield* Effect.exit(
+								command
+									.run()
+									.pipe(
+										Effect.provide(fake.layer),
+										Effect.provide(ConfigProvider.layer(fixture.config)),
+									),
+							);
+							expect(Exit.isFailure(exit)).toBe(true);
+							expect(
+								Exit.isFailure(exit) ? Cause.pretty(exit.cause) : '',
+							).toContain('launchd manages the daemon only on macOS');
+							expect(fake.calls).toEqual([]);
+							expect(child.exitCode).toBeNull();
+						}),
+					),
+				),
+			);
 
 		for (const command of [
 			{ name: 'stop', run: () => stop(false) },

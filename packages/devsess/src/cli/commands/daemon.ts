@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
-import { Config, Effect, Option, Runtime, Schema } from 'effect';
+import { Cause, Config, Effect, Exit, Option, Runtime, Schema } from 'effect';
 import { Command, Flag, Prompt } from 'effect/cli';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
@@ -10,6 +10,13 @@ import {
 	launchDetachedDaemon,
 } from '../bootstrap';
 import { callDaemon } from '../client';
+import {
+	type DaemonJob,
+	Launchctl,
+	launchDaemonJob,
+	launchdPlistPath,
+	usesLaunchd,
+} from '../launchd';
 import { DaemonLifecycle } from '../lifecycle';
 import { cancelPicker } from '../picker-cancellation';
 import { captureInvocation } from '../project-matching';
@@ -123,26 +130,51 @@ export const decodeRunListResponse = (value: unknown) =>
 		),
 	);
 
-/** Starts the detached daemon only when its socket cannot complete a handshake. */
+const daemonProgramArguments = (location: DaemonLocation) => [
+	process.argv[1] ?? 'devsess',
+	'__daemon',
+	'--data-directory',
+	location.dataDirectory,
+	'--logs-directory',
+	location.logsDirectory,
+	'--socket-path',
+	location.socketPath,
+];
+
+export const daemonJob = (location: DaemonLocation): DaemonJob => ({
+	plistPath: launchdPlistPath(),
+	programArguments: [process.execPath, ...daemonProgramArguments(location)],
+	logsDirectory: location.logsDirectory,
+});
+
+/** Starts the daemon only when its socket cannot complete a handshake: under launchd on the default macOS location, detached everywhere else. */
 export const ensureDaemon = (location: DaemonLocation) =>
-	ensureDaemonBootstrap({
-		location,
-		launch: () =>
-			launchDetachedDaemon({
-				logsDirectory: location.logsDirectory,
-				command: process.execPath,
-				args: [
-					process.argv[1] ?? 'devsess',
-					'__daemon',
-					'--data-directory',
-					location.dataDirectory,
-					'--logs-directory',
-					location.logsDirectory,
-					'--socket-path',
-					location.socketPath,
-				],
-			}),
+	Effect.gen(function* () {
+		const launchctl = yield* Launchctl;
+		const managed = yield* usesLaunchd;
+		return yield* ensureDaemonBootstrap({
+			location,
+			launch: () =>
+				managed
+					? launchDaemonJob(daemonJob(location)).pipe(
+							Effect.provideService(Launchctl, launchctl),
+						)
+					: launchDetachedDaemon({
+							logsDirectory: location.logsDirectory,
+							command: process.execPath,
+							args: daemonProgramArguments(location),
+						}),
+		});
 	});
+
+/** A daemon stopped by SIGINT/SIGTERM has shut down on purpose, so it exits 0 and launchd's `SuccessfulExit = false` leaves it down. */
+export const daemonTeardown: Runtime.Teardown = (exit, onExit) => {
+	if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) {
+		onExit(0);
+		return;
+	}
+	Runtime.defaultTeardown(exit, onExit);
+};
 
 export const resolveCurrentRuns = () =>
 	Effect.gen(function* () {

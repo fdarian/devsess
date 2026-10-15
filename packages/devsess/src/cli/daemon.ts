@@ -1,5 +1,10 @@
 import { unlinkSync } from 'node:fs';
-import { createServer, type Server, type Socket } from 'node:net';
+import {
+	createConnection,
+	createServer,
+	type Server,
+	type Socket,
+} from 'node:net';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import {
@@ -80,16 +85,55 @@ export class Daemon extends Context.Service<Daemon, DaemonService>()(
 		);
 }
 
+const isAddressInUse = (cause: unknown) =>
+	cause instanceof Error && 'code' in cause && cause.code === 'EADDRINUSE';
+
+const listenOnce = (server: Server, socketPath: string) =>
+	new Promise<void>((resolve, reject) => {
+		server.once('error', reject);
+		server.listen(socketPath, () => {
+			server.off('error', reject);
+			resolve();
+		});
+	});
+
+/** A socket that cannot be reached within the timeout is assumed live, so a daemon that is merely busy is never displaced. */
+const socketIsLive = (socketPath: string) =>
+	new Promise<boolean>((resolve, reject) => {
+		const probe = createConnection(socketPath);
+		probe.setTimeout(1_000, () => {
+			probe.destroy();
+			resolve(true);
+		});
+		probe.once('connect', () => {
+			probe.destroy();
+			resolve(true);
+		});
+		probe.once('error', (cause) => {
+			if (
+				'code' in cause &&
+				(cause.code === 'ECONNREFUSED' || cause.code === 'ENOENT')
+			) {
+				resolve(false);
+				return;
+			}
+			reject(cause);
+		});
+	});
+
+/** Takes over the socket a crashed daemon left behind, so launchd relaunching it after a crash does not fail on EADDRINUSE. */
 const listen = (server: Server, socketPath: string) =>
 	Effect.tryPromise({
-		try: () =>
-			new Promise<void>((resolve, reject) => {
-				server.once('error', reject);
-				server.listen(socketPath, () => {
-					server.off('error', reject);
-					resolve();
-				});
-			}),
+		try: async () => {
+			try {
+				await listenOnce(server, socketPath);
+			} catch (cause) {
+				if (!isAddressInUse(cause) || (await socketIsLive(socketPath)))
+					throw cause;
+				unlinkSync(socketPath);
+				await listenOnce(server, socketPath);
+			}
+		},
 		catch: (cause) =>
 			new DaemonError({ message: `Could not listen at ${socketPath}`, cause }),
 	});
