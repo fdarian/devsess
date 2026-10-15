@@ -2,6 +2,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { posix } from 'node:path';
+import { getAsset, isSea } from 'node:sea';
 import { NodeRuntime, NodeServices, NodeTerminal } from '@effect/platform-node';
 import { Effect, Layer, Option } from 'effect';
 import { Argument, Command, Flag } from 'effect/cli';
@@ -189,16 +190,23 @@ const docTopics = [
 	'daemon',
 	'troubleshooting',
 ] as const;
-const printDoc = (filename: string) =>
+const readDoc = (filename: string) =>
 	Effect.tryPromise({
-		try: () =>
-			readFile(new URL(`../docs/cli/${filename}`, import.meta.url), 'utf8'),
+		try: async () =>
+			isSea()
+				? getAsset(`docs/cli/${filename}`, 'utf8')
+				: await readFile(
+						new URL(`../docs/cli/${filename}`, import.meta.url),
+						'utf8',
+					),
 		catch: (cause) =>
 			new CommandError({
 				message: `Could not read the bundled CLI topic ${filename}`,
 				cause,
 			}),
-	}).pipe(
+	});
+const printDoc = (filename: string) =>
+	readDoc(filename).pipe(
 		Effect.flatMap((content) =>
 			Effect.sync(() =>
 				process.stdout.write(
