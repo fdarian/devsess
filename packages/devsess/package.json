@@ -57,7 +57,7 @@
 	"scripts": {
 		"build": "tsup && tsc -p tsconfig.build.json",
 		"dev": "tsup --watch",
-		"check:type": "tsc --noEmit",
+		"check:type": "tsrs --noEmit",
 		"check:lint": "biome check",
 		"test": "vitest run",
 		"prepack": "pnpm run build"
@@ -89,6 +89,7 @@
 		"@types/proper-lockfile": "^4.1.4",
 		"drizzle-orm": "1.0.0-rc.5-5935859",
 		"effect": "^4.0.0",
+		"tsrs": "^0.18.0-ts7.1.0-dev.20260929",
 		"tsup": "^8.5.1",
 		"typescript": "^7.0.2",
 		"vitest": "^5.0.3"
