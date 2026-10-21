@@ -11,6 +11,7 @@ import {
 	launchDetachedDaemon,
 } from '../bootstrap';
 import { callDaemon } from '../client';
+import { DaemonAlreadyRunning } from '../daemon-errors';
 import {
 	type DaemonJob,
 	Launchctl,
@@ -432,6 +433,12 @@ export const daemonCommand = Command.make(
 					logsDirectory: input.logsDirectory,
 					socketPath: input.socketPath,
 				}),
+			),
+			// Exiting non-zero here would have launchd's KeepAlive relaunch this process forever.
+			Effect.catchIf(
+				(cause): cause is DaemonAlreadyRunning =>
+					cause instanceof DaemonAlreadyRunning,
+				(cause) => Effect.logInfo(`${cause.message}; exiting`),
 			),
 		),
 ).pipe(

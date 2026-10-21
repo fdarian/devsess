@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from '@effect/vitest';
 import { Cause, Effect, Exit, Layer } from 'effect';
 import { daemonTeardown } from '../../src/cli/commands/daemon';
-import { Daemon, makeDaemon } from '../../src/cli/daemon';
+import { Daemon, DaemonAlreadyRunning, makeDaemon } from '../../src/cli/daemon';
 import { Logs } from '../../src/cli/logs';
 import { Processes } from '../../src/cli/processes';
 import { Registry } from '../../src/cli/registry';
@@ -127,6 +127,24 @@ describe('daemon exit code', () => {
 		),
 	);
 
+	it.live('exits 0 when another daemon already serves the socket', () =>
+		runTest(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const directory = yield* makeTempDir;
+					const first = yield* spawnDaemon(directory);
+					const second = yield* spawnDaemon(directory);
+					expect(yield* awaitExit(second.child)).toEqual({
+						code: 0,
+						signal: null,
+					});
+					expect(first.child.exitCode).toBeNull();
+					expect(first.child.signalCode).toBeNull();
+				}),
+			),
+		),
+	);
+
 	it.live('exits 0 after SIGTERM', () =>
 		runTest(
 			Effect.scoped(
@@ -221,8 +239,8 @@ describe('daemon socket takeover', () => {
 					);
 					expect(Exit.isFailure(exit)).toBe(true);
 					expect(
-						Exit.isFailure(exit) ? Cause.pretty(exit.cause) : '',
-					).toContain('Could not listen');
+						Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined,
+					).toBeInstanceOf(DaemonAlreadyRunning);
 					expect(live.listening).toBe(true);
 				}),
 			),

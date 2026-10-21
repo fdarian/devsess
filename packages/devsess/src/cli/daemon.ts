@@ -22,7 +22,11 @@ import type { Path } from 'effect/Path';
 import type { Scope } from 'effect/Scope';
 import devsessPackageJson from '../../package.json' with { type: 'json' };
 import { removeOwnPidfile, writeDaemonPidfile } from './bootstrap';
-import { DaemonError, errorMessage } from './daemon-errors';
+import {
+	DaemonAlreadyRunning,
+	DaemonError,
+	errorMessage,
+} from './daemon-errors';
 import { Logs } from './logs';
 import { makeOutputWorker } from './output-worker';
 import { Processes, type ProcessesService } from './processes';
@@ -50,7 +54,7 @@ import { type LiveService, makeServiceState } from './service-state';
 import { makeSocketWriter } from './socket-writer';
 import { makeSubscriptions, type SocketState } from './subscriptions';
 
-export { DaemonError } from './daemon-errors';
+export { DaemonAlreadyRunning, DaemonError } from './daemon-errors';
 
 export type DaemonService = {
 	readonly request: (
@@ -125,19 +129,30 @@ const socketIsLive = (socketPath: string) =>
 /** Takes over the socket a crashed daemon left behind, so launchd relaunching it after a crash does not fail on EADDRINUSE. */
 const listen = (server: Server, socketPath: string) =>
 	Effect.tryPromise({
-		try: async () => {
+		try: async (): Promise<'bound' | 'served-by-another-daemon'> => {
 			try {
 				await listenOnce(server, socketPath);
+				return 'bound';
 			} catch (cause) {
-				if (!isAddressInUse(cause) || (await socketIsLive(socketPath)))
-					throw cause;
+				if (!isAddressInUse(cause)) throw cause;
+				if (await socketIsLive(socketPath)) return 'served-by-another-daemon';
 				unlinkSync(socketPath);
 				await listenOnce(server, socketPath);
+				return 'bound';
 			}
 		},
 		catch: (cause) =>
 			new DaemonError({ message: `Could not listen at ${socketPath}`, cause }),
-	});
+	}).pipe(
+		Effect.flatMap((outcome) =>
+			outcome === 'bound'
+				? Effect.void
+				: new DaemonAlreadyRunning({
+						message: `Another daemon is already serving ${socketPath}`,
+						socketPath,
+					}),
+		),
+	);
 
 /** Bound on stopping runs during shutdown; whatever survives it gets SIGKILL so the daemon always exits. */
 export const SHUTDOWN_RUN_STOP_TIMEOUT_MS = 10_000;
