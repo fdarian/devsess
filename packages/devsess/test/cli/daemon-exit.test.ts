@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { createConnection, createServer } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -242,6 +243,7 @@ describe('daemon socket takeover', () => {
 						Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined,
 					).toBeInstanceOf(DaemonAlreadyRunning);
 					expect(live.listening).toBe(true);
+					expect(existsSync(socketPath)).toBe(true);
 				}),
 			),
 		),

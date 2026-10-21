@@ -496,6 +496,8 @@ export const makeDaemon = (options: {
 				Effect.catch((cause) => Effect.logError(cause)),
 			),
 		);
+		yield* listen(server, options.socketPath);
+		// Registered only once this instance owns the socket: a daemon that lost the race must not unlink the winner's.
 		yield* Effect.addFinalizer(() =>
 			Effect.gen(function* () {
 				lifecycle.closing = true;
@@ -548,7 +550,6 @@ export const makeDaemon = (options: {
 				}
 			}),
 		);
-		yield* listen(server, options.socketPath);
 		yield* writeDaemonPidfile(options.socketPath);
 		return Daemon.of({
 			request: (incoming: DaemonRequest) =>
