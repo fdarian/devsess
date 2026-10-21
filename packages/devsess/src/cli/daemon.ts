@@ -126,6 +126,22 @@ const socketIsLive = (socketPath: string) =>
 		});
 	});
 
+const alreadyRunning = (socketPath: string) =>
+	new DaemonAlreadyRunning({
+		message: `Another daemon is already serving ${socketPath}`,
+		socketPath,
+	});
+
+/** Run before any startup work: a daemon that is going to lose the socket must not reconcile or prune the registry of the one that holds it. `listen` still checks, for a daemon that binds between this probe and its own bind. */
+const failIfSocketServed = (socketPath: string) =>
+	Effect.tryPromise({
+		try: () => socketIsLive(socketPath),
+		catch: (cause) =>
+			new DaemonError({ message: `Could not probe ${socketPath}`, cause }),
+	}).pipe(
+		Effect.flatMap((live) => (live ? alreadyRunning(socketPath) : Effect.void)),
+	);
+
 /** Takes over the socket a crashed daemon left behind, so launchd relaunching it after a crash does not fail on EADDRINUSE. */
 const listen = (server: Server, socketPath: string) =>
 	Effect.tryPromise({
@@ -145,12 +161,7 @@ const listen = (server: Server, socketPath: string) =>
 			new DaemonError({ message: `Could not listen at ${socketPath}`, cause }),
 	}).pipe(
 		Effect.flatMap((outcome) =>
-			outcome === 'bound'
-				? Effect.void
-				: new DaemonAlreadyRunning({
-						message: `Another daemon is already serving ${socketPath}`,
-						socketPath,
-					}),
+			outcome === 'bound' ? Effect.void : alreadyRunning(socketPath),
 		),
 	);
 
@@ -215,6 +226,7 @@ export const makeDaemon = (options: {
 	Registry | Logs | Processes | FileSystem | Path | Scope
 > =>
 	Effect.gen(function* () {
+		yield* failIfSocketServed(options.socketPath);
 		const scriptPath = selfScriptPath();
 		if (scriptPath === undefined)
 			return yield* new DaemonError({

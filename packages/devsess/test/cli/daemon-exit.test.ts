@@ -248,4 +248,77 @@ describe('daemon socket takeover', () => {
 			),
 		),
 	);
+
+	it.live(
+		'does not touch the registry when another daemon holds the socket',
+		() =>
+			runTest(
+				Effect.scoped(
+					Effect.gen(function* () {
+						const directory = yield* makeTempDir;
+						const socketPath = join(directory, 'daemon.sock');
+						const live = createServer();
+						yield* Effect.promise(
+							() =>
+								new Promise<void>((resolve) =>
+									live.listen(socketPath, resolve),
+								),
+						);
+						yield* Effect.addFinalizer(() => Effect.sync(() => live.close()));
+						const registryCalls: Array<string> = [];
+						const countingRegistry = Layer.effect(
+							Registry,
+							Effect.gen(function* () {
+								const registry = yield* Registry;
+								return Registry.of({
+									...registry,
+									list: Effect.suspend(() => {
+										registryCalls.push('list');
+										return registry.list;
+									}),
+									prune: Effect.suspend(() => {
+										registryCalls.push('prune');
+										return registry.prune;
+									}),
+								});
+							}),
+						).pipe(
+							Layer.provide(
+								Registry.layer({
+									dataDirectory: directory,
+									logsDirectory: join(directory, 'logs'),
+								}),
+							),
+						);
+						const exit = yield* Effect.exit(
+							Effect.gen(function* () {
+								yield* Daemon;
+							}).pipe(
+								Effect.provide(
+									Layer.effect(
+										Daemon,
+										makeDaemon({ dataDirectory: directory, socketPath }),
+									).pipe(
+										Layer.provide(
+											Layer.mergeAll(
+												countingRegistry,
+												Logs.layer({
+													dataDirectory: directory,
+													maxBytes: 4096,
+												}),
+												Processes.layer,
+											),
+										),
+									),
+								),
+							),
+						);
+						expect(
+							Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined,
+						).toBeInstanceOf(DaemonAlreadyRunning);
+						expect(registryCalls).toEqual([]);
+					}),
+				),
+			),
+	);
 });
