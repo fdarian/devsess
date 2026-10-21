@@ -1,5 +1,11 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	writeFileSync,
+} from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
@@ -490,6 +496,41 @@ describe('daemon bootstrap', () => {
 				),
 		);
 	});
+
+	it.live.skipIf(process.getuid?.() === 0)(
+		'reports the errno of a socket it cannot connect to without relaunching',
+		() =>
+			runTest(
+				Effect.scoped(
+					Effect.gen(function* () {
+						const rootDir = yield* makeTempDir;
+						const socketPath = join(rootDir, 'daemon.sock');
+						const server = createServer();
+						yield* listen(server, socketPath);
+						yield* Effect.addFinalizer(() => Effect.sync(() => server.close()));
+						chmodSync(socketPath, 0o000);
+						let launches = 0;
+						const exit = yield* Effect.exit(
+							ensureDaemon({
+								location: { dataDirectory: join(rootDir, 'state'), socketPath },
+								launch: () =>
+									Effect.sync(() => {
+										launches += 1;
+									}),
+							}),
+						);
+						const error = Exit.isFailure(exit)
+							? Cause.squash(exit.cause)
+							: undefined;
+						expect(error).toBeInstanceOf(DaemonBootstrapError);
+						expect((error as DaemonBootstrapError).message).toBe(
+							`Could not connect to daemon at ${socketPath}: EACCES`,
+						);
+						expect(launches).toBe(0);
+					}),
+				),
+			),
+	);
 
 	describe('an endpoint that accepts and never replies', () => {
 		it.live(

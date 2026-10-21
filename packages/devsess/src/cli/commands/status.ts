@@ -180,7 +180,10 @@ export const status = (options: { project?: string; all: boolean }) =>
 							'Daemon is not running. See `devsess list` for available presets.',
 						).pipe(Effect.as(undefined))
 					: new CommandError({
-							message: `Daemon is not responding at ${location.socketPath}`,
+							message:
+								error.kind === 'connect-failed'
+									? error.message
+									: `Daemon is not responding at ${location.socketPath}`,
 							cause: error,
 						}),
 			),

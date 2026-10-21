@@ -56,6 +56,7 @@ export class DaemonStatusError extends Schema.TaggedError<DaemonStatusError>()(
 
 type DaemonProbe =
 	| { readonly _tag: 'not-running' }
+	| { readonly _tag: 'connect-failed'; readonly message: string }
 	| { readonly _tag: 'unresponsive'; readonly pid: number | undefined }
 	| { readonly _tag: 'running'; readonly info: DaemonInfo }
 	| {
@@ -185,6 +186,8 @@ const probeDaemon = (
 		if (Exit.isSuccess(info))
 			return { _tag: 'running', info: info.value } as const;
 		const error = Cause.squash(info.cause);
+		if (error instanceof DaemonClientError && error.kind === 'connect-failed')
+			return { _tag: 'connect-failed', message: error.message } as const;
 		if (error instanceof DaemonClientError && error.kind === 'rejected') {
 			const runs = yield* Effect.exit(readRuns(socketPath));
 			if (Exit.isSuccess(runs))
@@ -286,7 +289,15 @@ const waitForStopped = (
 				),
 			),
 		);
-		if (Exit.isFailure(runs) && isUnreachable(Cause.squash(runs.cause))) return;
+		if (Exit.isFailure(runs)) {
+			const error = Cause.squash(runs.cause);
+			if (isUnreachable(error)) return;
+			if (error instanceof DaemonClientError && error.kind === 'connect-failed')
+				return yield* new CommandError({
+					message: error.message,
+					cause: error,
+				});
+		}
 		if (Date.now() >= deadline)
 			return yield* new CommandError({
 				message: `Daemon at ${socketPath} did not stop within ${timeoutMs}ms`,
@@ -412,11 +423,16 @@ const stopRunning = (
 			waitForStopped(socketPath, stopTimeoutMs),
 		);
 		if (Exit.isFailure(stopped)) {
-			if (force)
+			if (force) {
+				const error = Cause.squash(stopped.cause);
 				return yield* terminateAfterFailedShutdown(
 					socketPath,
-					`it did not exit within ${stopTimeoutMs}ms of the shutdown request`,
+					error instanceof CommandError &&
+						error.cause instanceof DaemonClientError
+						? error.message
+						: `it did not exit within ${stopTimeoutMs}ms of the shutdown request`,
 				);
+			}
 			return yield* Effect.failCause(stopped.cause);
 		}
 		// The socket goes away before the services are stopped, so an unanswered socket does not mean the process is gone.
@@ -575,6 +591,7 @@ export const status = () =>
 			statusFailure([message, ...launchdLines].join('\n'));
 		if (probe._tag === 'not-running')
 			return yield* failure('Daemon: not running');
+		if (probe._tag === 'connect-failed') return yield* failure(probe.message);
 		if (probe._tag === 'unresponsive')
 			return yield* failure(
 				probe.pid === undefined
@@ -603,6 +620,8 @@ export const start = () =>
 	Effect.gen(function* () {
 		const location = yield* resolveDaemonLocation;
 		const before = yield* probeDaemon(location.socketPath);
+		if (before._tag === 'connect-failed')
+			return yield* new CommandError({ message: before.message });
 		const wasRunning = before._tag === 'running' || before._tag === 'outdated';
 		yield* ensureDaemonCommand(location);
 		const after = yield* probeDaemon(location.socketPath);
@@ -632,6 +651,8 @@ export const stop = (force: boolean, stopTimeoutMs = DAEMON_STOP_TIMEOUT_MS) =>
 			yield* write('Daemon is not running.');
 			return;
 		}
+		if (probe._tag === 'connect-failed')
+			return yield* new CommandError({ message: probe.message });
 		if (probe._tag === 'unresponsive') {
 			yield* stopUnresponsiveDaemon(location.socketPath, probe.pid, force);
 			return;

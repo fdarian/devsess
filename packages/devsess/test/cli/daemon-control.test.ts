@@ -1,5 +1,11 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	rmSync,
+	writeFileSync,
+} from 'node:fs';
 import { createConnection, createServer } from 'node:net';
 import { join } from 'node:path';
 import type { NodeServices } from '@effect/platform-node';
@@ -663,6 +669,71 @@ describe('daemon control', () => {
 						}),
 					),
 				),
+		);
+
+		describe.skipIf(process.getuid?.() === 0)(
+			'a socket that refuses the connection with EACCES',
+			() => {
+				const setupDenied = Effect.gen(function* () {
+					const fixture = yield* setup({ fakeDaemon: false });
+					chmodSync(fixture.socketPath, 0o000);
+					return fixture;
+				});
+				const denied = (socketPath: string) =>
+					`Could not connect to daemon at ${socketPath}: EACCES`;
+
+				for (const command of [
+					{ name: 'stop', run: () => stop(true) },
+					{ name: 'restart', run: () => restart(true) },
+				])
+					it.live(
+						`${command.name} reports the failure and does not claim the daemon is not running`,
+						() =>
+							runTest(
+								Effect.scoped(
+									Effect.gen(function* () {
+										const fixture = yield* setupDenied;
+										const stdout = captureStdout();
+										const exit = yield* Effect.exit(
+											command
+												.run()
+												.pipe(
+													Effect.provide(ConfigProvider.layer(fixture.config)),
+													Effect.ensuring(Effect.sync(stdout.restore)),
+												),
+										);
+										expect(Exit.isFailure(exit)).toBe(true);
+										expect(
+											Exit.isFailure(exit) ? Cause.pretty(exit.cause) : '',
+										).toContain(denied(fixture.socketPath));
+										expect(stdout.output()).not.toContain('not running');
+										expect(stdout.output()).not.toContain('stale');
+										expect(existsSync(fixture.socketPath)).toBe(true);
+									}),
+								),
+							),
+					);
+
+				it.live('status reports the errno', () =>
+					runTest(
+						Effect.scoped(
+							Effect.gen(function* () {
+								const fixture = yield* setupDenied;
+								const stdout = captureStdout();
+								const exit = yield* Effect.exit(
+									status().pipe(
+										Effect.provide(ConfigProvider.layer(fixture.config)),
+										Effect.ensuring(Effect.sync(stdout.restore)),
+									),
+								);
+								expect(Exit.isFailure(exit)).toBe(true);
+								expect(stdout.output()).toContain(denied(fixture.socketPath));
+								expect(stdout.output()).not.toContain('not running');
+							}),
+						),
+					),
+				);
+			},
 		);
 
 		it.live('status reports it as unresponsive with the PID', () =>

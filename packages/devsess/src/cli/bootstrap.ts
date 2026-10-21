@@ -412,6 +412,12 @@ const endpointIsUnresponsive = (error: DaemonBootstrapError) =>
 	error.cause instanceof DaemonClientError &&
 	error.cause.kind === 'unresponsive';
 
+const connectFailure = (error: DaemonBootstrapError) =>
+	error.cause instanceof DaemonClientError &&
+	error.cause.kind === 'connect-failed'
+		? error.cause
+		: undefined;
+
 const endpointTimedOut = (error: DaemonBootstrapError) =>
 	error.cause instanceof DaemonClientError && error.cause.kind === 'timeout';
 
@@ -569,6 +575,12 @@ export const ensureDaemon = (options: {
 												),
 											);
 											if (endpointIsMissing(error)) return relaunch;
+											const connectFailed = connectFailure(error);
+											if (connectFailed !== undefined)
+												return new DaemonBootstrapError({
+													message: connectFailed.message,
+													cause: connectFailed,
+												});
 											if (endpointTimedOut(error))
 												return liveDaemonPid(options.location.socketPath).pipe(
 													Effect.flatMap((pid) =>

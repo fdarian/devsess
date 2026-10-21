@@ -16,6 +16,7 @@ export class DaemonClientError extends Schema.TaggedError<DaemonClientError>()(
 		kind: Schema.optional(
 			Schema.Union([
 				Schema.Literal('unreachable'),
+				Schema.Literal('connect-failed'),
 				Schema.Literal('unresponsive'),
 				Schema.Literal('timeout'),
 				Schema.Literal('invalid-response'),
@@ -24,8 +25,40 @@ export class DaemonClientError extends Schema.TaggedError<DaemonClientError>()(
 			]),
 		),
 		responseError: Schema.optional(Schema.String),
+		/** The errno of a `connect-failed` error, e.g. EACCES. */
+		code: Schema.optional(Schema.String),
 	},
 ) {}
+
+/** Only these mean nothing is listening; any other connect error says something is wrong with the endpoint itself. */
+const NOT_RUNNING_ERRNOS = new Set(['ENOENT', 'ECONNREFUSED']);
+
+const errnoCode = (cause: unknown) =>
+	cause instanceof Error && 'code' in cause && typeof cause.code === 'string'
+		? cause.code
+		: undefined;
+
+const connectError = (socketPath: string, cause: unknown) => {
+	const code = errnoCode(cause);
+	if (code !== undefined && NOT_RUNNING_ERRNOS.has(code))
+		return new DaemonClientError({
+			message: `Could not contact daemon at ${socketPath}`,
+			cause,
+			kind: 'unreachable',
+		});
+	const reason =
+		code !== undefined
+			? code
+			: cause instanceof Error
+				? cause.message
+				: String(cause);
+	return new DaemonClientError({
+		message: `Could not connect to daemon at ${socketPath}: ${reason}`,
+		cause,
+		kind: 'connect-failed',
+		code,
+	});
+};
 
 /** The endpoint accepted the connection and then hung up, unlike ENOENT/ECONNREFUSED where nothing is listening. */
 class ConnectionClosedError extends Error {}
@@ -88,16 +121,19 @@ export const callDaemon = (
 				socket.once('error', (cause) => finish(() => reject(cause)));
 			}),
 		catch: (cause) =>
-			new DaemonClientError({
-				message: `Could not contact daemon at ${socketPath}`,
-				cause,
-				kind:
-					cause instanceof ConnectionClosedError
-						? 'unresponsive'
-						: cause instanceof RequestTimeoutError
-							? 'timeout'
-							: 'unreachable',
-			}),
+			cause instanceof ConnectionClosedError
+				? new DaemonClientError({
+						message: `Could not contact daemon at ${socketPath}`,
+						cause,
+						kind: 'unresponsive',
+					})
+				: cause instanceof RequestTimeoutError
+					? new DaemonClientError({
+							message: `Could not contact daemon at ${socketPath}`,
+							cause,
+							kind: 'timeout',
+						})
+					: connectError(socketPath, cause),
 	}).pipe(
 		Effect.flatMap((raw) =>
 			decodeResponse(raw).pipe(
