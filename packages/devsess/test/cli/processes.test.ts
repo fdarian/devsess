@@ -10,6 +10,8 @@ import {
 	parseProcessTree,
 } from '../../src/cli/processes';
 
+import { PROCESS_INSPECTION_TIMEOUT_MS } from '../../src/cli/termination';
+
 vi.mock('node:child_process', async (importOriginal) => {
 	const actual = await importOriginal<typeof import('node:child_process')>();
 	return { ...actual, execFile: vi.fn(actual.execFile) };
@@ -198,7 +200,7 @@ describe('live process group ownership', () => {
 			expect(vi.mocked(execFile)).toHaveBeenCalledWith(
 				'ps',
 				['-g', '98765', '-o', 'pid='],
-				{ timeout: 500 },
+				{ timeout: PROCESS_INSPECTION_TIMEOUT_MS },
 				expect.any(Function),
 			);
 		}),

@@ -13,6 +13,7 @@ import {
 import {
 	GROUP_LIVENESS_BACKOFF_INITIAL_MS,
 	GROUP_LIVENESS_BACKOFF_MAX_MS,
+	GROUP_LIVENESS_MIN_INTERVAL_MS,
 	PROCESS_INSPECTION_TIMEOUT_MS,
 	TERMINATION_KILL_SIGNAL,
 	TERMINATION_PHASE_TIMEOUT_MS,
@@ -461,12 +462,12 @@ const groupIsAlive = (
 								state.alive = result.value;
 								state.nextCheckAt =
 									checkedAt +
-									Math.max(state.delayMs, PROCESS_INSPECTION_TIMEOUT_MS);
+									Math.max(state.delayMs, GROUP_LIVENESS_MIN_INTERVAL_MS);
 							}
 							yield* Deferred.succeed(pending, result.value);
 						} else {
 							if (fallbacks.get(processGroupId) === state)
-								state.nextCheckAt = Date.now() + PROCESS_INSPECTION_TIMEOUT_MS;
+								state.nextCheckAt = Date.now() + GROUP_LIVENESS_MIN_INTERVAL_MS;
 							yield* Deferred.failCause(pending, result.cause);
 						}
 						if (Exit.isSuccess(result)) return result.value;

@@ -12,7 +12,10 @@ export const FORCE_KILL_SETTLE_TIMEOUT_MS = 1_000;
 /** A log append that has not finished by then is abandoned so it cannot block settling a service. */
 export const OUTPUT_IDLE_TIMEOUT_MS = TERMINATION_PHASE_TIMEOUT_MS;
 
-export const PROCESS_INSPECTION_TIMEOUT_MS = 500;
+/** Under load `ps` takes longer than half a second; a timeout then fails daemon startup. */
+export const PROCESS_INSPECTION_TIMEOUT_MS = 3_000;
+/** Minimum spacing between `ps`-based process group liveness checks, independent of how long one check may take. */
+export const GROUP_LIVENESS_MIN_INTERVAL_MS = 500;
 export const GROUP_LIVENESS_BACKOFF_INITIAL_MS = 25;
 export const GROUP_LIVENESS_BACKOFF_MAX_MS = 250;
 
