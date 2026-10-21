@@ -165,6 +165,7 @@ export const ensureDaemon = (location: DaemonLocation) =>
 		const managed = yield* usesLaunchd;
 		return yield* ensureDaemonBootstrap({
 			location,
+			logsDirectory: location.logsDirectory,
 			launch: () =>
 				managed
 					? launchDaemonJob(daemonJob(location)).pipe(

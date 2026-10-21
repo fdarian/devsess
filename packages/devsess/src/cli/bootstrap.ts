@@ -415,7 +415,11 @@ const endpointIsUnresponsive = (error: DaemonBootstrapError) =>
 const endpointTimedOut = (error: DaemonBootstrapError) =>
 	error.cause instanceof DaemonClientError && error.cause.kind === 'timeout';
 
-const bootstrapTimeoutMs = 10_000;
+/** A cold start runs a ps-based reconcile before the daemon listens; on a loaded machine that alone took about 5 s. */
+export const POST_LAUNCH_HANDSHAKE_TIMEOUT_MS = 15_000;
+
+/** Leaves room for the initial probe and the lock handoff around the post-launch handshake. */
+const bootstrapTimeoutMs = POST_LAUNCH_HANDSHAKE_TIMEOUT_MS + 5_000;
 
 const timeoutError = (
 	location: DaemonLocation,
@@ -457,9 +461,16 @@ export const ensureDaemon = (options: {
 	location: DaemonLocation;
 	launch: LaunchDaemon;
 	timeoutMs?: number;
+	/** Where the launched daemon writes `daemon.log`, so a failed start can point at it. */
+	logsDirectory?: string;
+	launchHandshakeTimeoutMs?: number;
 }) => {
 	const timeoutMs =
 		options.timeoutMs === undefined ? bootstrapTimeoutMs : options.timeoutMs;
+	const launchHandshakeTimeoutMs =
+		options.launchHandshakeTimeoutMs === undefined
+			? POST_LAUNCH_HANDSHAKE_TIMEOUT_MS
+			: options.launchHandshakeTimeoutMs;
 	const deadline = Date.now() + timeoutMs;
 	const handshake = (limitMs: number) =>
 		Effect.suspend(() => {
@@ -545,7 +556,17 @@ export const ensureDaemon = (options: {
 												options.location.socketPath,
 											).pipe(
 												Effect.andThen(options.launch()),
-												Effect.andThen(handshake(5_000)),
+												Effect.andThen(
+													handshake(launchHandshakeTimeoutMs).pipe(
+														Effect.mapError(
+															(cause) =>
+																new DaemonBootstrapError({
+																	message: `Daemon did not finish starting within ${launchHandshakeTimeoutMs / 1000} s at ${options.location.socketPath}${options.logsDirectory === undefined ? '' : `; see ${daemonLogPath(options.logsDirectory)}`}`,
+																	cause,
+																}),
+														),
+													),
+												),
 											);
 											if (endpointIsMissing(error)) return relaunch;
 											if (endpointTimedOut(error))

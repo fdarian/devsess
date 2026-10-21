@@ -9,6 +9,7 @@ import {
 	DaemonBootstrapError,
 	ensureDaemon,
 	launchDetachedDaemon,
+	POST_LAUNCH_HANDSHAKE_TIMEOUT_MS,
 } from '../../src/cli/bootstrap';
 import { processBirthOf } from '../support/process-birth';
 import { runTest } from '../support/run-test';
@@ -423,6 +424,72 @@ describe('daemon bootstrap', () => {
 				),
 			),
 	);
+
+	describe('after launching the daemon', () => {
+		it('allows a cold start 15 s to answer', () => {
+			expect(POST_LAUNCH_HANDSHAKE_TIMEOUT_MS).toBe(15_000);
+		});
+
+		it.live('keeps waiting for a daemon that is slow to listen', () =>
+			runTest(
+				Effect.scoped(
+					Effect.gen(function* () {
+						const rootDir = yield* makeTempDir;
+						const socketPath = join(rootDir, 'daemon.sock');
+						const server = createServer((socket) => {
+							socket.once('data', (data) => {
+								const request = JSON.parse(data.toString()) as {
+									requestId: string;
+								};
+								socket.end(
+									`${JSON.stringify({ version: 1, requestId: request.requestId, ok: true, result: [] })}\n`,
+								);
+							});
+						});
+						yield* Effect.addFinalizer(() => Effect.sync(() => server.close()));
+						yield* ensureDaemon({
+							location: { dataDirectory: join(rootDir, 'state'), socketPath },
+							launchHandshakeTimeoutMs: 3_000,
+							launch: () =>
+								Effect.sync(() => {
+									setTimeout(() => server.listen(socketPath), 600);
+								}),
+						});
+						expect(server.listening).toBe(true);
+					}),
+				),
+			),
+		);
+
+		it.live(
+			'says the daemon did not finish starting and points at daemon.log',
+			() =>
+				runTest(
+					Effect.gen(function* () {
+						const rootDir = yield* makeTempDir;
+						const socketPath = join(rootDir, 'daemon.sock');
+						const logsDirectory = join(rootDir, 'logs');
+						const exit = yield* Effect.exit(
+							ensureDaemon({
+								location: { dataDirectory: join(rootDir, 'state'), socketPath },
+								logsDirectory,
+								timeoutMs: 5_000,
+								launchHandshakeTimeoutMs: 1_000,
+								launch: () => Effect.void,
+							}),
+						);
+						const error = Exit.isFailure(exit)
+							? Cause.squash(exit.cause)
+							: undefined;
+						expect(error).toBeInstanceOf(DaemonBootstrapError);
+						const message = (error as DaemonBootstrapError).message;
+						expect(message).toContain('did not finish starting within 1 s');
+						expect(message).toContain(join(logsDirectory, 'daemon.log'));
+						expect(message).not.toContain('busy or unresponsive');
+					}),
+				),
+		);
+	});
 
 	describe('an endpoint that accepts and never replies', () => {
 		it.live(
