@@ -409,8 +409,11 @@ describe('daemon control', () => {
 			),
 		);
 
-		/** Answers info and listRuns like a live daemon; `shutdown` is what the scenario varies. */
-		const setupResponsive = (shutdown: 'fails' | 'acknowledged') =>
+		/** Answers info and listRuns like a live daemon; `shutdown` is what the scenario varies. `closes-socket-then-exits` mimics the real daemon: the socket vanishes first and the process lingers for `exitDelayMs`. */
+		const setupResponsive = (
+			shutdown: 'fails' | 'acknowledged' | 'closes-socket-then-exits',
+			exitDelayMs = 0,
+		) =>
 			Effect.gen(function* () {
 				const fixture = yield* setup({ fakeDaemon: true });
 				fixture.server.close();
@@ -450,7 +453,14 @@ describe('daemon control', () => {
 							reply({ ok: true, result: [] });
 						else if (shutdown === 'fails')
 							reply({ ok: false, error: 'Daemon request queue is closed' });
-						else reply({ ok: true, result: {} });
+						else {
+							reply({ ok: true, result: {} });
+							if (shutdown === 'closes-socket-then-exits') {
+								responding.close();
+								rmSync(fixture.socketPath, { force: true });
+								setTimeout(() => child.kill('SIGKILL'), exitDelayMs);
+							}
+						}
 					});
 				});
 				rmSync(fixture.socketPath, { force: true });
@@ -552,6 +562,104 @@ describe('daemon control', () => {
 							).toContain('nothing was terminated');
 							expect(child.exitCode).toBeNull();
 							expect(existsSync(fixture.socketPath)).toBe(true);
+						}),
+					),
+				),
+		);
+
+		const isAlive = (pid: number) => {
+			try {
+				process.kill(pid, 0);
+				return true;
+			} catch {
+				return false;
+			}
+		};
+
+		it.live(
+			'stop reports "stopped" only once the daemon process has exited',
+			() =>
+				runTest(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const fixture = yield* setupResponsive(
+								'closes-socket-then-exits',
+								400,
+							);
+							const child = fixture.child as ChildProcess;
+							const pid = child.pid as number;
+							const stdout = captureStdout();
+							const startedAt = Date.now();
+							yield* stop(false, 5_000).pipe(
+								Effect.provide(ConfigProvider.layer(fixture.config)),
+								Effect.ensuring(Effect.sync(stdout.restore)),
+							);
+							expect(Date.now() - startedAt).toBeGreaterThanOrEqual(350);
+							expect(isAlive(pid)).toBe(false);
+							expect(stdout.output()).toContain('Daemon stopped.');
+						}),
+					),
+				),
+		);
+
+		for (const command of [
+			{ name: 'stop', run: (ms: number) => stop(false, ms) },
+			{ name: 'restart', run: (ms: number) => restart(false, ms) },
+		])
+			it.live(
+				`${command.name} fails naming the PID when the process outlives the shutdown budget`,
+				() =>
+					runTest(
+						Effect.scoped(
+							Effect.gen(function* () {
+								const fixture = yield* setupResponsive(
+									'closes-socket-then-exits',
+									60_000,
+								);
+								const child = fixture.child as ChildProcess;
+								const stdout = captureStdout();
+								const exit = yield* Effect.exit(
+									command
+										.run(300)
+										.pipe(
+											Effect.provide(ConfigProvider.layer(fixture.config)),
+											Effect.ensuring(Effect.sync(stdout.restore)),
+										),
+								);
+								expect(Exit.isFailure(exit)).toBe(true);
+								const message = Exit.isFailure(exit)
+									? Cause.pretty(exit.cause)
+									: '';
+								expect(message).toContain(`Daemon PID ${child.pid}`);
+								expect(message).toContain('still shutting down');
+								expect(stdout.output()).not.toContain('Daemon stopped.');
+								expect(isAlive(child.pid as number)).toBe(true);
+							}),
+						),
+					),
+			);
+
+		it.live(
+			'stop --force terminates a process that outlives the shutdown budget even after its pidfile is gone',
+			() =>
+				runTest(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const fixture = yield* setupResponsive(
+								'closes-socket-then-exits',
+								60_000,
+							);
+							const child = fixture.child as ChildProcess;
+							rmSync(fixture.pidfilePath);
+							const stdout = captureStdout();
+							yield* stop(true, 300).pipe(
+								Effect.provide(ConfigProvider.layer(fixture.config)),
+								Effect.ensuring(Effect.sync(stdout.restore)),
+							);
+							yield* waitForExit(child);
+							expect(child.signalCode).toBe('SIGTERM');
+							expect(stdout.output()).toContain('was still shutting down');
+							expect(stdout.output()).toContain(`terminating PID ${child.pid}`);
 						}),
 					),
 				),

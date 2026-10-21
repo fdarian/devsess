@@ -10,6 +10,7 @@ import {
 	removeStaleSocket,
 } from '../bootstrap';
 import { callDaemon, DaemonClientError } from '../client';
+import { SHUTDOWN_RUN_STOP_TIMEOUT_MS } from '../daemon';
 import {
 	bootoutDaemonJob,
 	DAEMON_LAUNCHD_LABEL,
@@ -39,7 +40,8 @@ import {
 	write,
 } from './daemon';
 
-const DAEMON_STOP_TIMEOUT_MS = 12_000;
+/** The daemon unlinks its socket first and then spends up to its shutdown budget stopping services, so both waits get that budget plus a margin. */
+const DAEMON_STOP_TIMEOUT_MS = SHUTDOWN_RUN_STOP_TIMEOUT_MS + 2_000;
 const DAEMON_POLL_INTERVAL_MS = 50;
 const UNRESPONSIVE_DAEMON_TERM_TIMEOUT_MS = 5_000;
 const UNRESPONSIVE_DAEMON_KILL_TIMEOUT_MS = 2_000;
@@ -383,6 +385,7 @@ const stopRunning = (
 	socketPath: string,
 	force: boolean,
 	runs: ReadonlyArray<RunRecord>,
+	pid: number,
 	stopTimeoutMs: number,
 ) =>
 	Effect.gen(function* () {
@@ -415,6 +418,19 @@ const stopRunning = (
 					`it did not exit within ${stopTimeoutMs}ms of the shutdown request`,
 				);
 			return yield* Effect.failCause(stopped.cause);
+		}
+		// The socket goes away before the services are stopped, so an unanswered socket does not mean the process is gone.
+		const exited = yield* waitForProcessExit(pid, Date.now() + stopTimeoutMs);
+		if (!exited) {
+			if (force)
+				return yield* terminateAfterFailedShutdown(
+					socketPath,
+					`PID ${pid} was still shutting down ${stopTimeoutMs}ms after it stopped answering`,
+					pid,
+				);
+			return yield* new CommandError({
+				message: `Daemon PID ${pid} stopped answering at ${socketPath} but is still shutting down after ${stopTimeoutMs}ms. Wait for it to exit, or re-run with --force to terminate it.`,
+			});
 		}
 		yield* write('Daemon stopped.');
 	});
@@ -517,9 +533,14 @@ export const stopUnresponsiveDaemon = (
 	});
 
 /** `--force` has to land even when the daemon is too busy to shut itself down, so it falls back to signalling the pidfile PID. */
-const terminateAfterFailedShutdown = (socketPath: string, reason: string) =>
+const terminateAfterFailedShutdown = (
+	socketPath: string,
+	reason: string,
+	knownPid?: number,
+) =>
 	Effect.gen(function* () {
-		const pid = yield* liveDaemonPid(socketPath);
+		const pid =
+			knownPid === undefined ? yield* liveDaemonPid(socketPath) : knownPid;
 		if (pid === undefined)
 			return yield* new CommandError({
 				message: `Could not shut down daemon at ${socketPath}: ${reason}, and no live daemon PID is recorded beside the socket, so nothing was terminated.`,
@@ -631,7 +652,13 @@ export const stop = (force: boolean, stopTimeoutMs = DAEMON_STOP_TIMEOUT_MS) =>
 							}),
 					),
 				);
-		yield* stopRunning(location.socketPath, force, runs, stopTimeoutMs);
+		yield* stopRunning(
+			location.socketPath,
+			force,
+			runs,
+			probe.info.pid,
+			stopTimeoutMs,
+		);
 	}).pipe(Effect.provide(Processes.layer));
 
 export const restart = (force: boolean, stopTimeoutMs?: number) =>
