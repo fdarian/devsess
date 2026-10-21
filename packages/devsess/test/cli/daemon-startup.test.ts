@@ -1,7 +1,7 @@
 import { createConnection, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
-import { Effect, Layer, Schema } from 'effect';
+import { Effect, Layer, Option, Schema } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { Daemon, makeDaemon } from '../../src/cli/daemon';
 import { Logs } from '../../src/cli/logs';
@@ -456,4 +456,96 @@ describe('real PTY startup events', () => {
 				),
 		);
 	}
+});
+
+describe('request workers', () => {
+	const layerWithFailingGet = (
+		directory: string,
+		socketPath: string,
+		remainingDefects: { current: number },
+	) =>
+		Layer.effect(
+			Daemon,
+			makeDaemon({ dataDirectory: directory, socketPath }),
+		).pipe(
+			Layer.provideMerge(
+				Layer.mergeAll(
+					Layer.effect(
+						Registry,
+						Effect.gen(function* () {
+							const registry = yield* Registry;
+							return Registry.of({
+								...registry,
+								get: (runId) => {
+									if (remainingDefects.current === 0)
+										return registry.get(runId);
+									remainingDefects.current -= 1;
+									return Effect.die('registry defect');
+								},
+							});
+						}),
+					).pipe(
+						Layer.provide(
+							Registry.layer({
+								dataDirectory: directory,
+								logsDirectory: join(directory, 'logs'),
+							}),
+						),
+					),
+					Logs.layer({ dataDirectory: directory, maxBytes: 4096 }),
+					Processes.layer,
+				),
+			),
+		);
+
+	const getRun: DaemonRequest = {
+		version: 1,
+		requestId: 'get',
+		method: 'getRun',
+		params: { runId: 'missing' },
+	};
+	const stopRun: DaemonRequest = {
+		version: 1,
+		requestId: 'stop',
+		method: 'stopRun',
+		params: { runId: 'missing' },
+	};
+
+	for (const [workers, request, defects] of [
+		// One defect per read worker would leave the read queue with no consumer.
+		['read', getRun, 4],
+		['serial', stopRun, 1],
+	] as const)
+		it.live(`keeps the ${workers} worker serving after a defect`, () =>
+			runTest(
+				Effect.gen(function* () {
+					const directory = yield* makeTempDir;
+					const remainingDefects = { current: 0 };
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						remainingDefects.current = defects;
+						for (let attempt = 0; attempt < defects; attempt++)
+							expect(
+								Option.isNone(
+									yield* daemon
+										.request(request)
+										.pipe(Effect.exit, Effect.timeoutOption(200)),
+								),
+							).toBe(true);
+						const exit = yield* daemon
+							.request(request)
+							.pipe(Effect.exit, Effect.timeoutOption(2_000));
+						expect(Option.isSome(exit)).toBe(true);
+					}).pipe(
+						Effect.provide(
+							layerWithFailingGet(
+								directory,
+								join(directory, 'daemon.sock'),
+								remainingDefects,
+							),
+						),
+					);
+				}),
+			),
+		);
 });

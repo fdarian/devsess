@@ -388,37 +388,41 @@ export const makeDaemon = (options: {
 		});
 		yield* serviceState.reconcile;
 		yield* bestEffortPrune(registry);
-		const requestWorker = yield* Effect.forever(
-			Queue.take(requestQueue).pipe(
-				Effect.flatMap((message) => {
-					inFlight.current = message;
-					return dispatcher.handleClient(message).pipe(
-						Effect.andThen(
-							Effect.sync(() => {
+		/** One failed message must not end its worker, or nothing behind it in the queue would ever be processed. */
+		const forkWorker = <Message, R>(
+			queue: Queue.Dequeue<Message>,
+			handle: (message: Message) => Effect.Effect<void, unknown, R>,
+		) =>
+			Effect.forever(
+				Queue.take(queue).pipe(
+					Effect.flatMap((message) =>
+						handle(message).pipe(
+							Effect.catchCause((cause) => Effect.logError(cause)),
+						),
+					),
+				),
+			).pipe(Effect.forkScoped);
+		const requestWorker = yield* forkWorker(requestQueue, (message) => {
+			inFlight.current = message;
+			return dispatcher.handleClient(message).pipe(
+				// Cleared even when the handler failed, but not on interruption: shutdown rejects whatever was still in flight.
+				Effect.onExit((exit) =>
+					Exit.hasInterrupts(exit)
+						? Effect.void
+						: Effect.sync(() => {
 								inFlight.current = undefined;
 							}),
-						),
-					);
-				}),
-			),
-		).pipe(Effect.forkScoped);
+				),
+			);
+		});
 		const readWorkers = yield* Effect.forEach(
 			Array.from({ length: READ_WORKER_COUNT }),
-			() =>
-				Effect.forever(
-					Queue.take(readQueue).pipe(Effect.flatMap(dispatcher.handleClient)),
-				).pipe(Effect.forkScoped),
+			() => forkWorker(readQueue, dispatcher.handleClient),
 		);
-		const lifecycleWorker = yield* Effect.forever(
-			Queue.take(lifecycleQueue).pipe(
-				Effect.flatMap((message) =>
-					// One failed message must not end the worker, or no later exit would ever be processed.
-					dispatcher
-						.handleLifecycle(message)
-						.pipe(Effect.catchCause((cause) => Effect.logError(cause))),
-				),
-			),
-		).pipe(Effect.forkScoped);
+		const lifecycleWorker = yield* forkWorker(
+			lifecycleQueue,
+			dispatcher.handleLifecycle,
+		);
 		const rejectRequest = (message: ClientRequestMessage) =>
 			Effect.gen(function* () {
 				const error = new DaemonError({ message: SHUTTING_DOWN_MESSAGE });
