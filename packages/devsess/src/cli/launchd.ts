@@ -83,24 +83,26 @@ export const renderDaemonPlist = (options: {
 const runLaunchctl = (args: ReadonlyArray<string>) =>
 	Effect.tryPromise({
 		try: () =>
-			new Promise<{ exitCode: number; stderr: string }>((resolve, reject) => {
-				execFile(
-					'launchctl',
-					args,
-					{ timeout: LAUNCHCTL_TIMEOUT_MS },
-					(error, _stdout, stderr) => {
-						if (error === null) {
-							resolve({ exitCode: 0, stderr });
-							return;
-						}
-						if ('code' in error && typeof error.code === 'number') {
-							resolve({ exitCode: error.code, stderr });
-							return;
-						}
-						reject(error);
-					},
-				);
-			}),
+			new Promise<{ exitCode: number; stdout: string; stderr: string }>(
+				(resolve, reject) => {
+					execFile(
+						'launchctl',
+						args,
+						{ timeout: LAUNCHCTL_TIMEOUT_MS },
+						(error, stdout, stderr) => {
+							if (error === null) {
+								resolve({ exitCode: 0, stdout, stderr });
+								return;
+							}
+							if ('code' in error && typeof error.code === 'number') {
+								resolve({ exitCode: error.code, stdout, stderr });
+								return;
+							}
+							reject(error);
+						},
+					);
+				},
+			),
 		catch: (cause) =>
 			new DaemonBootstrapError({
 				message: `Could not run launchctl ${args.join(' ')}`,
@@ -127,6 +129,12 @@ const launchctlSucceeds = (args: ReadonlyArray<string>) =>
 					}),
 		),
 	);
+
+/** The job's own `pid = N` line is indented one tab; endpoints and nested blocks that mention a pid are indented deeper. */
+export const parseJobPid = (printOutput: string) => {
+	const match = /^\tpid = (\d+)\s*$/m.exec(printOutput);
+	return match?.[1] === undefined ? undefined : Number(match[1]);
+};
 
 /** The only code that talks to launchd, so tests substitute a fake instead of touching the real gui domain. */
 export class Launchctl extends Context.Service<Launchctl>()(
@@ -159,11 +167,31 @@ export class Launchctl extends Context.Service<Launchctl>()(
 						launchctlSucceeds(['bootout', `${domain}/${label}`]),
 					),
 				),
-			/** Without `-k`: a daemon that is already running is never restarted. */
-			kickstart: (label: string) =>
+			/** The PID launchd currently runs for the job, or undefined when the job is loaded but idle. */
+			runningPid: (label: string) =>
 				guiDomain.pipe(
 					Effect.flatMap((domain) =>
-						launchctlSucceeds(['kickstart', `${domain}/${label}`]),
+						runLaunchctl(['print', `${domain}/${label}`]),
+					),
+					Effect.flatMap((result) => {
+						if (result.exitCode === LAUNCHCTL_SERVICE_NOT_FOUND)
+							return Effect.succeed(undefined);
+						if (result.exitCode !== 0)
+							return new DaemonBootstrapError({
+								message: `launchctl print ${label} failed with exit code ${result.exitCode}: ${result.stderr.trim()}`,
+							});
+						return Effect.succeed(parseJobPid(result.stdout));
+					}),
+				),
+			/** Plain kickstart is a no-op while the job runs; `kill` makes launchd terminate the running instance first. */
+			kickstart: (label: string, options?: { kill: boolean }) =>
+				guiDomain.pipe(
+					Effect.flatMap((domain) =>
+						launchctlSucceeds([
+							'kickstart',
+							...(options?.kill === true ? ['-k'] : []),
+							`${domain}/${label}`,
+						]),
 					),
 				),
 		})),
@@ -286,10 +314,13 @@ export const removeDaemonJobPlist = (job: DaemonJob) =>
 			}),
 	});
 
-/** Starts the daemon under launchd, installing the job first. Whether it came up is for the caller's handshake to decide. */
+/** Starts the daemon under launchd, installing the job first. Whether it came up is for the caller's handshake to decide. A job that still runs a process (one that never bound the socket, or that launchd is relaunching) is restarted with `-k`, since a plain kickstart would silently do nothing. */
 export const launchDaemonJob = (job: DaemonJob) =>
 	Effect.gen(function* () {
 		const launchctl = yield* Launchctl;
 		yield* installDaemonJob(job);
-		yield* launchctl.kickstart(DAEMON_LAUNCHD_LABEL);
+		const running = yield* launchctl.runningPid(DAEMON_LAUNCHD_LABEL);
+		yield* launchctl.kickstart(DAEMON_LAUNCHD_LABEL, {
+			kill: running !== undefined,
+		});
 	});

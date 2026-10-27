@@ -12,6 +12,7 @@ import {
 	launchDaemonJob,
 	launchdApplies,
 	launchdPlistPath,
+	parseJobPid,
 	removeDaemonJobPlist,
 	renderDaemonPlist,
 	usesLaunchd,
@@ -178,6 +179,53 @@ describe('launchd job', () => {
 				]);
 			}),
 		),
+	);
+
+	it.effect('kickstarts with -k when the job still runs a process', () =>
+		runTest(
+			Effect.gen(function* () {
+				const directory = yield* makeTempDir;
+				const job = jobIn(directory);
+				yield* installDaemonJob(job).pipe(
+					Effect.provide(makeFakeLaunchctl().layer),
+				);
+				const fake = makeFakeLaunchctl({ loaded: true, runningPid: 4242 });
+				yield* launchDaemonJob(job).pipe(Effect.provide(fake.layer));
+				const actions = fake.calls.filter((call) => !call.startsWith('print'));
+				expect(actions).toEqual([`kickstart -k ${DAEMON_LAUNCHD_LABEL}`]);
+			}),
+		),
+	);
+
+	it.effect('kickstarts without -k when the job is loaded but idle', () =>
+		runTest(
+			Effect.gen(function* () {
+				const directory = yield* makeTempDir;
+				const job = jobIn(directory);
+				yield* installDaemonJob(job).pipe(
+					Effect.provide(makeFakeLaunchctl().layer),
+				);
+				const fake = makeFakeLaunchctl({ loaded: true });
+				yield* launchDaemonJob(job).pipe(Effect.provide(fake.layer));
+				expect(fake.calls).toContain(`kickstart ${DAEMON_LAUNCHD_LABEL}`);
+				expect(fake.calls).not.toContain(
+					`kickstart -k ${DAEMON_LAUNCHD_LABEL}`,
+				);
+			}),
+		),
+	);
+
+	it.effect('reads the job pid from the top level of launchctl print', () =>
+		Effect.sync(() => {
+			const running =
+				'gui/501/x = {\n\tstate = running\n\tpid = 627\n\tendpoints = {\n\t\tpid = 1\n\t}\n}\n';
+			expect(parseJobPid(running)).toBe(627);
+			expect(
+				parseJobPid(
+					'gui/501/x = {\n\tstate = not running\n\tendpoints = {\n\t\tpid = 1\n\t}\n}\n',
+				),
+			).toBeUndefined();
+		}),
 	);
 
 	it.effect('removes the plist', () =>
