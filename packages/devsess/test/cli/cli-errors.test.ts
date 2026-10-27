@@ -3,9 +3,10 @@ import { promisify } from 'node:util';
 import { describe, expect, it } from '@effect/vitest';
 import { Cause, Effect } from 'effect';
 import { vi } from 'vitest';
-import { reportCliCause } from '../../src/cli/cli-errors';
+import { reportCliCause, reportDaemonCause } from '../../src/cli/cli-errors';
 import { DaemonClientError } from '../../src/cli/client';
 import { CommandError } from '../../src/cli/commands/daemon';
+import { DaemonError } from '../../src/cli/daemon-errors';
 import { ServiceExitError } from '../../src/cli/exit-status';
 
 const execute = promisify(execFile);
@@ -41,6 +42,32 @@ describe('CLI errors', () => {
 				yield* reportCliCause(Cause.die(new Error('unexpected bug')));
 				expect(write.mock.calls.join('')).toContain('unexpected bug');
 				expect(write.mock.calls.join('')).toContain('at ');
+				write.mockRestore();
+			}),
+	);
+
+	it.effect(
+		'stamps daemon failures with the time and the errno of their cause',
+		() =>
+			Effect.gen(function* () {
+				const write = vi
+					.spyOn(process.stderr, 'write')
+					.mockImplementation(() => true);
+				const failure = new DaemonError({
+					message: 'Could not listen at /tmp/d.sock',
+					cause: Object.assign(new Error('address already in use'), {
+						code: 'EADDRINUSE',
+					}),
+				});
+				yield* reportDaemonCause(Cause.fail(failure));
+				expect(write.mock.calls[0]?.[0]).toMatch(
+					/^\[\d{4}-\d\d-\d\dT[\d:.]+Z\] error: Could not listen at \/tmp\/d\.sock: EADDRINUSE address already in use\n$/,
+				);
+				write.mockClear();
+				yield* reportCliCause(Cause.fail(failure));
+				expect(write).toHaveBeenCalledWith(
+					'error: Could not listen at /tmp/d.sock\n',
+				);
 				write.mockRestore();
 			}),
 	);
@@ -90,7 +117,7 @@ describe('CLI errors', () => {
 				stderr: 'error: Daemon is not running\n',
 			},
 		]) {
-			const script = `import { NodeRuntime } from '@effect/platform-node'; import { Effect } from 'effect'; import { ServiceExitError } from './src/cli/exit-status.ts'; import { DaemonStatusError } from './src/cli/commands/daemon-control.ts'; import { reportCliCause } from './src/cli/cli-errors.ts'; NodeRuntime.runMain(${scenario.effect}.pipe(Effect.tapCause(reportCliCause)), { disableErrorReporting: true });`;
+			const script = `import { NodeRuntime } from '@effect/platform-node'; import { Effect } from 'effect'; import { ServiceExitError } from './src/cli/exit-status.ts'; import { DaemonStatusError } from './src/cli/commands/daemon-control.ts'; import { reportCliCause, reportDaemonCause } from './src/cli/cli-errors.ts'; NodeRuntime.runMain(${scenario.effect}.pipe(Effect.tapCause(reportCliCause)), { disableErrorReporting: true });`;
 			const result = await execute('bun', ['-e', script], {
 				cwd: process.cwd(),
 			}).catch((error: unknown) => error);

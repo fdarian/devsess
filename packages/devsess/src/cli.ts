@@ -7,7 +7,7 @@ import { Effect, Layer, Option } from 'effect';
 import { Argument, Command, Flag } from 'effect/cli';
 import { Terminal } from 'effect/Terminal';
 import devsessPackageJson from '../package.json' with { type: 'json' };
-import { reportCliCause } from './cli/cli-errors';
+import { reportCliCause, reportDaemonCause } from './cli/cli-errors';
 import { attach } from './cli/commands/attach';
 import { completionsCommand } from './cli/commands/completions';
 import {
@@ -296,7 +296,9 @@ NodeRuntime.runMain(
 	).pipe(
 		Effect.scoped,
 		Effect.provide(services),
-		Effect.tapCause(reportCliCause),
+		Effect.tapCause(
+			process.argv[2] === '__daemon' ? reportDaemonCause : reportCliCause,
+		),
 	),
 	{
 		disableErrorReporting: true,
