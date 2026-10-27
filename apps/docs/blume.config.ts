@@ -1,11 +1,33 @@
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { dirname } from 'node:path';
 import { defineConfig } from 'blume';
 import { custom, filesystem } from 'blume/sources';
 import devsessPackageJson from '../../packages/devsess/package.json' with {
 	type: 'json',
 };
 
+// Under pnpm's global virtual store, Blume's React renderer lives outside the
+// directories Blume lets the dev server read, so islands never hydrate in dev.
+const blumeRequire = createRequire(import.meta.resolve('blume'));
+const astroReactDir = dirname(
+	blumeRequire.resolve('@astrojs/react/package.json'),
+);
+
 export default defineConfig({
+	integrations: [
+		{
+			name: 'devsess-allow-astro-react',
+			hooks: {
+				'astro:config:setup': (params: {
+					updateConfig: (config: object) => void;
+				}) =>
+					params.updateConfig({
+						vite: { server: { fs: { allow: [astroReactDir] } } },
+					}),
+			},
+		},
+	],
 	title: 'devsess',
 	description:
 		'Isolated, managed dev servers — each worktree gets its own session, with its own port and its own database.',

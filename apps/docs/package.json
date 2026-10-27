@@ -9,7 +9,12 @@
 		"check:lint": "biome check"
 	},
 	"devDependencies": {
+		"@base-ui/react": "^1.9.0",
 		"@types/node": "^26.6.4",
-		"blume": "^2.1.0"
+		"@types/react": "^19.3.0",
+		"@types/react-dom": "^19.3.0",
+		"blume": "^2.1.0",
+		"react": "19.3.1",
+		"react-dom": "19.3.1"
 	}
 }

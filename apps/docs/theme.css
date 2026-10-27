@@ -272,3 +272,137 @@ header {
 		padding-top: 0.5rem;
 	}
 }
+
+/* Chapter indicator: a rail of ticks floating right of the article; hover opens the outline */
+:root {
+	--devsess-chapters-tick-width: 1.25rem;
+}
+
+@media (min-width: 72rem) {
+	/* The aside only hosts the indicator island; its page actions stay hidden */
+	[data-blume-toc] {
+		display: block !important;
+		height: 0;
+		padding: 0;
+		overflow: visible;
+	}
+
+	[data-blume-toc] > :not(astro-island) {
+		display: none;
+	}
+
+	.devsess-chapters {
+		position: fixed;
+		z-index: 20;
+		top: var(--devsess-top-space);
+		left: calc(
+			50% +
+			var(--devsess-content-width) /
+			2 +
+			var(--devsess-sidebar-gap) *
+			2
+		);
+	}
+
+	.devsess-chapters-rail {
+		display: flex;
+		width: var(--devsess-chapters-tick-width);
+		flex-direction: column;
+		align-items: end;
+		gap: 0.3rem;
+		/* Generous hit area so the card opens without pixel-hunting */
+		padding: 0.25rem 0.75rem 0.75rem 0.25rem;
+		box-sizing: content-box;
+		border: 0;
+		background: none;
+		cursor: pointer;
+	}
+
+	.devsess-chapters-tick {
+		display: block;
+		width: 0.9rem;
+		height: 2px;
+		border-radius: 1px;
+		background: var(--devsess-faint);
+		opacity: 0.55;
+		transition:
+			width 150ms ease,
+			opacity 150ms ease,
+			background-color 150ms ease;
+	}
+
+	.devsess-chapters-tick[data-active] {
+		width: var(--devsess-chapters-tick-width);
+		background: var(--blume-foreground);
+		opacity: 1;
+	}
+
+	/* The positioner is the positioned element, so it carries the stacking order */
+	.devsess-chapters-positioner {
+		z-index: 50;
+	}
+
+	.devsess-chapters-card {
+		width: max-content;
+		max-width: 18rem;
+		padding: 0.5rem;
+		border: 1px solid var(--blume-border);
+		border-radius: 0.75rem;
+		background: var(--blume-background);
+		box-shadow: 0 8px 24px -8px rgb(0 0 0 / 0.15);
+		font-size: 0.82rem;
+		outline: none;
+		transition:
+			opacity 150ms ease,
+			transform 150ms ease;
+	}
+
+	.devsess-chapters-card[data-starting-style],
+	.devsess-chapters-card[data-ending-style] {
+		opacity: 0;
+		transform: translateX(0.25rem);
+	}
+
+	.devsess-chapters-card ul {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+
+	.devsess-chapters-card li[data-depth="3"] {
+		padding-inline-start: 0.75rem;
+	}
+
+	.devsess-chapters-card a {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		padding: 0.4rem 0.6rem;
+		border-radius: 0.5rem;
+		color: var(--devsess-faint);
+		text-decoration: none;
+		transition: background-color 120ms ease;
+	}
+
+	.devsess-chapters-card a:hover {
+		background: var(--blume-muted);
+		color: var(--blume-foreground);
+	}
+
+	.devsess-chapters-card a[aria-current="location"] {
+		color: var(--blume-foreground);
+	}
+
+	.devsess-chapters-dash {
+		flex: none;
+		width: 0.75rem;
+		height: 2px;
+		border-radius: 1px;
+		background: currentColor;
+		opacity: 0.6;
+	}
+
+	.devsess-chapters-card a[aria-current="location"] .devsess-chapters-dash {
+		opacity: 1;
+	}
+}
