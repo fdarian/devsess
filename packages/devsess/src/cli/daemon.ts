@@ -1,4 +1,4 @@
-import { unlinkSync } from 'node:fs';
+import { existsSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import {
 	createConnection,
 	createServer,
@@ -90,8 +90,38 @@ export class Daemon extends Context.Service<Daemon, DaemonService>()(
 		);
 }
 
-const isAddressInUse = (cause: unknown) =>
-	cause instanceof Error && 'code' in cause && cause.code === 'EADDRINUSE';
+const hasErrnoCode = (cause: unknown, code: string) =>
+	cause instanceof Error && 'code' in cause && cause.code === code;
+
+const isAddressInUse = (cause: unknown) => hasErrnoCode(cause, 'EADDRINUSE');
+
+/** A socket file's inode: what tells "the file this daemon bound" from a file someone else put at the same path. */
+type SocketIdentity = { readonly dev: bigint; readonly ino: bigint };
+
+const sameIdentity = (
+	left: SocketIdentity | undefined,
+	right: SocketIdentity | undefined,
+) =>
+	left !== undefined &&
+	right !== undefined &&
+	left.dev === right.dev &&
+	left.ino === right.ino;
+
+/** `undefined` means nothing exists at the path. */
+const readSocketIdentity = (socketPath: string) =>
+	Effect.try({
+		try: (): SocketIdentity | undefined => {
+			try {
+				const stats = statSync(socketPath, { bigint: true });
+				return { dev: stats.dev, ino: stats.ino };
+			} catch (cause) {
+				if (hasErrnoCode(cause, 'ENOENT')) return undefined;
+				throw cause;
+			}
+		},
+		catch: (cause) =>
+			new DaemonError({ message: `Could not stat ${socketPath}`, cause }),
+	});
 
 const listenOnce = (server: Server, socketPath: string) =>
 	new Promise<void>((resolve, reject) => {
@@ -167,32 +197,59 @@ const listen = (server: Server, socketPath: string) =>
 
 /** Bound on stopping runs during shutdown; whatever survives it gets SIGKILL so the daemon always exits. */
 export const SHUTDOWN_RUN_STOP_TIMEOUT_MS = 10_000;
+/** How often the daemon checks that its socket file is still the one it bound. */
+export const SOCKET_WATCH_INTERVAL_MS = 2_000;
 const SHUTDOWN_REPLY_FLUSH_TIMEOUT_MS = 1_000;
 /** Read-only requests run beside the serial queue; a few workers keep one slow read from starving the rest. */
 const READ_WORKER_COUNT = 4;
 const SHUTTING_DOWN_MESSAGE = 'Daemon is shutting down';
 
-/** Stops accepting connections right away without waiting for open ones to end. */
-const stopListening = (server: Server, socketPath: string) =>
-	Effect.try({
-		try: () => {
-			if (server.listening) server.close();
-			try {
-				unlinkSync(socketPath);
-			} catch (cause) {
-				if (
-					!(
-						cause instanceof Error &&
-						'code' in cause &&
-						cause.code === 'ENOENT'
-					)
-				)
-					throw cause;
-			}
-		},
-		catch: (cause) =>
-			new DaemonError({ message: 'Could not close daemon socket', cause }),
-	});
+/** Every listener this daemon created, oldest first, and the identity of the socket file the last one bound. */
+type SocketListeners = {
+	readonly servers: Array<Server>;
+	identity: SocketIdentity;
+};
+
+/**
+ * Stops accepting connections right away without waiting for open ones to end.
+ *
+ * Closing a listener makes libuv unlink whatever is at the path it bound, even when someone else
+ * put it there, and the same happens to any listener still open when the process exits. So a
+ * listener that no longer owns the path is closed while the path's current file is moved out of
+ * the way, and moved back right after.
+ */
+const stopListening = (listeners: SocketListeners, socketPath: string) =>
+	readSocketIdentity(socketPath).pipe(
+		Effect.flatMap((current) =>
+			Effect.try({
+				try: () => {
+					const newest = listeners.servers.at(-1);
+					const owned = sameIdentity(current, listeners.identity);
+					const abandoned = listeners.servers.filter(
+						(server) => server !== newest || !owned,
+					);
+					const closeAll = (servers: ReadonlyArray<Server>) => {
+						for (const server of servers) if (server.listening) server.close();
+					};
+					if (current === undefined || abandoned.length === 0)
+						closeAll(abandoned);
+					else {
+						const aside = `${socketPath}.${process.pid}.aside`;
+						renameSync(socketPath, aside);
+						try {
+							closeAll(abandoned);
+						} finally {
+							if (existsSync(socketPath)) unlinkSync(aside);
+							else renameSync(aside, socketPath);
+						}
+					}
+					if (owned && newest !== undefined) closeAll([newest]);
+				},
+				catch: (cause) =>
+					new DaemonError({ message: 'Could not close daemon socket', cause }),
+			}),
+		),
+	);
 
 const killProcessGroup = (processes: ProcessesService, live: LiveService) =>
 	processes.kill(live.ownership.identity).pipe(
@@ -220,6 +277,7 @@ export const makeDaemon = (options: {
 	logsDirectory?: string;
 	shutdownTimeoutMs?: number;
 	runStopDeadlineMs?: number;
+	socketWatchIntervalMs?: number;
 }): Effect.Effect<
 	DaemonService,
 	unknown,
@@ -400,20 +458,18 @@ export const makeDaemon = (options: {
 		});
 		yield* serviceState.reconcile;
 		yield* bestEffortPrune(registry);
-		/** One failed message must not end its worker, or nothing behind it in the queue would ever be processed. */
+		/** One failed step must not end its loop, or nothing behind it would ever run. */
+		const forkLoop = <R>(step: Effect.Effect<void, unknown, R>) =>
+			Effect.forever(
+				step.pipe(Effect.catchCause((cause) => Effect.logError(cause))),
+			).pipe(Effect.forkScoped);
 		const forkWorker = <Message, R>(
 			queue: Queue.Dequeue<Message>,
 			handle: (message: Message) => Effect.Effect<void, unknown, R>,
 		) =>
-			Effect.forever(
-				Queue.take(queue).pipe(
-					Effect.flatMap((message) =>
-						handle(message).pipe(
-							Effect.catchCause((cause) => Effect.logError(cause)),
-						),
-					),
-				),
-			).pipe(Effect.forkScoped);
+			forkLoop(
+				Queue.take(queue).pipe(Effect.flatMap((message) => handle(message))),
+			);
 		const requestWorker = yield* forkWorker(requestQueue, (message) => {
 			inFlight.current = message;
 			return dispatcher.handleClient(message).pipe(
@@ -460,7 +516,7 @@ export const makeDaemon = (options: {
 				Effect.andThen(Effect.sync(() => socket.destroy())),
 				Effect.andThen(subscriptions.releaseSocket(socket)),
 			);
-		const server = createServer((socket) => {
+		const onConnection = (socket: Socket) => {
 			const writer = makeSocketWriter(socket, {
 				onOverflow: () => subscriptions.releaseSocketOwnership(socket),
 				onClose: () => Effect.runFork(subscriptions.releaseSocket(socket)),
@@ -504,7 +560,8 @@ export const makeDaemon = (options: {
 					}
 				}
 			});
-		});
+		};
+		const server = createServer(onConnection);
 		// Registered before the shutdown finalizer so it runs after it: the pidfile has to
 		// outlive a hung shutdown, that is when a client needs it to find this process.
 		yield* Effect.addFinalizer(() =>
@@ -513,11 +570,20 @@ export const makeDaemon = (options: {
 			),
 		);
 		yield* listen(server, options.socketPath);
+		const boundIdentity = yield* readSocketIdentity(options.socketPath);
+		if (boundIdentity === undefined)
+			return yield* new DaemonError({
+				message: `Socket ${options.socketPath} was removed right after it was bound`,
+			});
+		const listeners: SocketListeners = {
+			servers: [server],
+			identity: boundIdentity,
+		};
 		// Registered only once this instance owns the socket: a daemon that lost the race must not unlink the winner's.
 		yield* Effect.addFinalizer(() =>
 			Effect.gen(function* () {
 				lifecycle.closing = true;
-				yield* stopListening(server, options.socketPath).pipe(
+				yield* stopListening(listeners, options.socketPath).pipe(
 					Effect.catch((cause) => Effect.logError(cause)),
 				);
 				yield* Fiber.interrupt(requestWorker);
@@ -566,6 +632,61 @@ export const makeDaemon = (options: {
 				}
 			}),
 		);
+		// Forked after the shutdown finalizer is registered, so scope close interrupts it first and it cannot re-bind mid-shutdown.
+		const socketWatch = { abandoned: false };
+		const abandonSocket = Effect.logWarning(
+			`Socket ${options.socketPath} now belongs to another process; shutting down without touching it`,
+		).pipe(
+			Effect.andThen(
+				Effect.sync(() => {
+					socketWatch.abandoned = true;
+				}),
+			),
+			Effect.andThen(requestShutdown),
+		);
+		/** Open client connections are bound to the old listener, not to the path, so they keep working. */
+		const rebindSocket = Effect.tryPromise({
+			try: async (): Promise<'bound' | 'taken'> => {
+				const replacement = createServer(onConnection);
+				try {
+					await listenOnce(replacement, options.socketPath);
+				} catch (cause) {
+					if (isAddressInUse(cause)) return 'taken';
+					throw cause;
+				}
+				listeners.servers.push(replacement);
+				return 'bound';
+			},
+			catch: (cause) =>
+				new DaemonError({
+					message: `Could not re-bind ${options.socketPath}`,
+					cause,
+				}),
+		});
+		const watchSocket = Effect.gen(function* () {
+			yield* Effect.sleep(
+				options.socketWatchIntervalMs === undefined
+					? SOCKET_WATCH_INTERVAL_MS
+					: options.socketWatchIntervalMs,
+			);
+			if (socketWatch.abandoned) return;
+			const current = yield* readSocketIdentity(options.socketPath);
+			if (current === undefined) {
+				if ((yield* rebindSocket) === 'taken') return yield* abandonSocket;
+				const rebound = yield* readSocketIdentity(options.socketPath);
+				if (rebound === undefined)
+					return yield* new DaemonError({
+						message: `Socket ${options.socketPath} was removed right after it was re-bound`,
+					});
+				listeners.identity = rebound;
+				return yield* Effect.logInfo(
+					`Socket ${options.socketPath} was missing; re-bound it`,
+				);
+			}
+			if (!sameIdentity(current, listeners.identity))
+				return yield* abandonSocket;
+		});
+		yield* forkLoop(watchSocket);
 		yield* writeDaemonPidfile(options.socketPath);
 		return Daemon.of({
 			request: (incoming: DaemonRequest) =>
