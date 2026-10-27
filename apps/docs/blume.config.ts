@@ -39,6 +39,12 @@ export default defineConfig({
 			}),
 		],
 	},
+	theme: {
+		accent: 'blue',
+		radius: 'lg',
+		mode: 'light',
+		fonts: { display: 'inter', body: 'inter', mono: 'geist-mono' },
+	},
 	navigation: {
 		actions: [{ label: `v${devsessPackageJson.version}`, href: '/changelog' }],
 		sidebar: [
