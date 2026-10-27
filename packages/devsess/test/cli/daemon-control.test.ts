@@ -6,7 +6,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from 'node:fs';
-import { createConnection, createServer } from 'node:net';
+import { createConnection, createServer, type Server } from 'node:net';
 import { join } from 'node:path';
 import type { NodeServices } from '@effect/platform-node';
 import { describe, expect, it } from '@effect/vitest';
@@ -734,6 +734,95 @@ describe('daemon control', () => {
 					),
 				);
 			},
+		);
+
+		/** Reproduces a daemon that is alive and recorded in its pidfile but whose socket file was unlinked. */
+		const unlinkSocket = (fixture: { server: Server; socketPath: string }) =>
+			Effect.promise(
+				() =>
+					new Promise<void>((resolve) => fixture.server.close(() => resolve())),
+			).pipe(
+				Effect.tap(() =>
+					Effect.sync(() => rmSync(fixture.socketPath, { force: true })),
+				),
+			);
+
+		it.live(
+			'stop --force terminates a live pidfile PID whose socket file is gone',
+			() =>
+				runTest(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const fixture = yield* setup({ fakeDaemon: true });
+							const child = fixture.child as ChildProcess;
+							yield* unlinkSocket(fixture);
+							expect(existsSync(fixture.socketPath)).toBe(false);
+							const stdout = captureStdout();
+							yield* stop(true).pipe(
+								Effect.provide(ConfigProvider.layer(fixture.config)),
+								Effect.ensuring(Effect.sync(stdout.restore)),
+							);
+							yield* waitForExit(child);
+							expect(child.signalCode).toBe('SIGTERM');
+							expect(existsSync(fixture.pidfilePath)).toBe(false);
+							expect(stdout.output()).toContain(
+								`Stopped unresponsive daemon PID ${child.pid}`,
+							);
+							expect(stdout.output()).not.toContain('not running');
+						}),
+					),
+				),
+		);
+
+		it.live(
+			'stop without --force names the PID instead of claiming the daemon is not running',
+			() =>
+				runTest(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const fixture = yield* setup({ fakeDaemon: true });
+							const child = fixture.child as ChildProcess;
+							yield* unlinkSocket(fixture);
+							const exit = yield* Effect.exit(
+								stop(false).pipe(
+									Effect.provide(ConfigProvider.layer(fixture.config)),
+								),
+							);
+							expect(Exit.isFailure(exit)).toBe(true);
+							const error = Exit.isFailure(exit)
+								? Cause.squash(exit.cause)
+								: undefined;
+							expect((error as Error).message).toContain(`PID ${child.pid}`);
+							expect((error as Error).message).toContain('--force');
+							expect(child.exitCode).toBeNull();
+							expect(child.signalCode).toBeNull();
+						}),
+					),
+				),
+		);
+
+		it.live(
+			'status reports a live pidfile PID without a socket as unresponsive',
+			() =>
+				runTest(
+					Effect.scoped(
+						Effect.gen(function* () {
+							const fixture = yield* setup({ fakeDaemon: true });
+							const child = fixture.child as ChildProcess;
+							yield* unlinkSocket(fixture);
+							const stdout = captureStdout();
+							const exit = yield* Effect.exit(
+								status().pipe(
+									Effect.provide(ConfigProvider.layer(fixture.config)),
+									Effect.ensuring(Effect.sync(stdout.restore)),
+								),
+							);
+							expect(Exit.isFailure(exit)).toBe(true);
+							expect(stdout.output()).toContain('Daemon: unresponsive');
+							expect(stdout.output()).toContain(`PID: ${child.pid}`);
+						}),
+					),
+				),
 		);
 
 		it.live('status reports it as unresponsive with the PID', () =>

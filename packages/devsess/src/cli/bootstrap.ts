@@ -13,6 +13,12 @@ import {
 import { dirname, join, parse } from 'node:path';
 import { Effect, Schema } from 'effect';
 import { callDaemon, DaemonClientError } from './client';
+import {
+	PROCESS_KILL_TIMEOUT_MS,
+	PROCESS_TERM_TIMEOUT_MS,
+	terminateProcess,
+} from './daemon-termination';
+import { PROCESS_INSPECTION_TIMEOUT_MS } from './termination';
 
 export class DaemonBootstrapError extends Schema.TaggedError<DaemonBootstrapError>()(
 	'DaemonBootstrapError',
@@ -167,6 +173,7 @@ const processBirth = (pid: number) =>
 				execFile(
 					'ps',
 					['-o', 'lstart=', '-p', String(pid)],
+					{ timeout: PROCESS_INSPECTION_TIMEOUT_MS },
 					(error, stdout) => {
 						if (error !== null && 'code' in error && Number(error.code) === 1) {
 							resolve(undefined);
@@ -424,8 +431,16 @@ const endpointTimedOut = (error: DaemonBootstrapError) =>
 /** A cold start runs a ps-based reconcile before the daemon listens; on a loaded machine that alone took about 5 s. */
 export const POST_LAUNCH_HANDSHAKE_TIMEOUT_MS = 15_000;
 
-/** Leaves room for the initial probe and the lock handoff around the post-launch handshake. */
-const bootstrapTimeoutMs = POST_LAUNCH_HANDSHAKE_TIMEOUT_MS + 5_000;
+/** How long a live daemon whose socket vanished gets to re-bind it on its own before it is terminated; the daemon's watchdog re-binds within 2 s. */
+export const ORPHAN_REBIND_GRACE_MS = 4_000;
+
+/** Leaves room for the initial probe and the lock handoff around the post-launch handshake, plus the worst case of reclaiming an orphaned daemon first. */
+const bootstrapTimeoutMs =
+	POST_LAUNCH_HANDSHAKE_TIMEOUT_MS +
+	ORPHAN_REBIND_GRACE_MS +
+	PROCESS_TERM_TIMEOUT_MS +
+	PROCESS_KILL_TIMEOUT_MS +
+	5_000;
 
 const timeoutError = (
 	location: DaemonLocation,
@@ -470,6 +485,7 @@ export const ensureDaemon = (options: {
 	/** Where the launched daemon writes `daemon.log`, so a failed start can point at it. */
 	logsDirectory?: string;
 	launchHandshakeTimeoutMs?: number;
+	orphanRebindGraceMs?: number;
 }) => {
 	const timeoutMs =
 		options.timeoutMs === undefined ? bootstrapTimeoutMs : options.timeoutMs;
@@ -477,6 +493,10 @@ export const ensureDaemon = (options: {
 		options.launchHandshakeTimeoutMs === undefined
 			? POST_LAUNCH_HANDSHAKE_TIMEOUT_MS
 			: options.launchHandshakeTimeoutMs;
+	const orphanRebindGraceMs =
+		options.orphanRebindGraceMs === undefined
+			? ORPHAN_REBIND_GRACE_MS
+			: options.orphanRebindGraceMs;
 	const deadline = Date.now() + timeoutMs;
 	const handshake = (limitMs: number) =>
 		Effect.suspend(() => {
@@ -487,6 +507,23 @@ export const ensureDaemon = (options: {
 				timeoutMs: Math.min(remaining, limitMs),
 			});
 		});
+	/** A live pidfile PID with no reachable socket means the daemon is up but unreachable. Resolves true if it re-bound the socket on its own, otherwise terminates it. */
+	const reclaimOrphan = (pid: number) =>
+		handshake(orphanRebindGraceMs).pipe(
+			Effect.as(true),
+			Effect.catch(() =>
+				terminateProcess(pid).pipe(
+					Effect.mapError(
+						(cause) =>
+							new DaemonBootstrapError({
+								message: `Daemon PID ${pid} is running but unreachable at ${options.location.socketPath}, and could not be terminated: ${cause.message}. Run \`devsess daemon stop --force\`, then retry.`,
+								cause,
+							}),
+					),
+					Effect.as(false),
+				),
+			),
+		);
 	const acquire = (
 		missingOwnerAttempts: number,
 	): Effect.Effect<void, DaemonBootstrapError> =>
@@ -558,20 +595,42 @@ export const ensureDaemon = (options: {
 								Effect.andThen(
 									handshake(150).pipe(
 										Effect.catch((error) => {
-											const relaunch = removeStaleSocket(
+											const launchFresh = liveDaemonPid(
 												options.location.socketPath,
 											).pipe(
+												Effect.flatMap((pid) =>
+													pid === undefined
+														? removeStaleSocket(options.location.socketPath)
+														: Effect.void,
+												),
 												Effect.andThen(options.launch()),
 												Effect.andThen(
 													handshake(launchHandshakeTimeoutMs).pipe(
-														Effect.mapError(
-															(cause) =>
-																new DaemonBootstrapError({
-																	message: `Daemon did not finish starting within ${launchHandshakeTimeoutMs / 1000} s at ${options.location.socketPath}${options.logsDirectory === undefined ? '' : `; see ${daemonLogPath(options.logsDirectory)}`}`,
-																	cause,
-																}),
+														Effect.catch((cause) =>
+															liveDaemonPid(options.location.socketPath).pipe(
+																Effect.flatMap(
+																	(pid) =>
+																		new DaemonBootstrapError({
+																			message: `Daemon did not finish starting within ${launchHandshakeTimeoutMs / 1000} s at ${options.location.socketPath}${pid === undefined ? '' : `; PID ${pid} is running but not answering`}${options.logsDirectory === undefined ? '' : `; see ${daemonLogPath(options.logsDirectory)}`}`,
+																			cause,
+																		}),
+																),
+															),
 														),
 													),
+												),
+											);
+											const relaunch = liveDaemonPid(
+												options.location.socketPath,
+											).pipe(
+												Effect.flatMap((pid) =>
+													pid === undefined
+														? launchFresh
+														: reclaimOrphan(pid).pipe(
+																Effect.flatMap((healed) =>
+																	healed ? Effect.void : launchFresh,
+																),
+															),
 												),
 											);
 											if (endpointIsMissing(error)) return relaunch;

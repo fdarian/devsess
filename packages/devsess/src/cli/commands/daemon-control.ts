@@ -12,6 +12,12 @@ import {
 import { callDaemon, DaemonClientError } from '../client';
 import { SHUTDOWN_RUN_STOP_TIMEOUT_MS } from '../daemon';
 import {
+	type DaemonTerminationError,
+	PROCESS_TERM_TIMEOUT_MS,
+	terminateProcess,
+	waitForProcessExit as waitForProcessExitShared,
+} from '../daemon-termination';
+import {
 	bootoutDaemonJob,
 	DAEMON_LAUNCHD_LABEL,
 	inspectDaemonJob,
@@ -43,8 +49,6 @@ import {
 /** The daemon unlinks its socket first and then spends up to its shutdown budget stopping services, so both waits get that budget plus a margin. */
 const DAEMON_STOP_TIMEOUT_MS = SHUTDOWN_RUN_STOP_TIMEOUT_MS + 2_000;
 const DAEMON_POLL_INTERVAL_MS = 50;
-const UNRESPONSIVE_DAEMON_TERM_TIMEOUT_MS = 5_000;
-const UNRESPONSIVE_DAEMON_KILL_TIMEOUT_MS = 2_000;
 
 export class DaemonStatusError extends Schema.TaggedError<DaemonStatusError>()(
 	'DaemonStatusError',
@@ -180,8 +184,13 @@ const probeDaemon = (
 	socketPath: string,
 ): Effect.Effect<DaemonProbe, unknown, FileSystem> =>
 	Effect.gen(function* () {
-		if (!(yield* socketExists(socketPath)))
-			return { _tag: 'not-running' } as const;
+		if (!(yield* socketExists(socketPath))) {
+			// A daemon whose socket was unlinked is still running, just unreachable.
+			const pid = yield* liveDaemonPid(socketPath);
+			return pid === undefined
+				? ({ _tag: 'not-running' } as const)
+				: ({ _tag: 'unresponsive', pid } as const);
+		}
 		const info = yield* Effect.exit(readInfo(socketPath));
 		if (Exit.isSuccess(info))
 			return { _tag: 'running', info: info.value } as const;
@@ -377,6 +386,9 @@ export const stopOutdatedDaemon = (
 const fromBootstrapError = (cause: DaemonBootstrapError) =>
 	new CommandError({ message: cause.message, cause });
 
+const fromTermination = (cause: DaemonTerminationError) =>
+	new CommandError({ message: cause.message, cause: cause.cause });
+
 /** KeepAlive would relaunch a daemon killed by a signal, so the job has to be unloaded before any signal is sent. */
 const releaseLaunchdJob = Effect.gen(function* () {
 	if (!(yield* usesLaunchd)) return;
@@ -451,53 +463,10 @@ const stopRunning = (
 		yield* write('Daemon stopped.');
 	});
 
-const isProcessAlive = (pid: number) =>
-	Effect.try({
-		try: () => {
-			try {
-				process.kill(pid, 0);
-				return true;
-			} catch (cause) {
-				if (cause instanceof Error && 'code' in cause && cause.code === 'ESRCH')
-					return false;
-				throw cause;
-			}
-		},
-		catch: (cause) =>
-			new CommandError({
-				message: `Could not check whether daemon PID ${pid} is running`,
-				cause,
-			}),
-	});
-
-const signalProcess = (pid: number, signal: 'SIGTERM' | 'SIGKILL') =>
-	Effect.try({
-		try: () => {
-			try {
-				process.kill(pid, signal);
-			} catch (cause) {
-				if (cause instanceof Error && 'code' in cause && cause.code === 'ESRCH')
-					return;
-				throw cause;
-			}
-		},
-		catch: (cause) =>
-			new CommandError({
-				message: `Could not send ${signal} to daemon PID ${pid}`,
-				cause,
-			}),
-	});
-
-const waitForProcessExit = (
-	pid: number,
-	deadline: number,
-): Effect.Effect<boolean, CommandError> =>
-	Effect.gen(function* () {
-		if (!(yield* isProcessAlive(pid))) return true;
-		if (Date.now() >= deadline) return false;
-		yield* Effect.sleep(`${DAEMON_POLL_INTERVAL_MS} millis`);
-		return yield* waitForProcessExit(pid, deadline);
-	});
+const waitForProcessExit = (pid: number, deadline: number) =>
+	waitForProcessExitShared(pid, deadline).pipe(
+		Effect.mapError(fromTermination),
+	);
 
 const clearDaemonEndpoint = (socketPath: string) =>
 	removeStaleSocket(socketPath).pipe(
@@ -510,7 +479,7 @@ export const stopUnresponsiveDaemon = (
 	socketPath: string,
 	pid: number | undefined,
 	force: boolean,
-	termTimeoutMs = UNRESPONSIVE_DAEMON_TERM_TIMEOUT_MS,
+	termTimeoutMs = PROCESS_TERM_TIMEOUT_MS,
 ) =>
 	Effect.gen(function* () {
 		if (pid === undefined) {
@@ -525,27 +494,11 @@ export const stopUnresponsiveDaemon = (
 				message: `Daemon PID ${pid} is not responding at ${socketPath}. Re-run with --force to terminate it.`,
 			});
 		yield* releaseLaunchdJob;
-		yield* signalProcess(pid, 'SIGTERM');
-		const terminated = yield* waitForProcessExit(
-			pid,
-			Date.now() + termTimeoutMs,
+		const signal = yield* terminateProcess(pid, termTimeoutMs).pipe(
+			Effect.mapError(fromTermination),
 		);
-		if (!terminated) {
-			yield* signalProcess(pid, 'SIGKILL');
-			if (
-				!(yield* waitForProcessExit(
-					pid,
-					Date.now() + UNRESPONSIVE_DAEMON_KILL_TIMEOUT_MS,
-				))
-			)
-				return yield* new CommandError({
-					message: `Daemon PID ${pid} survived SIGKILL`,
-				});
-		}
 		yield* clearDaemonEndpoint(socketPath);
-		yield* write(
-			`Stopped unresponsive daemon PID ${pid} with ${terminated ? 'SIGTERM' : 'SIGKILL'}.`,
-		);
+		yield* write(`Stopped unresponsive daemon PID ${pid} with ${signal}.`);
 	});
 
 /** `--force` has to land even when the daemon is too busy to shut itself down, so it falls back to signalling the pidfile PID. */

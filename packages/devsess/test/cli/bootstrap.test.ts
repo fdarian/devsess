@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import {
 	chmodSync,
 	existsSync,
@@ -10,11 +10,13 @@ import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 import { Cause, Effect, Exit, Option } from 'effect';
+import { vi } from 'vitest';
 import {
 	awaitDaemonHandshake,
 	DaemonBootstrapError,
 	ensureDaemon,
 	launchDetachedDaemon,
+	liveDaemonPid,
 	POST_LAUNCH_HANDSHAKE_TIMEOUT_MS,
 } from '../../src/cli/bootstrap';
 import { processBirthOf } from '../support/process-birth';
@@ -706,4 +708,198 @@ describe('daemon bootstrap', () => {
 			),
 		);
 	});
+	describe('a live daemon whose socket file is gone', () => {
+		const respondingServer = () =>
+			createServer((socket) => {
+				socket.once('data', (data) => {
+					const request = JSON.parse(data.toString()) as { requestId: string };
+					socket.end(
+						`${JSON.stringify({ version: 1, requestId: request.requestId, ok: true, result: [] })}\n`,
+					);
+				});
+			});
+		/** A child that stays alive until signalled stands in for the orphaned daemon process. */
+		const spawnOrphan = (rootDir: string) =>
+			Effect.acquireRelease(
+				Effect.tryPromise({
+					try: () =>
+						new Promise<ChildProcess>((resolve, reject) => {
+							const child = spawn(
+								process.execPath,
+								['-e', "setInterval(() => {}, 1000); console.log('ready');"],
+								{ stdio: ['ignore', 'pipe', 'ignore'] },
+							);
+							child.once('error', reject);
+							child.stdout?.once('data', () => {
+								if (child.pid === undefined) {
+									reject(new Error('Missing child PID'));
+									return;
+								}
+								writeFileSync(
+									join(rootDir, 'daemon.pid'),
+									`${child.pid}\n${processBirthOf(child.pid)}\n`,
+								);
+								resolve(child);
+							});
+						}),
+					catch: (cause) => cause,
+				}),
+				(child) =>
+					Effect.sync(() => {
+						if (child.exitCode === null && child.signalCode === null)
+							child.kill('SIGKILL');
+					}),
+			);
+		const waitForExit = (child: ChildProcess) =>
+			Effect.promise(
+				() =>
+					new Promise<void>((resolve) => {
+						if (child.exitCode !== null || child.signalCode !== null) {
+							resolve();
+							return;
+						}
+						child.once('exit', () => resolve());
+					}),
+			);
+
+		it.live('terminates the orphan and relaunches once the grace expires', () =>
+			runTest(
+				Effect.scoped(
+					Effect.gen(function* () {
+						const rootDir = yield* makeTempDir;
+						const socketPath = join(rootDir, 'daemon.sock');
+						const orphan = yield* spawnOrphan(rootDir);
+						const replacement = respondingServer();
+						yield* Effect.addFinalizer(() =>
+							Effect.sync(() => replacement.close()),
+						);
+						let launches = 0;
+						yield* ensureDaemon({
+							location: { dataDirectory: join(rootDir, 'state'), socketPath },
+							orphanRebindGraceMs: 300,
+							launch: () =>
+								Effect.sync(() => {
+									launches += 1;
+									replacement.listen(socketPath);
+								}),
+						});
+						yield* waitForExit(orphan);
+						expect(orphan.signalCode).toBe('SIGTERM');
+						expect(launches).toBe(1);
+						expect(yield* liveDaemonPid(socketPath)).toBeUndefined();
+					}),
+				),
+			),
+		);
+
+		it.live('leaves an orphan that re-binds its socket within the grace', () =>
+			runTest(
+				Effect.scoped(
+					Effect.gen(function* () {
+						const rootDir = yield* makeTempDir;
+						const socketPath = join(rootDir, 'daemon.sock');
+						const orphan = yield* spawnOrphan(rootDir);
+						const rebound = respondingServer();
+						yield* Effect.addFinalizer(() =>
+							Effect.sync(() => rebound.close()),
+						);
+						yield* Effect.sleep('300 millis').pipe(
+							Effect.andThen(listen(rebound, socketPath)),
+							Effect.forkScoped,
+						);
+						let launches = 0;
+						yield* ensureDaemon({
+							location: { dataDirectory: join(rootDir, 'state'), socketPath },
+							orphanRebindGraceMs: 3_000,
+							launch: () =>
+								Effect.sync(() => {
+									launches += 1;
+								}),
+						});
+						expect(launches).toBe(0);
+						expect(orphan.exitCode).toBeNull();
+						expect(orphan.signalCode).toBeNull();
+						expect(yield* liveDaemonPid(socketPath)).toBe(orphan.pid);
+					}),
+				),
+			),
+		);
+
+		it.live('names the live PID when the launched daemon never answers', () =>
+			runTest(
+				Effect.scoped(
+					Effect.gen(function* () {
+						const rootDir = yield* makeTempDir;
+						const socketPath = join(rootDir, 'daemon.sock');
+						const children: Array<ChildProcess> = [];
+						yield* Effect.addFinalizer(() =>
+							Effect.sync(() => {
+								for (const child of children) child.kill('SIGKILL');
+							}),
+						);
+						const exit = yield* Effect.exit(
+							ensureDaemon({
+								location: { dataDirectory: join(rootDir, 'state'), socketPath },
+								launchHandshakeTimeoutMs: 300,
+								launch: () =>
+									Effect.sync(() => {
+										const child = spawn(
+											process.execPath,
+											['-e', 'setInterval(() => {}, 1000)'],
+											{ stdio: 'ignore' },
+										);
+										children.push(child);
+										if (child.pid === undefined)
+											throw new Error('Missing child PID');
+										writeFileSync(
+											join(rootDir, 'daemon.pid'),
+											`${child.pid}\n${processBirthOf(child.pid)}\n`,
+										);
+									}),
+							}),
+						);
+						const error = Exit.isFailure(exit)
+							? Cause.squash(exit.cause)
+							: undefined;
+						expect(error).toBeInstanceOf(DaemonBootstrapError);
+						expect((error as DaemonBootstrapError).message).toContain(
+							`PID ${children[0]?.pid} is running but not answering`,
+						);
+					}),
+				),
+			),
+		);
+	});
+
+	it.live.skipIf(process.platform === 'linux')(
+		'fails instead of hanging when ps does not answer',
+		() =>
+			runTest(
+				Effect.scoped(
+					Effect.gen(function* () {
+						const rootDir = yield* makeTempDir;
+						const binDirectory = join(rootDir, 'bin');
+						mkdirSync(binDirectory);
+						const fakePs = join(binDirectory, 'ps');
+						writeFileSync(fakePs, '#!/bin/sh\nexec /bin/sleep 30\n');
+						chmodSync(fakePs, 0o755);
+						writeFileSync(join(rootDir, 'daemon.pid'), '4242\nps:whenever\n');
+						vi.stubEnv('PATH', `${binDirectory}:${process.env.PATH}`);
+						yield* Effect.addFinalizer(() =>
+							Effect.sync(() => vi.unstubAllEnvs()),
+						);
+						const exit = yield* Effect.exit(
+							liveDaemonPid(join(rootDir, 'daemon.sock')),
+						);
+						const error = Exit.isFailure(exit)
+							? Cause.squash(exit.cause)
+							: undefined;
+						expect(error).toBeInstanceOf(DaemonBootstrapError);
+						expect((error as DaemonBootstrapError).message).toContain(
+							'Could not inspect process birth for PID 4242',
+						);
+					}),
+				),
+			),
+	);
 });
