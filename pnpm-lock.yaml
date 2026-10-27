@@ -179,8 +179,8 @@ importers:
   apps/docs:
     devDependencies:
       '@fdarian/blume-preset':
-        specifier: git+file:///Users/farreldarian/code/fdarian/blume-preset#v0.1.0
-        version: git+file:///Users/farreldarian/code/fdarian/blume-preset#25c0c484b59e2f4fc4d1a5822a52572a2cb573df(@types/react@19.3.0)(blume@2.1.0(@emnapi/runtime@1.11.3)(@shikijs/themes@4.5.0)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(@vercel/functions@3.9.9(ws@8.22.0))(csstype@3.2.3)(esbuild@0.28.2)(ioredis@5.11.1(supports-color@8.1.1))(prettier@3.9.9)(rollup@4.62.0)(supports-color@8.1.1)(terser@5.48.0)(tsx@4.22.4)(vite@8.0.16(@types/node@26.6.4)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))(ws@8.22.0)(yaml@2.9.0))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        specifier: github:fdarian/blume-preset#v0.1.0
+        version: https://codeload.github.com/fdarian/blume-preset/tar.gz/25c0c484b59e2f4fc4d1a5822a52572a2cb573df(@types/react@19.3.0)(blume@2.1.0(@emnapi/runtime@1.11.3)(@shikijs/themes@4.5.0)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(@vercel/functions@3.9.9(ws@8.22.0))(csstype@3.2.3)(esbuild@0.28.2)(ioredis@5.11.1(supports-color@8.1.1))(prettier@3.9.9)(rollup@4.62.0)(supports-color@8.1.1)(terser@5.48.0)(tsx@4.22.4)(vite@8.0.16(@types/node@26.6.4)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))(ws@8.22.0)(yaml@2.9.0))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@types/node':
         specifier: ^26.6.4
         version: 26.6.4
@@ -1106,8 +1106,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@fdarian/blume-preset@git+file:///Users/farreldarian/code/fdarian/blume-preset#25c0c484b59e2f4fc4d1a5822a52572a2cb573df':
-    resolution: {commit: 25c0c484b59e2f4fc4d1a5822a52572a2cb573df, repo: file:///Users/farreldarian/code/fdarian/blume-preset, type: git}
+  '@fdarian/blume-preset@https://codeload.github.com/fdarian/blume-preset/tar.gz/25c0c484b59e2f4fc4d1a5822a52572a2cb573df':
+    resolution: {gitHosted: true, integrity: sha512-ZRniHD0EiXKWWTmeI5ErIxMxR8qSh/ZZwmFaSPI5V3fTHPvThA7l3XIHmzPP4ugn8dsa+JEPYE9gSSE8xfDf3A==, tarball: https://codeload.github.com/fdarian/blume-preset/tar.gz/25c0c484b59e2f4fc4d1a5822a52572a2cb573df}
     version: 0.1.0
     peerDependencies:
       blume: ^2.1.0
@@ -6449,7 +6449,7 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
-  '@fdarian/blume-preset@git+file:///Users/farreldarian/code/fdarian/blume-preset#25c0c484b59e2f4fc4d1a5822a52572a2cb573df(@types/react@19.3.0)(blume@2.1.0(@emnapi/runtime@1.11.3)(@shikijs/themes@4.5.0)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(@vercel/functions@3.9.9(ws@8.22.0))(csstype@3.2.3)(esbuild@0.28.2)(ioredis@5.11.1(supports-color@8.1.1))(prettier@3.9.9)(rollup@4.62.0)(supports-color@8.1.1)(terser@5.48.0)(tsx@4.22.4)(vite@8.0.16(@types/node@26.6.4)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))(ws@8.22.0)(yaml@2.9.0))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+  '@fdarian/blume-preset@https://codeload.github.com/fdarian/blume-preset/tar.gz/25c0c484b59e2f4fc4d1a5822a52572a2cb573df(@types/react@19.3.0)(blume@2.1.0(@emnapi/runtime@1.11.3)(@shikijs/themes@4.5.0)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(@vercel/functions@3.9.9(ws@8.22.0))(csstype@3.2.3)(esbuild@0.28.2)(ioredis@5.11.1(supports-color@8.1.1))(prettier@3.9.9)(rollup@4.62.0)(supports-color@8.1.1)(terser@5.48.0)(tsx@4.22.4)(vite@8.0.16(@types/node@26.6.4)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))(ws@8.22.0)(yaml@2.9.0))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
       '@base-ui/react': 1.9.0(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       blume: 2.1.0(@emnapi/runtime@1.11.3)(@shikijs/themes@4.5.0)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(@vercel/functions@3.9.9(ws@8.22.0))(csstype@3.2.3)(esbuild@0.28.2)(ioredis@5.11.1(supports-color@8.1.1))(prettier@3.9.9)(rollup@4.62.0)(supports-color@8.1.1)(terser@5.48.0)(tsx@4.22.4)(vite@8.0.16(@types/node@26.6.4)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))(ws@8.22.0)(yaml@2.9.0)

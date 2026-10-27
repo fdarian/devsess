@@ -9,7 +9,7 @@
 		"check:lint": "biome check"
 	},
 	"devDependencies": {
-		"@fdarian/blume-preset": "git+file:///Users/farreldarian/code/fdarian/blume-preset#v0.1.0",
+		"@fdarian/blume-preset": "github:fdarian/blume-preset#v0.1.0",
 		"@types/node": "^26.6.4",
 		"@types/react": "^19.3.0",
 		"@types/react-dom": "^19.3.0",
