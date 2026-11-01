@@ -1,5 +1,26 @@
 # devsess
 
+## 0.6.0
+
+### Minor Changes
+
+- 9727233: Add `devsess list` to show project presets without starting the daemon, and shell completion for `start` presets.
+- 9727233: Describe commands and options in `--help` and add `devsess docs`, with the CLI reference split into topics readable through `devsess docs read <id>`.
+- 9727233: Add the `devsess` CLI, which starts project presets as detached per-worktree service groups under a per-user daemon and lets you attach to, tail (the last 10 lines by default, optionally following), and stop them.
+- 9727233: Select runs and services with interactive pickers (type-to-filter, `Ctrl-N`/`Ctrl-P`, and recent presets first in the start picker) or by run ID and qualified selectors; `-s` is short for `--service`.
+- 9727233: Add `devsess status` to inspect active runs without starting the daemon, showing service URLs, ports, in-process services, and memory, with `-a` for every run in full and, when nothing is running, a summary of the last finished run.
+- 9727233: Add `devsess daemon start`, `stop`, `status`, `restart`, `install`, and `uninstall`; on macOS the daemon runs as a launchd job.
+- 9727233: Store service logs in ~/Library/Logs/devsess on macOS unless XDG_STATE_HOME is set, and show the logs directory in daemon status.
+- 9727233: Show `publishRunning` readiness and URLs in `devsess status`, and let presets wait for it with `awaitPublish`.
+- 9727233: Add `devsess restart` and `devsess stop --service` to restart or stop individual services without ending the run.
+
+### Patch Changes
+
+- 9727233: A daemon that finds another one already serving the socket now exits 0 instead of being relaunched by launchd forever, no longer deletes that daemon's socket, and its `ps` calls get 3 s instead of 500 ms before failing.
+- 9727233: `daemon stop` and `restart` wait for the daemon process to exit before reporting it stopped, a freshly launched daemon gets 15 s to answer, and connect errors other than a missing daemon are reported with their errno.
+- 9727233: Daemon re-binds its socket if the file is removed, exits cleanly if another process takes the path, and timestamps and explains its startup failures.
+- 9727233: Recover from a live daemon whose socket file was unlinked: the CLI waits for it to re-bind, otherwise terminates and relaunches it, and `daemon stop` / `restart` now reach it.
+
 ## 0.5.0
 
 ### Minor Changes
