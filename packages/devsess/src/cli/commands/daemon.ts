@@ -1,0 +1,448 @@
+import { homedir } from 'node:os';
+import { isAbsolute, join, relative } from 'node:path';
+import { Cause, Config, Effect, Exit, Option, Runtime, Schema } from 'effect';
+import { Command, Flag, Prompt } from 'effect/cli';
+import type { FileSystem } from 'effect/FileSystem';
+import type { Path } from 'effect/Path';
+import type { Terminal } from 'effect/Terminal';
+import {
+	DAEMON_LAUNCH_ENV,
+	ensureDaemon as ensureDaemonBootstrap,
+	launchDetachedDaemon,
+} from '../bootstrap';
+import { callDaemon } from '../client';
+import { DaemonAlreadyRunning } from '../daemon-errors';
+import {
+	type DaemonJob,
+	Launchctl,
+	launchDaemonJob,
+	launchdPlistPath,
+	usesLaunchd,
+} from '../launchd';
+import { DaemonLifecycle } from '../lifecycle';
+import { cancelPicker } from '../picker-cancellation';
+import { captureInvocation } from '../project-matching';
+import { RunResponseSchema } from '../protocol';
+import { isRunActive, type RunRecord } from '../registry';
+import { shortRunId } from '../run-id';
+import { selfInvocationArguments } from '../self-invocation';
+
+export class CommandError extends Schema.TaggedError<CommandError>()(
+	'devsess/cli/CommandError',
+	{ message: Schema.String, cause: Schema.optional(Schema.Defect()) },
+) {
+	override readonly [Runtime.errorExitCode] = 1;
+}
+
+export type CommandOptions = {
+	configPath?: string;
+	project?: string;
+	service?: string;
+	preset?: string;
+	runId?: string;
+	allServices?: boolean;
+	force?: boolean;
+};
+
+export type ChosenRun = RunRecord & {
+	readonly selection: { readonly local: boolean; readonly label: string };
+};
+
+export type DaemonLocation = {
+	dataDirectory: string;
+	socketPath: string;
+	logsDirectory: string;
+};
+
+export { isRunActive } from '../registry';
+
+export const containsPath = (parent: string, child: string) => {
+	const path = relative(parent, child);
+	return (
+		path === '' ||
+		(!path.startsWith('../') && path !== '..' && !isAbsolute(path))
+	);
+};
+
+export const write = (line: string) =>
+	Effect.sync(() => process.stdout.write(`${line}\n`));
+
+export const daemonLocation = (
+	stateHome: string,
+	runtimeDirectory: string,
+	platform = process.platform,
+	explicitStateHome = false,
+): DaemonLocation => {
+	const dataDirectory = join(stateHome, 'devsess');
+	const logsDirectory =
+		platform === 'darwin' && !explicitStateHome
+			? join(homedir(), 'Library', 'Logs', 'devsess')
+			: join(dataDirectory, 'logs');
+	return {
+		dataDirectory,
+		logsDirectory,
+		socketPath: join(runtimeDirectory, 'devsess.sock'),
+	};
+};
+
+/** Resolves the one daemon location shared by every project for this user. */
+export const resolveDaemonLocation = Effect.gen(function* () {
+	const xdgStateHome = yield* Config.String('XDG_STATE_HOME').pipe(
+		Config.option,
+	);
+	const xdgRuntimeDirectory = yield* Config.String('XDG_RUNTIME_DIR').pipe(
+		Config.option,
+	);
+	const stateHome = Option.match(xdgStateHome, {
+		onNone: () => join(homedir(), '.local', 'state'),
+		onSome: (path) => path,
+	});
+	const runtimeDirectory = Option.match(xdgRuntimeDirectory, {
+		onNone: () => join('/tmp', `devsess-${process.getuid?.() ?? process.pid}`),
+		onSome: (path) => join(path, 'devsess'),
+	});
+	return daemonLocation(
+		stateHome,
+		runtimeDirectory,
+		process.platform,
+		Option.isSome(xdgStateHome),
+	);
+});
+
+export const requestId = () => crypto.randomUUID();
+
+export const decodeRunResponse = (value: unknown) =>
+	Schema.decodeUnknownEffect(RunResponseSchema)(value).pipe(
+		Effect.mapError(
+			(cause) =>
+				new CommandError({
+					message: 'Daemon returned an invalid run response',
+					cause,
+				}),
+		),
+	);
+
+export const decodeRunListResponse = (value: unknown) =>
+	Schema.decodeUnknownEffect(Schema.Array(RunResponseSchema))(value).pipe(
+		Effect.mapError(
+			(cause) =>
+				new CommandError({
+					message: 'Daemon returned an invalid run list response',
+					cause,
+				}),
+		),
+	);
+
+const daemonProgramArguments = (location: DaemonLocation) => [
+	...selfInvocationArguments(),
+	'__daemon',
+	'--data-directory',
+	location.dataDirectory,
+	'--logs-directory',
+	location.logsDirectory,
+	'--socket-path',
+	location.socketPath,
+];
+
+export const daemonJob = (location: DaemonLocation): DaemonJob => ({
+	plistPath: launchdPlistPath(),
+	programArguments: [process.execPath, ...daemonProgramArguments(location)],
+	logsDirectory: location.logsDirectory,
+});
+
+/** Starts the daemon only when its socket cannot complete a handshake: under launchd on the default macOS location, detached everywhere else. */
+export const ensureDaemon = (location: DaemonLocation) =>
+	Effect.gen(function* () {
+		const launchedAsDaemon = yield* Config.String(DAEMON_LAUNCH_ENV).pipe(
+			Config.option,
+		);
+		if (Option.isSome(launchedAsDaemon))
+			return yield* new CommandError({
+				message:
+					'Refusing to start a daemon from inside a daemon process: the daemon command line was not parsed as `__daemon`.',
+			});
+		const launchctl = yield* Launchctl;
+		const managed = yield* usesLaunchd;
+		return yield* ensureDaemonBootstrap({
+			location,
+			logsDirectory: location.logsDirectory,
+			launch: () =>
+				managed
+					? launchDaemonJob(daemonJob(location)).pipe(
+							Effect.provideService(Launchctl, launchctl),
+						)
+					: launchDetachedDaemon({
+							logsDirectory: location.logsDirectory,
+							command: process.execPath,
+							args: daemonProgramArguments(location),
+						}),
+		});
+	});
+
+/** A daemon stopped by SIGINT/SIGTERM has shut down on purpose, so it exits 0 and launchd's `SuccessfulExit = false` leaves it down. */
+export const daemonTeardown: Runtime.Teardown = (exit, onExit) => {
+	if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) {
+		onExit(0);
+		return;
+	}
+	Runtime.defaultTeardown(exit, onExit);
+};
+
+export const resolveCurrentRuns = () =>
+	Effect.gen(function* () {
+		const invocation = yield* captureInvocation(process.cwd());
+		const location = yield* resolveDaemonLocation;
+		const runs = yield* callDaemon(location.socketPath, {
+			version: 1,
+			requestId: requestId(),
+			method: 'listRuns',
+			params: {},
+		}).pipe(
+			Effect.flatMap(decodeRunListResponse),
+			Effect.mapError(
+				(cause) =>
+					new CommandError({
+						message:
+							'Cannot read running sessions. Is the daemon running? See `devsess status`.',
+						cause,
+					}),
+			),
+		);
+		const current = runs.filter(isRunActive);
+		const localRuns = runs.filter((run) =>
+			containsPath(run.canonicalCwd, invocation.canonicalCwd),
+		);
+		const local = localRuns.filter(isRunActive);
+		return { location, runs, current, local, localRuns };
+	});
+
+const runChoices = (
+	runs: ReadonlyArray<RunRecord>,
+	allRuns: ReadonlyArray<RunRecord>,
+) =>
+	runs.map((run) => {
+		const name = `${run.projectName}/${run.presetName}`;
+		const duplicated = runs.some(
+			(other) =>
+				other.runId !== run.runId &&
+				other.projectName === run.projectName &&
+				other.presetName === run.presetName,
+		);
+		const shortId = shortRunId(run, allRuns);
+		const location = duplicated ? ` — ${run.canonicalCwd}` : '';
+		return {
+			run,
+			label: duplicated
+				? `${name} [${shortId}]${location} started ${run.startedAt}`
+				: `${name} [${shortId}]`,
+			selector: duplicated ? ` --run ${shortId}` : '',
+		};
+	});
+
+const spansCheckouts = (runs: ReadonlyArray<RunRecord>) =>
+	runs.some((run) =>
+		runs.some(
+			(other) =>
+				other.runId !== run.runId &&
+				other.projectName === run.projectName &&
+				other.presetName === run.presetName &&
+				other.canonicalCwd !== run.canonicalCwd,
+		),
+	);
+
+export const chooseRun = (
+	runs: ReadonlyArray<RunRecord>,
+	options: CommandOptions,
+	command = 'tail',
+	interactive = process.stdin.isTTY === true && process.stdout.isTTY === true,
+	local: ReadonlyArray<RunRecord> = runs,
+	finished: ReadonlyArray<RunRecord> = [],
+): Effect.Effect<ChosenRun, CommandError, FileSystem | Path | Terminal> => {
+	const active = runs.filter(isRunActive);
+	const parts = options.preset?.split('/');
+	if (
+		parts !== undefined &&
+		(parts.length > 2 || parts.some((part) => part.length === 0))
+	)
+		return new CommandError({
+			message: `Invalid selector ${options.preset}. Use a run ID, preset, or project/preset.`,
+		});
+	const positionalProject = parts?.length === 2 ? parts[0] : undefined;
+	if (
+		positionalProject !== undefined &&
+		options.project !== undefined &&
+		positionalProject !== options.project
+	)
+		return new CommandError({
+			message: `--project ${options.project} conflicts with ${options.preset}.`,
+		});
+	const projectName =
+		positionalProject === undefined ? options.project : positionalProject;
+	const knownRuns = [...active, ...finished.filter((run) => !isRunActive(run))];
+	const selected = (run: RunRecord): ChosenRun => ({
+		...run,
+		selection: {
+			local: local.some((candidate) => candidate.runId === run.runId),
+			label: `${run.projectName}/${run.presetName} [${shortRunId(run, knownRuns)}]`,
+		},
+	});
+	const explicit =
+		options.preset !== undefined ||
+		options.project !== undefined ||
+		options.runId !== undefined;
+	const positional = options.preset;
+	const positionalRunId =
+		positional !== undefined &&
+		parts?.length === 1 &&
+		!knownRuns.some(
+			(run) =>
+				(projectName === undefined || run.projectName === projectName) &&
+				run.presetName === positional,
+		) &&
+		knownRuns.some(
+			(run) =>
+				(projectName === undefined || run.projectName === projectName) &&
+				run.runId.startsWith(positional),
+		)
+			? positional
+			: undefined;
+	const presetName =
+		positionalRunId === undefined
+			? parts?.length === 2
+				? parts[1]
+				: options.preset
+			: undefined;
+	const runId = positionalRunId === undefined ? options.runId : positionalRunId;
+	if (
+		positionalRunId !== undefined &&
+		options.runId !== undefined &&
+		!positionalRunId.startsWith(options.runId) &&
+		!options.runId.startsWith(positionalRunId)
+	)
+		return new CommandError({
+			message: `--run ${options.runId} conflicts with ${positionalRunId}.`,
+		});
+	const filterRuns = (available: ReadonlyArray<RunRecord>) => {
+		const matching = available.filter(
+			(run) =>
+				(projectName === undefined || run.projectName === projectName) &&
+				(presetName === undefined || run.presetName === presetName) &&
+				(runId === undefined || run.runId.startsWith(runId)),
+		);
+		const exact =
+			runId === undefined
+				? undefined
+				: matching.find((run) => run.runId === runId);
+		return exact === undefined ? matching : [exact];
+	};
+	const matches = filterRuns(active);
+	const localMatches = matches.filter((run) =>
+		local.some((other) => other.runId === run.runId),
+	);
+	const candidates = explicit ? matches : localMatches;
+	if (candidates.length === 0 && finished.length > 0) {
+		const matching = filterRuns(finished.filter((run) => !isRunActive(run)));
+		const nearby = matching.filter((run) =>
+			local.some((candidate) => candidate.runId === run.runId),
+		);
+		const recent = explicit ? matching : nearby;
+		const latest = recent
+			.slice()
+			.sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0];
+		if (
+			recent.length > 1 &&
+			(runId !== undefined || (explicit && spansCheckouts(recent)))
+		)
+			return new CommandError({
+				message: `Multiple finished runs match ${runId === undefined ? (options.preset ?? options.project) : runId}:\n${runChoices(
+					recent,
+					knownRuns,
+				)
+					.map(
+						(choice) =>
+							`  ${choice.label} — devsess ${command} ${choice.run.projectName}/${choice.run.presetName} --run ${shortRunId(choice.run, knownRuns)}`,
+					)
+					.join('\n')}`,
+			});
+		if (latest !== undefined) return Effect.succeed(selected(latest));
+	}
+	const run = candidates[0];
+	if (candidates.length === 1 && run !== undefined)
+		return Effect.succeed(selected(run));
+	const choices = runChoices(candidates, knownRuns);
+	if (candidates.length === 0 && !explicit) {
+		const elsewhere = runChoices(active, knownRuns);
+		const first = elsewhere[0];
+		return new CommandError({
+			message:
+				first === undefined
+					? 'Nothing running in this project. See `devsess list` for available presets.'
+					: `Nothing running in this project. Running elsewhere: ${elsewhere.map((choice) => choice.label).join(', ')}. Use \`devsess ${command} ${first.run.projectName}/${first.run.presetName}\` or \`devsess ${command} ${shortRunId(first.run, knownRuns)}\`.`,
+		});
+	}
+	if (candidates.length === 0)
+		return new CommandError({
+			message: `Nothing running matches ${options.preset === undefined ? 'this command' : options.preset}. Running: ${
+				runChoices(active, knownRuns)
+					.map((choice) => choice.label)
+					.join(', ') || 'none'
+			}. See \`devsess status\`.`,
+		});
+	if (interactive)
+		return Prompt.run(
+			Prompt.AutoComplete({
+				message: 'Choose a running preset',
+				choices: choices.map((choice) => ({
+					title: choice.label,
+					value: selected(choice.run),
+				})),
+			}),
+		).pipe(
+			Effect.catchTag('QuitError', cancelPicker),
+			Effect.mapError(
+				() => new CommandError({ message: 'Preset selection cancelled' }),
+			),
+		);
+	return new CommandError({
+		message: `Multiple running presets match:\n${choices.map((choice) => `  ${choice.label} — devsess ${command} ${choice.run.projectName}/${choice.run.presetName}${choice.selector}`).join('\n')}\nSee \`devsess status\`.`,
+	});
+};
+
+export const daemonCommand = Command.make(
+	'__daemon',
+	{
+		dataDirectory: Flag.String('data-directory').pipe(
+			Flag.withDescription('Daemon state directory.'),
+		),
+		logsDirectory: Flag.String('logs-directory').pipe(
+			Flag.withDescription('Directory for retained service logs.'),
+		),
+		socketPath: Flag.String('socket-path').pipe(
+			Flag.withDescription('Daemon control socket path.'),
+		),
+	},
+	(input) =>
+		Effect.gen(function* () {
+			// Services the daemon spawns must not inherit the respawn guard.
+			delete process.env[DAEMON_LAUNCH_ENV];
+			const lifecycle = yield* DaemonLifecycle;
+			yield* lifecycle.daemon.awaitShutdown;
+		}).pipe(
+			Effect.provide(
+				DaemonLifecycle.layer({
+					dataDirectory: input.dataDirectory,
+					logsDirectory: input.logsDirectory,
+					socketPath: input.socketPath,
+				}),
+			),
+			// Exiting non-zero here would have launchd's KeepAlive relaunch this process forever.
+			Effect.catchIf(
+				(cause): cause is DaemonAlreadyRunning =>
+					cause instanceof DaemonAlreadyRunning,
+				(cause) => Effect.logInfo(`${cause.message}; exiting`),
+			),
+		),
+).pipe(
+	Command.withDescription('Run the internal daemon process.'),
+	Command.unlisted,
+);

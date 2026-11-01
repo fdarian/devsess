@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 import { Effect, Fiber } from 'effect';
+import { afterEach, vi } from 'vitest';
 import {
 	awaitRunning,
 	awaitRunningSignal,
@@ -209,6 +210,11 @@ describe('resolveSiblingDir', () => {
 // they derive the signal path from `DevSessions#dir` instead of taking one directly.
 
 describe('publishRunning', () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		vi.restoreAllMocks();
+	});
+
 	it.live(
 		'writes to <DevSessions.dir>/.data/running.json, not under a session dir',
 		() =>

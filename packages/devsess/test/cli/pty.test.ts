@@ -1,0 +1,160 @@
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it } from '@effect/vitest';
+import { Effect } from 'effect';
+import type { IPty } from 'node-pty';
+import { createPty, resizePty, spawnPty, writePty } from '../../src/cli/pty';
+import { runTest } from '../support/run-test';
+import { makeTempDir } from '../support/temp-dir';
+
+const waitForOutput = (terminal: IPty, marker: string) => {
+	const promise = new Promise<void>((resolve) => {
+		const subscription = terminal.onData((data) => {
+			if (data.includes(marker)) {
+				subscription.dispose();
+				resolve();
+			}
+		});
+	});
+	return Effect.promise(() => promise);
+};
+
+const waitForExit = (terminal: IPty) => {
+	const promise = new Promise<{ exitCode: number; signal?: number }>(
+		(resolve) => {
+			terminal.onExit((event) => resolve(event));
+		},
+	);
+	return Effect.promise(() => promise);
+};
+
+const within = <A, E, R>(effect: Effect.Effect<A, E, R>, message: string) =>
+	effect.pipe(Effect.timeout('5 seconds'), Effect.withSpan(message));
+
+const isAlive = (pid: number) => {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+};
+
+const waitUntil = (predicate: () => boolean) =>
+	Effect.gen(function* () {
+		while (!predicate()) {
+			yield* Effect.sleep('20 millis');
+		}
+	}).pipe(Effect.timeout('5 seconds'));
+
+describe('PTY adapter', () => {
+	it.live(
+		'forwards input, reports output and resize, then returns the process exit',
+		() =>
+			runTest(
+				Effect.scoped(
+					Effect.gen(function* () {
+						const terminal = yield* spawnPty({
+							command: '/bin/sh',
+							args: [
+								'-c',
+								'sleep 0.1; stty size; IFS= read -r input; stty size; printf \'input:%s\' "$input"; exit 7',
+							],
+							cwd: process.cwd(),
+							env: process.env,
+							cols: 80,
+							rows: 24,
+						});
+
+						yield* within(
+							waitForOutput(terminal, '24 80'),
+							'PTY did not produce initial output',
+						);
+						const resized = waitForOutput(terminal, '40 120');
+						yield* resizePty(terminal, 120, 40);
+						const exited = waitForExit(terminal);
+						const echoed = waitForOutput(terminal, 'input:ping');
+						yield* writePty(terminal, 'ping\n');
+						yield* within(resized, 'PTY did not report its resize');
+						yield* within(echoed, 'PTY did not echo input');
+						const exit = yield* within(exited, 'PTY did not exit');
+						expect(exit.exitCode).toBe(7);
+					}),
+				),
+			),
+	);
+
+	it.live('stops the PTY process group when its owning scope closes', () =>
+		runTest(
+			Effect.gen(function* () {
+				const rootDir = yield* makeTempDir;
+				const pidPath = join(rootDir, 'grandchild.pid');
+				yield* Effect.scoped(
+					Effect.gen(function* () {
+						const terminal = yield* spawnPty({
+							command: '/bin/sh',
+							args: [
+								'-c',
+								`sleep 0.1; sleep 30 & echo $! > ${JSON.stringify(pidPath)}; wait`,
+							],
+							cwd: process.cwd(),
+							env: process.env,
+							cols: 80,
+							rows: 24,
+						});
+						expect(terminal.pid).toBeGreaterThan(0);
+						yield* waitUntil(() => existsSync(pidPath));
+					}),
+				);
+				const grandchildPid = Number(readFileSync(pidPath, 'utf8'));
+				yield* waitUntil(() => !isAlive(grandchildPid));
+				expect(isAlive(grandchildPid)).toBe(false);
+			}),
+		),
+	);
+
+	/** node-pty 1.0.0 leaked a ptmx, its slave and a kqueue per macOS spawn, so a long-lived daemon ran out of descriptors. */
+	it.live('leaves no file descriptors behind across PTY lifecycles', () =>
+		runTest(
+			Effect.gen(function* () {
+				const openDescriptors = () => readdirSync('/dev/fd').length;
+				const selfExiting = Effect.gen(function* () {
+					const terminal = yield* createPty({
+						command: '/bin/sh',
+						args: ['-c', 'sleep 0.1; exit 0'],
+						cwd: process.cwd(),
+						env: process.env,
+						cols: 80,
+						rows: 24,
+					});
+					yield* within(waitForExit(terminal), 'PTY did not exit');
+				});
+				const terminated = Effect.gen(function* () {
+					const exited = yield* Effect.scoped(
+						Effect.gen(function* () {
+							const terminal = yield* spawnPty({
+								command: '/bin/sh',
+								args: ['-c', 'sleep 30'],
+								cwd: process.cwd(),
+								env: process.env,
+								cols: 80,
+								rows: 24,
+							});
+							return waitForExit(terminal);
+						}),
+					);
+					yield* within(exited, 'PTY did not exit after termination');
+				});
+				// The first cycle may open descriptors the process keeps for good.
+				yield* selfExiting;
+				yield* terminated;
+				const before = openDescriptors();
+				for (let cycle = 0; cycle < 5; cycle += 1) {
+					yield* selfExiting;
+					yield* terminated;
+				}
+				expect(openDescriptors()).toBe(before);
+			}),
+		),
+	);
+});

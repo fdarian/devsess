@@ -72,6 +72,20 @@ export default defineConfig(
 				{
 					label: 'Reference',
 					items: [
+						{
+							label: 'CLI',
+							href: '/reference/cli',
+							items: [
+								'/reference/cli/configuration',
+								'/reference/cli/running',
+								'/reference/cli/selecting',
+								'/reference/cli/logs',
+								'/reference/cli/attach',
+								'/reference/cli/completions',
+								'/reference/cli/daemon',
+								'/reference/cli/troubleshooting',
+							],
+						},
 						'/reference/devsess',
 						'/reference/async',
 						'/reference/pglite',

@@ -6,6 +6,8 @@ Define scoped services with custom Effect handlers or Docker containers. Definit
 
 When `DEVSESS_SOCKET`, `DEVSESS_RUN_ID`, and `DEVSESS_SERVICE` are set, ready `Service.make` and `Service.container` services report their names and ports to the daemon and retract them when their scopes close. Reporting is silent and best-effort; older daemons can ignore it.
 
+Under `devsess start`, reported services appear with their ports beneath the owning process in expanded `devsess status` and the menu bar. Child rows are informational; stop and restart act on the parent process.
+
 ## Handler services
 
 ```ts

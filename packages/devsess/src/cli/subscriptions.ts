@@ -1,0 +1,506 @@
+import type { Socket } from 'node:net';
+import { Deferred, Effect, Fiber, Stream } from 'effect';
+import type { FileSystem } from 'effect/FileSystem';
+import type { Path } from 'effect/Path';
+import { DaemonError } from './daemon-errors';
+import type { ServiceExit } from './exit-status';
+import type { LogAddress, LogsService } from './logs';
+import {
+	type DaemonEvent,
+	type DaemonResponse,
+	PROTOCOL_VERSION,
+} from './protocol';
+import type { SocketWriter } from './socket-writer';
+
+type ActiveSubscription = {
+	readonly flush: Effect.Effect<void>;
+	readonly unsubscribe: Effect.Effect<void>;
+};
+
+export type Subscription = {
+	readonly address: LogAddress;
+	readonly ready: Deferred.Deferred<void>;
+	readonly follow: boolean;
+	active: ActiveSubscription | undefined;
+	setupFiber: Fiber.Fiber<void, unknown> | undefined;
+	exit: ServiceExit | undefined;
+	cancelled: boolean;
+	finishing: boolean;
+	unsubscribed: boolean;
+	unsubscribeRequested: boolean;
+	released: boolean;
+};
+
+export type SocketState = {
+	readonly subscriptions: Map<string, Subscription>;
+	readonly writer: SocketWriter;
+	closed: boolean;
+};
+
+export type Subscriptions = ReturnType<typeof makeSubscriptions>;
+
+type CompletionRecord = {
+	readonly completed: true;
+	readonly exit: ServiceExit;
+	persisted: boolean;
+};
+
+const addressKey = (address: LogAddress) =>
+	`${address.runId}:${address.serviceName}`;
+
+const lastLines = (
+	events: ReadonlyArray<{ readonly data: string; readonly offset: number }>,
+	lines: number,
+) => {
+	if (lines === 0) return [];
+	const text = events.map((event) => event.data).join('');
+	const content = text.endsWith('\n') ? text.slice(0, -1) : text;
+	let start = content.length;
+	let search = content.length;
+	for (let index = 0; index < lines; index += 1) {
+		const boundary = content.lastIndexOf('\n', search - 1);
+		if (boundary < 0) {
+			start = 0;
+			break;
+		}
+		start = boundary + 1;
+		search = boundary;
+	}
+	let consumed = 0;
+	return events.flatMap((event) => {
+		const skip = Math.max(0, start - consumed);
+		consumed += event.data.length;
+		return skip >= event.data.length
+			? []
+			: [{ ...event, data: event.data.slice(skip) }];
+	});
+};
+
+export const makeSubscriptions = (options: {
+	readonly logs: LogsService;
+	readonly sockets: Map<Socket, SocketState>;
+	readonly onRelease?: (socket: Socket) => void;
+	readonly send: (
+		socket: Socket,
+		frame: DaemonResponse | DaemonEvent,
+	) => Effect.Effect<void>;
+}) => {
+	const completions = new Map<string, CompletionRecord>();
+	const reservationCounts = new Map<string, number>();
+	const maybePrune = (key: string) => {
+		const completion = completions.get(key);
+		if (
+			completion?.persisted === true &&
+			(reservationCounts.get(key) ?? 0) === 0
+		)
+			completions.delete(key);
+	};
+	const retain = (address: LogAddress) => {
+		const key = addressKey(address);
+		reservationCounts.set(key, (reservationCounts.get(key) ?? 0) + 1);
+	};
+	const release = (address: LogAddress) => {
+		const key = addressKey(address);
+		const count = reservationCounts.get(key);
+		if (count === undefined) return;
+		if (count <= 1) reservationCounts.delete(key);
+		else reservationCounts.set(key, count - 1);
+		maybePrune(key);
+	};
+	const complete = (
+		address: LogAddress,
+		exit: ServiceExit,
+		persisted: boolean,
+	) => {
+		const key = addressKey(address);
+		const current = completions.get(key);
+		if (current !== undefined) {
+			if (persisted) current.persisted = true;
+			maybePrune(key);
+			return current;
+		}
+		const record: CompletionRecord = { completed: true, exit, persisted };
+		completions.set(key, record);
+		maybePrune(key);
+		return record;
+	};
+	const markPersisted = (address: LogAddress) =>
+		Effect.sync(() => {
+			const completion = completions.get(addressKey(address));
+			if (completion === undefined) return;
+			completion.persisted = true;
+			maybePrune(addressKey(address));
+		});
+	const releaseReservation = (subscription: Subscription) =>
+		Effect.sync(() => {
+			if (subscription.released) return;
+			subscription.released = true;
+			release(subscription.address);
+		});
+	const removeSubscription = (
+		state: SocketState,
+		requestId: string,
+		subscription: Subscription,
+	) =>
+		Effect.sync(() => {
+			if (state.subscriptions.get(requestId) === subscription)
+				state.subscriptions.delete(requestId);
+		}).pipe(Effect.andThen(releaseReservation(subscription)));
+	const unsubscribeSubscription = (subscription: Subscription) =>
+		Effect.suspend(() => {
+			if (subscription.unsubscribed) return Effect.void;
+			const active = subscription.active;
+			if (active === undefined) {
+				subscription.unsubscribeRequested = true;
+				return Effect.void;
+			}
+			subscription.unsubscribed = true;
+			return active.unsubscribe;
+		});
+	const finishSubscription = (
+		socket: Socket,
+		state: SocketState,
+		requestId: string,
+		subscription: Subscription,
+		exit: ServiceExit,
+	) =>
+		Effect.suspend(() => {
+			if (subscription.finishing) return Effect.void;
+			subscription.finishing = true;
+			subscription.exit = exit;
+			return Deferred.await(subscription.ready).pipe(
+				Effect.andThen(
+					Effect.suspend(() => {
+						if (state.closed || subscription.cancelled)
+							return unsubscribeSubscription(subscription).pipe(
+								Effect.andThen(
+									removeSubscription(state, requestId, subscription),
+								),
+							);
+						const active = subscription.active;
+						if (active === undefined)
+							return removeSubscription(state, requestId, subscription);
+						return active.flush.pipe(
+							Effect.andThen(
+								options.send(socket, {
+									version: PROTOCOL_VERSION,
+									requestId,
+									event: 'exit',
+									exitCode: exit.exitCode,
+									signal: exit.signal,
+								}),
+							),
+							Effect.ensuring(
+								unsubscribeSubscription(subscription).pipe(
+									Effect.andThen(
+										removeSubscription(state, requestId, subscription),
+									),
+								),
+							),
+						);
+					}),
+				),
+			);
+		});
+	const subscribe = (
+		socket: Socket,
+		requestId: string,
+		address: LogAddress,
+		after: number,
+		exit?: ServiceExit,
+		lines?: number,
+		follow = true,
+	) =>
+		Effect.gen(function* () {
+			const state = options.sockets.get(socket);
+			if (state === undefined) return;
+			if (state.closed)
+				return yield* new DaemonError({ message: 'Socket is closed' });
+			if (state.subscriptions.has(requestId))
+				return yield* new DaemonError({
+					message: `Subscription request id ${requestId} is already in flight`,
+				});
+			const ready = yield* Deferred.make<void>();
+			const reservation: Subscription = {
+				address,
+				ready,
+				follow,
+				active: undefined,
+				setupFiber: undefined,
+				exit: undefined,
+				cancelled: false,
+				finishing: false,
+				unsubscribed: false,
+				unsubscribeRequested: false,
+				released: false,
+			};
+			state.subscriptions.set(requestId, reservation);
+			retain(address);
+			const completion =
+				exit === undefined
+					? completions.get(addressKey(address))
+					: complete(address, exit, true);
+			if (completion !== undefined) reservation.exit = completion.exit;
+			const listener = (event: {
+				readonly data: string;
+				readonly offset: number;
+			}) =>
+				options
+					.send(socket, {
+						version: PROTOCOL_VERSION,
+						requestId,
+						event: 'output',
+						data: event.data,
+						offset: event.offset,
+					})
+					.pipe(Effect.catch(() => Effect.void));
+			const onOverflow = () =>
+				state.writer
+					.overflow(requestId)
+					.pipe(
+						Effect.ensuring(
+							unsubscribeSubscription(reservation).pipe(
+								Effect.andThen(
+									removeSubscription(state, requestId, reservation),
+								),
+							),
+						),
+					);
+			const setup = Effect.gen(function* () {
+				if (state.closed || reservation.cancelled) {
+					yield* removeSubscription(state, requestId, reservation);
+					return;
+				}
+				const lazy = options.logs.replayAndSubscribeLazy;
+				const subscribed =
+					lazy === undefined
+						? yield* options.logs.replayAndSubscribe(
+								address,
+								after,
+								listener,
+								onOverflow,
+							)
+						: yield* lazy(address, after, listener, onOverflow);
+				reservation.active = {
+					flush: subscribed.flush,
+					unsubscribe: subscribed.unsubscribe,
+				};
+				if (
+					state.closed ||
+					reservation.cancelled ||
+					reservation.unsubscribeRequested
+				) {
+					yield* unsubscribeSubscription(reservation);
+					yield* removeSubscription(state, requestId, reservation);
+					return;
+				}
+				yield* Deferred.succeed(reservation.ready, undefined);
+				const replaySource = subscribed.replay;
+				const selected =
+					lines === undefined
+						? replaySource
+						: Array.isArray(replaySource)
+							? lastLines(replaySource, lines)
+							: lastLines(
+									yield* Stream.runCollect(
+										replaySource as Stream.Stream<
+											{ readonly data: string; readonly offset: number },
+											unknown,
+											FileSystem | Path
+										>,
+									),
+									lines,
+								);
+				const replay: Effect.Effect<void, unknown, FileSystem | Path> =
+					Array.isArray(selected)
+						? state.writer.sendReplay(
+								selected.map((event) => ({
+									version: PROTOCOL_VERSION as 1,
+									requestId,
+									event: 'output' as const,
+									data: event.data,
+									offset: event.offset,
+								})),
+							)
+						: state.writer.sendReplay(
+								Stream.map(
+									selected as Stream.Stream<
+										{ readonly data: string; readonly offset: number },
+										unknown,
+										FileSystem | Path
+									>,
+									(event) => ({
+										version: PROTOCOL_VERSION as 1,
+										requestId,
+										event: 'output' as const,
+										data: event.data,
+										offset: event.offset,
+									}),
+								),
+							);
+				yield* replay.pipe(
+					Effect.ensuring(
+						subscribed.completeReplay === undefined
+							? Effect.void
+							: subscribed.completeReplay,
+					),
+					Effect.andThen(
+						follow
+							? Effect.void
+							: Effect.suspend(() => {
+									if (reservation.exit !== undefined)
+										return finishSubscription(
+											socket,
+											state,
+											requestId,
+											reservation,
+											reservation.exit,
+										);
+									return options
+										.send(socket, {
+											version: PROTOCOL_VERSION,
+											requestId,
+											event: 'end',
+										})
+										.pipe(
+											Effect.ensuring(
+												unsubscribeSubscription(reservation).pipe(
+													Effect.andThen(
+														removeSubscription(state, requestId, reservation),
+													),
+												),
+											),
+										);
+								}),
+					),
+					Effect.catch((cause) =>
+						unsubscribeSubscription(reservation).pipe(
+							Effect.andThen(removeSubscription(state, requestId, reservation)),
+							Effect.tap(() => Effect.logError(cause)),
+						),
+					),
+					Effect.forkScoped,
+				);
+			}).pipe(
+				Effect.onInterrupt(() => unsubscribeSubscription(reservation)),
+				Effect.ensuring(Deferred.succeed(reservation.ready, undefined)),
+			);
+			const setupFiber = yield* setup.pipe(Effect.forkScoped);
+			reservation.setupFiber = setupFiber;
+			yield* Fiber.join(setupFiber).pipe(
+				Effect.catchCause((cause) =>
+					state.closed || reservation.cancelled
+						? Effect.void
+						: unsubscribeSubscription(reservation).pipe(
+								Effect.andThen(
+									removeSubscription(state, requestId, reservation),
+								),
+								Effect.andThen(Effect.failCause(cause)),
+							),
+				),
+				Effect.ensuring(
+					Effect.sync(() => {
+						if (reservation.setupFiber === setupFiber)
+							reservation.setupFiber = undefined;
+					}),
+				),
+			);
+			if (reservation.exit !== undefined) {
+				const current = state.subscriptions.get(requestId);
+				if (current === reservation)
+					yield* finishSubscription(
+						socket,
+						state,
+						requestId,
+						reservation,
+						reservation.exit,
+					).pipe(Effect.forkScoped);
+			}
+		});
+	const finishSubscriptions = (address: LogAddress, exit: ServiceExit) =>
+		Effect.sync(() => complete(address, exit, false)).pipe(
+			Effect.flatMap((completion) =>
+				Effect.forEach(
+					Array.from(options.sockets.entries()),
+					(entry) => {
+						const socket = entry[0];
+						const state = entry[1];
+						return Effect.forEach(
+							Array.from(state.subscriptions.entries()),
+							(subscriptionEntry) => {
+								const requestId = subscriptionEntry[0];
+								const subscription = subscriptionEntry[1];
+								if (addressKey(subscription.address) !== addressKey(address))
+									return Effect.void;
+								subscription.exit = completion.exit;
+								if (!subscription.follow) return Effect.void;
+								return finishSubscription(
+									socket,
+									state,
+									requestId,
+									subscription,
+									completion.exit,
+								).pipe(Effect.forkScoped, Effect.asVoid);
+							},
+							{ discard: true },
+						);
+					},
+					{ discard: true },
+				),
+			),
+		);
+	const releaseSocketOwnership = (socket: Socket) =>
+		Effect.suspend(() => {
+			const state = options.sockets.get(socket);
+			if (state === undefined || state.closed) return Effect.void;
+			state.closed = true;
+			const subscriptions = Array.from(state.subscriptions.values());
+			state.subscriptions.clear();
+			for (const subscription of subscriptions) subscription.cancelled = true;
+			if (options.onRelease !== undefined) options.onRelease(socket);
+			return Effect.forEach(
+				subscriptions,
+				(subscription) =>
+					Deferred.succeed(subscription.ready, undefined).pipe(
+						Effect.andThen(
+							Effect.sync(() => {
+								const setupFiber = subscription.setupFiber;
+								if (setupFiber === undefined) return;
+								Effect.runFork(
+									Fiber.interrupt(setupFiber).pipe(
+										Effect.catchCause(() => Effect.void),
+									),
+								);
+							}),
+						),
+						Effect.andThen(unsubscribeSubscription(subscription)),
+						Effect.andThen(releaseReservation(subscription)),
+					),
+				{ discard: true },
+			);
+		});
+	const releaseSocket = (socket: Socket) =>
+		Effect.suspend(() => {
+			const state = options.sockets.get(socket);
+			if (state === undefined) return Effect.void;
+			state.writer.close();
+			return releaseSocketOwnership(socket).pipe(
+				Effect.ensuring(
+					Effect.sync(() => {
+						options.sockets.delete(socket);
+					}),
+				),
+			);
+		});
+	return {
+		finishSubscription,
+		subscribe,
+		finishSubscriptions,
+		releaseSocketOwnership,
+		releaseSocket,
+		retain: (address: LogAddress) => retain(address),
+		release: (address: LogAddress) => release(address),
+		markPersisted,
+		completionCount: () => completions.size,
+	};
+};

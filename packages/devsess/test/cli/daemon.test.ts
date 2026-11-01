@@ -1,0 +1,2313 @@
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { createConnection, createServer, Socket } from 'node:net';
+import { dirname, join } from 'node:path';
+import { describe, expect, it } from '@effect/vitest';
+import {
+	Cause,
+	Context,
+	Deferred,
+	Effect,
+	Exit,
+	Fiber,
+	Layer,
+	Schema,
+	Scope,
+} from 'effect';
+import { PlatformError, SystemError } from 'effect/PlatformError';
+import { vi } from 'vitest';
+import { callDaemon } from '../../src/cli/client';
+import { formatStatus } from '../../src/cli/commands/status';
+import { Daemon, makeDaemon } from '../../src/cli/daemon';
+import { type LogAddress, type LogEvent, Logs } from '../../src/cli/logs';
+import { ProcessError, Processes } from '../../src/cli/processes';
+import type { DaemonRequest } from '../../src/cli/protocol';
+import { createPty, PtyError, terminatePty } from '../../src/cli/pty';
+import { Registry, RunNotFound, type RunRecord } from '../../src/cli/registry';
+import { runTest } from '../support/run-test';
+import { makeTempDir } from '../support/temp-dir';
+
+vi.mock('node:net', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('node:net')>();
+	return { ...actual, createServer: vi.fn(actual.createServer) };
+});
+vi.mock('../../src/cli/pty', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('../../src/cli/pty')>();
+	return {
+		...actual,
+		createPty: vi.fn(),
+		terminatePty: vi.fn(() => Effect.void),
+	};
+});
+
+const start = (
+	runId = 'run',
+): Extract<DaemonRequest, { method: 'startRun' }> => ({
+	version: 1,
+	requestId: 'start',
+	method: 'startRun',
+	params: {
+		runId,
+		projectName: 'project',
+		presetName: 'dev',
+		canonicalCwd: '/tmp',
+		invocationCwd: '/tmp',
+		configSnapshot: {},
+		environment: {},
+		services: [{ name: 'web', command: 'sleep 30', cwd: '/tmp' }],
+	},
+});
+const list: DaemonRequest = {
+	version: 1,
+	requestId: 'list',
+	method: 'listRuns',
+	params: {},
+};
+const stop: DaemonRequest = {
+	version: 1,
+	requestId: 'stop',
+	method: 'stopRun',
+	params: { runId: 'run' },
+};
+const identity = (pid: number) => ({
+	pid,
+	processGroupId: pid,
+	startedAt: 'birth',
+});
+const orphanedRun = (runId: string): RunRecord => ({
+	runId,
+	projectName: 'project',
+	presetName: 'dev',
+	canonicalCwd: '/tmp',
+	invocationCwd: '/tmp',
+	configSnapshot: {},
+	startedAt: '2026-09-09T00:00:00.000Z',
+	state: 'orphaned',
+	daemon: identity(12345),
+	services: [
+		{
+			name: 'web',
+			command: 'sleep 30',
+			cwd: '/tmp',
+			state: 'orphaned',
+			process: identity(98765),
+		},
+	],
+});
+const stoppingRun = (runId: string): RunRecord => ({
+	...orphanedRun(runId),
+	state: 'stopping',
+	services: [
+		{
+			name: 'web',
+			command: 'sleep 30',
+			cwd: '/tmp',
+			state: 'stopping',
+			process: identity(98765),
+		},
+	],
+});
+const finishedRun = (runId: string): RunRecord => ({
+	...orphanedRun(runId),
+	state: 'failed',
+	services: [
+		{
+			name: 'web',
+			command: 'sleep 30',
+			cwd: '/tmp',
+			state: 'failed',
+			process: identity(98765),
+			exitCode: 1,
+		},
+	],
+});
+const processlessRun = (runId: string): RunRecord => ({
+	runId,
+	projectName: 'project',
+	presetName: 'dev',
+	canonicalCwd: '/tmp',
+	invocationCwd: '/tmp',
+	configSnapshot: {},
+	startedAt: '2026-09-09T00:00:00.000Z',
+	state: 'starting',
+	daemon: identity(12345),
+	services: [
+		{
+			name: 'web',
+			command: 'sleep 30',
+			cwd: '/tmp',
+			state: 'starting',
+		},
+	],
+});
+const delayedLogs = () => {
+	const listeners = new Map<string, (event: LogEvent) => Effect.Effect<void>>();
+	const pending = new Map<string, Set<Deferred.Deferred<void>>>();
+	const key = (address: LogAddress) =>
+		`${address.runId}:${address.serviceName}`;
+	const append = (address: LogAddress, data: string) =>
+		Effect.gen(function* () {
+			const event = { data, offset: data.length };
+			const listener = listeners.get(key(address));
+			if (listener !== undefined) {
+				const completion = yield* Deferred.make<void>();
+				const current = pending.get(key(address));
+				const pendingEvents =
+					current === undefined ? new Set<Deferred.Deferred<void>>() : current;
+				pendingEvents.add(completion);
+				pending.set(key(address), pendingEvents);
+				yield* Effect.gen(function* () {
+					yield* Effect.sleep('25 millis');
+					if (listeners.get(key(address)) === listener) yield* listener(event);
+				}).pipe(
+					Effect.ensuring(
+						Effect.sync(() => {
+							pendingEvents.delete(completion);
+						}).pipe(Effect.andThen(Deferred.succeed(completion, undefined))),
+					),
+					Effect.forkDetach,
+				);
+			}
+			return event;
+		});
+	const replayAndSubscribe = (
+		address: LogAddress,
+		_after: number,
+		listener: (event: LogEvent) => Effect.Effect<void>,
+	) =>
+		Effect.sync(() => {
+			const addressKey = key(address);
+			listeners.set(addressKey, listener);
+			const current = pending.get(addressKey);
+			const pendingEvents =
+				current === undefined ? new Set<Deferred.Deferred<void>>() : current;
+			pending.set(addressKey, pendingEvents);
+			return {
+				replay: [] as Array<LogEvent>,
+				flush: Effect.suspend(() =>
+					Effect.forEach(
+						Array.from(pendingEvents),
+						(completion) => Deferred.await(completion),
+						{ discard: true },
+					),
+				),
+				unsubscribe: Effect.sync(() => {
+					listeners.delete(addressKey);
+				}),
+			};
+		});
+	return Logs.of({ append, replayAndSubscribe });
+};
+const streamingLogs = (
+	subscribed: Deferred.Deferred<void>,
+	released: Deferred.Deferred<void>,
+) => {
+	let listener: ((event: LogEvent) => Effect.Effect<void>) | undefined;
+	let offset = 0;
+	const append = (_address: LogAddress, data: string) => {
+		const event = { data, offset: offset + data.length };
+		offset = event.offset;
+		const current = listener;
+		return current === undefined
+			? Effect.succeed(event)
+			: current(event).pipe(Effect.as(event));
+	};
+	const replayAndSubscribe = (
+		_address: LogAddress,
+		_after: number,
+		current: (event: LogEvent) => Effect.Effect<void>,
+	) =>
+		Effect.sync(() => {
+			listener = current;
+			return {
+				replay: [] as Array<LogEvent>,
+				flush: Effect.void,
+				unsubscribe: Effect.sync(() => {
+					listener = undefined;
+				}).pipe(Effect.andThen(Deferred.succeed(released, undefined))),
+			};
+		}).pipe(Effect.tap(() => Deferred.succeed(subscribed, undefined)));
+	return Logs.of({ append, replayAndSubscribe });
+};
+const trackedLogs = () => {
+	let activeSubscriptions = 0;
+	const logs = Logs.of({
+		append: (_address: LogAddress, data: string) =>
+			Effect.succeed({ data, offset: data.length }),
+		replayAndSubscribe: () =>
+			Effect.sync(() => {
+				activeSubscriptions += 1;
+				let released = false;
+				return {
+					replay: [] as Array<LogEvent>,
+					flush: Effect.void,
+					unsubscribe: Effect.sync(() => {
+						if (released) return;
+						released = true;
+						activeSubscriptions -= 1;
+					}),
+				};
+			}),
+	});
+	return {
+		logs,
+		activeSubscriptions: () => activeSubscriptions,
+	};
+};
+const fixture = () => {
+	const records = new Map<string, RunRecord>();
+	const get = (runId: string) =>
+		Effect.suspend(() => {
+			const run = records.get(runId);
+			return run === undefined
+				? Effect.fail(new RunNotFound({ runId }))
+				: Effect.succeed(run);
+		});
+	const replace = vi.fn(
+		(run: RunRecord): Effect.Effect<RunRecord, Schema.SchemaError> =>
+			Effect.sync(() => {
+				records.set(run.runId, run);
+				return run;
+			}),
+	);
+	const prune = vi.fn((): Effect.Effect<void, PlatformError> => Effect.void);
+	const registry = Registry.of({
+		get,
+		replace,
+		reserve: (run) =>
+			Effect.sync(() => {
+				records.set(run.runId, run);
+			}),
+		list: Effect.sync(() => [...records.values()]),
+		prune: Effect.suspend(prune),
+	});
+	type ExitListener = (event: { exitCode: number; signal?: number }) => void;
+	const exitListeners: Array<{ pid: number; listener: ExitListener }> = [];
+	/** A real PTY reports its exit shortly after the process dies; stopping a service waits for that report to know its output is drained. */
+	const reportPtyExit = (pid: number) => {
+		setImmediate(() => {
+			for (const entry of exitListeners)
+				if (entry.pid === pid) entry.listener({ exitCode: 0 });
+		});
+	};
+	const terminate = vi.fn(
+		(
+			target: ReturnType<typeof identity>,
+			_force?: boolean,
+		): Effect.Effect<number | undefined, ProcessError> =>
+			Effect.sync(() => {
+				reportPtyExit(target.pid);
+				return 15;
+			}),
+	);
+	const groupAlive = vi.fn(() => Effect.succeed(true));
+	const capture = vi.fn(
+		(pid: number): Effect.Effect<ReturnType<typeof identity>, ProcessError> =>
+			Effect.succeed(identity(pid)),
+	);
+	const owns = vi.fn(
+		(
+			_identity?: ReturnType<typeof identity>,
+		): Effect.Effect<boolean, ProcessError> => Effect.succeed(true),
+	);
+	const kill = vi.fn(
+		(
+			_identity: ReturnType<typeof identity>,
+		): Effect.Effect<boolean, ProcessError> => Effect.succeed(true),
+	);
+	const unsubscribe = vi.fn(() => undefined);
+	const captureLive = vi.fn((pid: number) =>
+		capture(pid).pipe(
+			Effect.map((captured) => ({
+				identity: captured,
+				terminate: Effect.suspend(() => terminate(captured)),
+			})),
+		),
+	);
+	const processes = Processes.of({
+		stopSampler: Effect.void,
+		capture,
+		captureLive,
+		terminate,
+		kill,
+		groupAlive,
+		owns,
+	});
+	const logs = Logs.of({
+		append: (_address, data) => Effect.succeed({ data, offset: data.length }),
+		replayAndSubscribe: () =>
+			Effect.succeed({
+				replay: [],
+				flush: Effect.void,
+				unsubscribe: Effect.sync(unsubscribe),
+			}),
+	});
+	const terminal = {
+		pid: 98765,
+		cols: 80,
+		rows: 24,
+		process: 'shell',
+		handleFlowControl: false,
+		onData: vi.fn((_listener: (data: string) => void) => ({
+			dispose: () => undefined,
+		})),
+		onExit: vi.fn(function (this: { pid: number }, listener: ExitListener) {
+			exitListeners.push({ pid: this.pid, listener });
+			return { dispose: () => undefined };
+		}),
+		write: vi.fn(),
+		resize: vi.fn(),
+		kill: vi.fn(),
+		pause: vi.fn(),
+		resume: vi.fn(),
+		clear: vi.fn(),
+	};
+	vi.mocked(createPty).mockReturnValue(Effect.succeed(terminal));
+	vi.mocked(createPty).mockClear();
+	vi.mocked(terminatePty).mockClear();
+	const layerWithLogs = (
+		socketPath: string,
+		configuredLogs: typeof logs,
+		shutdownTimeoutMs?: number,
+		runStopDeadlineMs?: number,
+	) =>
+		Layer.effect(
+			Daemon,
+			makeDaemon({
+				socketPath,
+				dataDirectory: dirname(socketPath),
+				shutdownTimeoutMs,
+				runStopDeadlineMs,
+			}),
+		).pipe(
+			Layer.provide(Layer.succeed(Registry, registry)),
+			Layer.provide(Layer.succeed(Logs, configuredLogs)),
+			Layer.provide(Layer.succeed(Processes, processes)),
+		);
+	const layer = (
+		socketPath: string,
+		shutdownTimeoutMs?: number,
+		runStopDeadlineMs?: number,
+	) => layerWithLogs(socketPath, logs, shutdownTimeoutMs, runStopDeadlineMs);
+	return {
+		records,
+		registry,
+		replace,
+		prune,
+		terminate,
+		kill,
+		groupAlive,
+		capture,
+		captureLive,
+		owns,
+		unsubscribe,
+		terminal,
+		layer,
+		layerWithLogs,
+	};
+};
+const lastServer = () => {
+	const result = vi.mocked(createServer).mock.results.at(-1);
+	if (result?.type !== 'return')
+		throw new Error('Daemon did not create a server');
+	return result.value;
+};
+
+describe('daemon lifetime and failure handling', () => {
+	it.live(
+		'stops selected services, restarts an exited service, and finishes the last service',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						const initial = start();
+						yield* daemon.request({
+							...initial,
+							params: {
+								...initial.params,
+								services: [
+									...initial.params.services,
+									{ name: 'api', command: 'sleep 30', cwd: '/tmp' },
+								],
+							},
+						});
+						const selected = (serviceNames: string[]): DaemonRequest => ({
+							version: 1,
+							requestId: 'stop-selected',
+							method: 'stopServices',
+							params: { runId: 'run', serviceNames },
+						});
+						for (const names of [[], ['web', 'web'], ['missing']]) {
+							expect(
+								(yield* Effect.exit(daemon.request(selected(names))))._tag,
+							).toBe('Failure');
+						}
+						expect(state.terminate).not.toHaveBeenCalled();
+						const stopped = (yield* daemon.request(
+							selected(['web']),
+						)) as RunRecord;
+						expect(stopped.state).toBe('running');
+						expect(stopped.services.map((service) => service.state)).toEqual([
+							'exited',
+							'running',
+						]);
+						yield* daemon.request(selected(['web']));
+						expect(state.terminate).toHaveBeenCalledTimes(1);
+						const restarted = (yield* daemon.request({
+							version: 1,
+							requestId: 'restart',
+							method: 'restartServices',
+							params: { runId: 'run', serviceNames: ['web'] },
+						})) as RunRecord;
+						expect(restarted.services.map((service) => service.state)).toEqual([
+							'running',
+							'running',
+						]);
+						yield* daemon.request(selected(['web']));
+						const finished = (yield* daemon.request(
+							selected(['api']),
+						)) as RunRecord;
+						expect(finished.state).toBe('exited');
+						expect(
+							finished.services.every((service) => service.state === 'exited'),
+						).toBe(true);
+						expect(state.prune).toHaveBeenCalled();
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+	it.live(
+		'keeps start and stop outcomes and a clean exit when pruning fails',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						state.prune.mockReturnValue(
+							Effect.fail(
+								new PlatformError(
+									new SystemError({
+										_tag: 'Unknown',
+										module: 'test',
+										method: 'remove',
+										description: 'cannot remove logs',
+									}),
+								),
+							),
+						);
+						yield* daemon.request(start('first'));
+						const blocked = yield* Effect.exit(
+							daemon.request(start('blocked')),
+						);
+						expect(Exit.isFailure(blocked)).toBe(true);
+						if (Exit.isFailure(blocked)) {
+							expect(Cause.pretty(blocked.cause)).toContain(
+								'Cannot start project/dev',
+							);
+							expect(Cause.pretty(blocked.cause)).not.toContain(
+								'cannot remove logs',
+							);
+						}
+						const stopped = (yield* daemon.request({
+							...stop,
+							params: { runId: 'first' },
+						})) as RunRecord;
+						expect(stopped.state).toBe('exited');
+						state.owns.mockReturnValue(Effect.succeed(false));
+						yield* daemon.request(start('second'));
+						const onExit = state.terminal.onExit.mock.calls.at(-1)?.[0];
+						if (onExit === undefined)
+							return yield* Effect.die('Missing PTY exit callback');
+						onExit({ exitCode: 0 });
+						yield* Effect.gen(function* () {
+							while ((yield* state.registry.get('second')).state !== 'exited')
+								yield* Effect.sleep('10 millis');
+						}).pipe(Effect.timeout('2 seconds'));
+						expect(
+							(yield* state.registry.get('second')).services[0]?.state,
+						).toBe('exited');
+						expect(state.prune).toHaveBeenCalled();
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+	it.live(
+		'injects service identity and persists publish/unpublish until exit',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const socketPath = join(root, 'daemon.sock');
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						const request = start();
+						const started = yield* daemon.request({
+							...request,
+							params: {
+								...request.params,
+								environment: { DEVSESS_SERVICE: 'wrong' },
+							},
+						});
+						expect(started).toMatchObject({ runId: 'run' });
+						const spawn = vi.mocked(createPty).mock.calls[0]?.[0];
+						expect(spawn?.env).toMatchObject({
+							DEVSESS_SOCKET: socketPath,
+							DEVSESS_RUN_ID: 'run',
+							DEVSESS_SERVICE: 'web',
+							DEVSESS_INSTANCE_ID: expect.any(String),
+						});
+						const publish = {
+							version: 1 as const,
+							requestId: 'published',
+							method: 'publish' as const,
+							params: {
+								runId: 'run',
+								service: 'web',
+								instanceId: spawn?.env?.DEVSESS_INSTANCE_ID,
+								value: { url: 'http://localhost:5173' },
+							},
+						};
+						yield* daemon.request(publish);
+						const stale = yield* Effect.exit(
+							daemon.request({
+								...publish,
+								params: {
+									...publish.params,
+									instanceId: 'old',
+									value: { stale: true },
+								},
+							}),
+						);
+						expect(Exit.isFailure(stale)).toBe(true);
+						const staleRetraction = yield* Effect.exit(
+							daemon.request({
+								version: 1,
+								requestId: 'stale-retraction',
+								method: 'unpublish',
+								params: { runId: 'run', service: 'web', instanceId: 'old' },
+							}),
+						);
+						expect(Exit.isFailure(staleRetraction)).toBe(true);
+						const ready = yield* state.registry.get('run');
+						expect(ready.services[0]?.published?.value).toEqual({
+							url: 'http://localhost:5173',
+						});
+						expect(ready.services[0]?.published?.publishedAt).toEqual(
+							expect.any(String),
+						);
+						yield* daemon.request({
+							version: 1,
+							requestId: 'unpublished',
+							method: 'unpublish',
+							params: { runId: 'run', service: 'web' },
+						});
+						expect(
+							(yield* state.registry.get('run')).services[0]?.published,
+						).toBeUndefined();
+						yield* daemon.request(publish);
+						const onExit = state.terminal.onExit.mock.calls[0]?.[0];
+						if (onExit === undefined)
+							return yield* Effect.die('Missing exit callback');
+						onExit({ exitCode: 0 });
+						for (let attempt = 0; attempt < 100; attempt += 1) {
+							if (
+								(yield* state.registry.get('run')).services[0]?.state ===
+								'exited'
+							)
+								break;
+							yield* Effect.sleep('5 millis');
+						}
+						expect(
+							(yield* state.registry.get('run')).services[0]?.published,
+						).toBeUndefined();
+						const dead = yield* Effect.exit(daemon.request(publish));
+						expect(Exit.isFailure(dead)).toBe(true);
+					}).pipe(Effect.provide(state.layer(socketPath)));
+				}),
+			),
+	);
+
+	it.live('rejects publish for unknown run or service', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					const unknownRun = yield* Effect.exit(
+						daemon.request({
+							version: 1,
+							requestId: 'unknown-run',
+							method: 'publish',
+							params: { runId: 'missing', service: 'web', value: 3 },
+						}),
+					);
+					expect(Exit.isFailure(unknownRun)).toBe(true);
+					yield* daemon.request(start());
+					const unknownService = yield* Effect.exit(
+						daemon.request({
+							version: 1,
+							requestId: 'unknown-service',
+							method: 'publish',
+							params: { runId: 'run', service: 'missing', value: 3 },
+						}),
+					);
+					expect(Exit.isFailure(unknownService)).toBe(true);
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+	it.live(
+		'keeps the layer worker and socket alive until scope closure, then persists exits',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const socketPath = join(root, 'daemon.sock');
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						yield* Effect.sleep('10 millis');
+						expect(
+							yield* daemon.request(list).pipe(Effect.timeout('1 second')),
+						).toEqual([]);
+						yield* daemon.request(start());
+						const client = createConnection(socketPath);
+						client.on('error', () => undefined);
+						yield* Effect.promise(
+							() =>
+								new Promise<void>((resolve) => client.once('connect', resolve)),
+						);
+						expect(lastServer().listening).toBe(true);
+						client.write(
+							`${JSON.stringify({ version: 1, requestId: 'tail', method: 'tail', params: { runId: 'run', serviceName: 'web' } })}\n`,
+						);
+						yield* Effect.promise(
+							() =>
+								new Promise<void>((resolve) =>
+									client.once('data', () => resolve()),
+								),
+						);
+					}).pipe(
+						Effect.provide(state.layer(socketPath)),
+						Effect.timeout('2 seconds'),
+					);
+					expect(lastServer().listening).toBe(false);
+					expect(state.unsubscribe).toHaveBeenCalledOnce();
+					expect((yield* state.registry.get('run')).services[0]?.state).toBe(
+						'exited',
+					);
+					expect(state.terminate).toHaveBeenCalledWith(identity(98765));
+				}),
+			),
+	);
+
+	it.live('buffers a PTY exit until its live entry is registered', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				const captureStarted = yield* Deferred.make<void>();
+				const captured = yield* Deferred.make<{
+					identity: ReturnType<typeof identity>;
+					terminate: Effect.Effect<number | undefined, ProcessError>;
+				}>();
+				state.captureLive.mockImplementationOnce(() =>
+					Deferred.succeed(captureStarted, undefined).pipe(
+						Effect.andThen(Deferred.await(captured)),
+					),
+				);
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					const startFiber = yield* daemon
+						.request(start())
+						.pipe(Effect.forkScoped);
+					yield* Deferred.await(captureStarted).pipe(
+						Effect.timeout('1 second'),
+					);
+					const onExit = state.terminal.onExit.mock.calls[0]?.[0];
+					if (onExit === undefined)
+						return yield* Effect.die('Missing PTY exit callback');
+					onExit({ exitCode: 7, signal: 9 });
+					yield* Deferred.succeed(captured, {
+						identity: identity(98765),
+						terminate: Effect.succeed(0),
+					});
+					yield* Fiber.join(startFiber);
+					for (let attempt = 0; attempt < 100; attempt += 1) {
+						const serviceState = state.records.get('run')?.services[0]?.state;
+						if (serviceState === 'exited' || serviceState === 'failed') break;
+						yield* Effect.sleep('1 millis');
+					}
+					expect(state.records.get('run')?.services[0]).toMatchObject({
+						state: 'failed',
+						exitCode: 7,
+						signal: 9,
+					});
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live(
+		'keeps a restarted service alive when the old exit lifecycle resumes',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const oldExitEntered = yield* Deferred.make<void>();
+					const releaseOldExit = yield* Deferred.make<void>();
+					const appended: Array<string> = [];
+					const logs = Logs.of({
+						append: (_address, data) =>
+							Effect.sync(() => {
+								appended.push(data);
+								return { data, offset: appended.join('').length };
+							}),
+						replayAndSubscribe: () =>
+							Effect.succeed({
+								replay: [],
+								flush: Effect.void,
+								unsubscribe: Effect.void,
+							}),
+					});
+					const newTerminal = {
+						...state.terminal,
+						pid: 98766,
+						onData: vi.fn(state.terminal.onData.getMockImplementation()),
+						onExit: vi.fn(state.terminal.onExit.getMockImplementation()),
+					};
+					const thirdTerminal = {
+						...newTerminal,
+						pid: 98767,
+						onData: vi.fn(state.terminal.onData.getMockImplementation()),
+						onExit: vi.fn(state.terminal.onExit.getMockImplementation()),
+					};
+					vi.mocked(createPty)
+						.mockReturnValueOnce(Effect.succeed(state.terminal))
+						.mockReturnValueOnce(Effect.succeed(newTerminal))
+						.mockReturnValueOnce(Effect.succeed(thirdTerminal));
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						yield* daemon.request(start());
+						state.terminate.mockImplementationOnce(() =>
+							Deferred.succeed(oldExitEntered, undefined).pipe(
+								Effect.andThen(Deferred.await(releaseOldExit)),
+								Effect.as(15),
+							),
+						);
+						const onOldExit = state.terminal.onExit.mock.calls[0]?.[0];
+						if (onOldExit === undefined)
+							return yield* Effect.die('Missing old exit callback');
+						onOldExit({ exitCode: 143, signal: 15 });
+						yield* Deferred.await(oldExitEntered).pipe(
+							Effect.timeout('1 second'),
+						);
+						const restart = {
+							version: 1 as const,
+							requestId: 'restart',
+							method: 'restartServices' as const,
+							params: { runId: 'run', serviceNames: ['web'] },
+						};
+						yield* daemon.request(restart).pipe(Effect.timeout('1 second'));
+						yield* Deferred.succeed(releaseOldExit, undefined);
+						yield* Effect.sleep('10 millis');
+						yield* daemon.request(list);
+						const running = yield* state.registry.get('run');
+						expect(running.services[0]).toMatchObject({
+							state: 'running',
+							process: identity(98766),
+						});
+						expect(running.services[0]?.exitCode).toBeUndefined();
+						const onOldData = state.terminal.onData.mock.calls[0]?.[0];
+						if (onOldData === undefined)
+							return yield* Effect.die('Missing old output callback');
+						onOldData('late old output');
+						const onNewData = newTerminal.onData.mock.calls[0]?.[0];
+						if (onNewData === undefined)
+							return yield* Effect.die('Missing new output callback');
+						onNewData('new output after restart');
+						for (let attempt = 0; attempt < 100; attempt += 1) {
+							if (appended.join('').includes('new output after restart')) break;
+							yield* Effect.sleep('1 millis');
+						}
+						expect(appended.join('')).toContain(
+							'--- devsess: restarted web ---',
+						);
+						expect(appended.join('')).toContain('new output after restart');
+						expect(appended.join('')).not.toContain('late old output');
+						yield* daemon.request(restart);
+						const restarted = yield* state.registry.get('run');
+						expect(restarted.services[0]).toMatchObject({
+							state: 'running',
+							process: identity(98767),
+						});
+						expect(restarted.services[0]?.exitCode).toBeUndefined();
+						yield* daemon.request(stop);
+						expect(state.terminate).toHaveBeenCalledWith(identity(98767));
+					}).pipe(
+						Effect.provide(
+							state.layerWithLogs(join(root, 'daemon.sock'), logs),
+						),
+					);
+				}),
+			),
+	);
+
+	it.live(
+		'closes the socket first, answers in-flight requests, and kills groups that outlive the stop timeout',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const socketPath = join(root, 'daemon.sock');
+					yield* Effect.gen(function* () {
+						const scope = yield* Scope.make();
+						const context = yield* Layer.buildWithScope(
+							state.layer(socketPath, 500),
+							scope,
+						);
+						const daemon = Context.get(context, Daemon);
+						yield* daemon.request(start());
+						state.terminate.mockImplementation(() => Effect.never);
+						const client = createConnection(socketPath);
+						const received: Array<string> = [];
+						client.on('data', (chunk) => received.push(chunk.toString()));
+						client.on('error', () => undefined);
+						yield* Effect.promise(
+							() =>
+								new Promise<void>((resolve) => client.once('connect', resolve)),
+						);
+						client.write(`${JSON.stringify(stop)}\n`);
+						for (let attempt = 0; attempt < 200; attempt += 1) {
+							if (state.terminate.mock.calls.length > 0) break;
+							yield* Effect.sleep('5 millis');
+						}
+						expect(state.terminate).toHaveBeenCalled();
+						const closing = yield* Effect.forkDetach(
+							Scope.close(scope, Exit.void),
+						);
+						for (let attempt = 0; attempt < 200; attempt += 1) {
+							if (received.join('').includes('\n')) break;
+							yield* Effect.sleep('5 millis');
+						}
+						expect(JSON.parse(received.join('').trim())).toMatchObject({
+							requestId: 'stop',
+							ok: false,
+							error: 'Daemon is shutting down',
+						});
+						expect(lastServer().listening).toBe(false);
+						expect(existsSync(socketPath)).toBe(false);
+						expect(state.kill).not.toHaveBeenCalled();
+						yield* Fiber.join(closing).pipe(Effect.timeout('5 seconds'));
+						expect(state.kill).toHaveBeenCalledWith(identity(98765));
+					});
+				}),
+			),
+	);
+
+	it.live('records its PID beside the socket and removes it on exit', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				const socketPath = join(root, 'daemon.sock');
+				const pidfilePath = join(root, 'daemon.pid');
+				yield* Effect.gen(function* () {
+					yield* Daemon;
+					expect(readFileSync(pidfilePath, 'utf8').split('\n')[0]).toBe(
+						String(process.pid),
+					);
+				}).pipe(Effect.provide(state.layer(socketPath)));
+				expect(existsSync(pidfilePath)).toBe(false);
+			}),
+		),
+	);
+
+	it.live(
+		'answers info and run reads while a stop holds the request queue, and keeps mutations serial',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const socketPath = join(root, 'daemon.sock');
+					const info: DaemonRequest = {
+						version: 1,
+						requestId: 'info',
+						method: 'info',
+						params: {},
+					};
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						yield* daemon.request(start());
+						state.terminate.mockReturnValue(Effect.never);
+						yield* Effect.forkChild(daemon.request(stop));
+						yield* Effect.sleep('100 millis');
+						expect(state.terminate).toHaveBeenCalledTimes(1);
+						expect(yield* callDaemon(socketPath, info, 1_000)).toMatchObject({
+							pid: process.pid,
+						});
+						expect(yield* callDaemon(socketPath, list, 1_000)).toHaveLength(1);
+						const blocked = yield* Effect.exit(
+							callDaemon(socketPath, start('other'), 200),
+						);
+						expect(Exit.isFailure(blocked)).toBe(true);
+						expect(state.records.has('other')).toBe(false);
+					}).pipe(Effect.provide(state.layer(socketPath, 100)));
+				}),
+			),
+	);
+
+	it.live(
+		'settles a stop that never finishes: kills the group, drops the terminal, and keeps serving',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const socketPath = join(root, 'daemon.sock');
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						yield* daemon.request(start());
+						state.terminate.mockReturnValue(Effect.never);
+						state.kill.mockImplementation(() =>
+							Effect.sync(() => {
+								state.groupAlive.mockReturnValue(Effect.succeed(false));
+								return true;
+							}),
+						);
+						const stopped = (yield* daemon
+							.request(stop)
+							.pipe(Effect.timeout('3 seconds'))) as RunRecord;
+						expect(state.kill).toHaveBeenCalledWith(identity(98765));
+						expect(stopped.state).toBe('exited');
+						expect(stopped.services[0]).toMatchObject({
+							state: 'exited',
+							signal: 9,
+						});
+						expect(
+							yield* callDaemon(socketPath, {
+								version: 1,
+								requestId: 'info',
+								method: 'info',
+								params: {},
+							}),
+						).toMatchObject({ liveServiceCount: 0 });
+						state.owns.mockReturnValue(Effect.succeed(false));
+						yield* daemon.request(start('replacement'));
+					}).pipe(Effect.provide(state.layer(socketPath, undefined, 100)));
+				}),
+			),
+	);
+
+	it.live('does not remove the pidfile of a daemon that owns the socket', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				const socketPath = join(root, 'daemon.sock');
+				const pidfilePath = join(root, 'daemon.pid');
+				const owner = createServer();
+				yield* Effect.promise(
+					() =>
+						new Promise<void>((resolve) => owner.listen(socketPath, resolve)),
+				);
+				writeFileSync(pidfilePath, '4242\nbirth\n');
+				const exit = yield* Effect.exit(
+					Effect.gen(function* () {
+						yield* Daemon;
+					}).pipe(Effect.provide(state.layer(socketPath))),
+				);
+				owner.close();
+				expect(Exit.isFailure(exit)).toBe(true);
+				expect(readFileSync(pidfilePath, 'utf8')).toBe('4242\nbirth\n');
+			}),
+		),
+	);
+
+	it.live('releases close churn without waiting for lifecycle work', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				const entered = yield* Deferred.make<void>();
+				const blocked = yield* Deferred.make<void>();
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					yield* daemon.request(start());
+					state.terminate.mockImplementationOnce(() =>
+						Deferred.succeed(entered, undefined).pipe(
+							Effect.andThen(Deferred.await(blocked)),
+							Effect.as(15),
+						),
+					);
+					const onExit = state.terminal.onExit.mock.calls[0]?.[0];
+					if (onExit === undefined)
+						return yield* Effect.die('Missing PTY exit callback');
+					onExit({ exitCode: 0 });
+					yield* Deferred.await(entered).pipe(Effect.timeout('1 second'));
+					const client = new Socket();
+					const write = vi.spyOn(client, 'write').mockReturnValue(true);
+					lastServer().emit('connection', client);
+					client.emit(
+						'data',
+						Buffer.from(
+							`${JSON.stringify({ version: 1, requestId: 'attach', method: 'attach', params: { runId: 'run', serviceName: 'web' } })}\n`,
+						),
+					);
+					for (let attempt = 0; attempt < 100; attempt += 1) {
+						if (write.mock.calls.length > 0) break;
+						yield* Effect.sleep('1 millis');
+					}
+					expect(write).toHaveBeenCalled();
+					client.emit('close');
+					for (let attempt = 0; attempt < 100; attempt += 1) {
+						if (state.unsubscribe.mock.calls.length > 0) break;
+						yield* Effect.sleep('1 millis');
+					}
+					expect(state.unsubscribe).toHaveBeenCalledOnce();
+					for (let index = 0; index < 1000; index += 1) {
+						const socket = new Socket();
+						vi.spyOn(socket, 'write').mockReturnValue(true);
+						lastServer().emit('connection', socket);
+						socket.emit('close');
+					}
+					yield* Deferred.succeed(blocked, undefined);
+					yield* daemon.request(list).pipe(Effect.timeout('1 second'));
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live(
+		'rejects duplicate in-flight subscription ids without leaking listeners',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const tracked = trackedLogs();
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						yield* daemon.request(start());
+						const socket = new Socket();
+						const written: Array<string> = [];
+						vi.spyOn(socket, 'write').mockImplementation((chunk) => {
+							written.push(
+								typeof chunk === 'string' ? chunk : chunk.toString(),
+							);
+							return true;
+						});
+						lastServer().emit('connection', socket);
+						const tail = `${JSON.stringify({ version: 1, requestId: 'tail', method: 'tail', params: { runId: 'run', serviceName: 'web' } })}\n`;
+						socket.emit('data', Buffer.from(tail));
+						for (let attempt = 0; attempt < 100; attempt += 1) {
+							if (written.some((frame) => frame.includes('"ok":true'))) break;
+							yield* Effect.sleep('1 millis');
+						}
+						expect(written.some((frame) => frame.includes('"ok":true'))).toBe(
+							true,
+						);
+						expect(tracked.activeSubscriptions()).toBe(1);
+						socket.emit('data', Buffer.from(tail));
+						for (let attempt = 0; attempt < 100; attempt += 1) {
+							if (written.some((frame) => frame.includes('already in flight')))
+								break;
+							yield* Effect.sleep('1 millis');
+						}
+						expect(
+							written.some((frame) => frame.includes('already in flight')),
+						).toBe(true);
+						expect(tracked.activeSubscriptions()).toBe(1);
+						socket.emit('close');
+						for (let attempt = 0; attempt < 100; attempt += 1) {
+							if (tracked.activeSubscriptions() === 0) break;
+							yield* Effect.sleep('1 millis');
+						}
+						expect(tracked.activeSubscriptions()).toBe(0);
+					}).pipe(
+						Effect.provide(
+							state.layerWithLogs(join(root, 'daemon.sock'), tracked.logs),
+						),
+					);
+				}),
+			),
+	);
+
+	it.live('reports termination failures and keeps failed stops active', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					yield* daemon.request(start());
+					state.terminate.mockReturnValueOnce(
+						new ProcessError({ message: 'permission denied' }),
+					);
+					const result = yield* Effect.exit(daemon.request(stop));
+					expect(Exit.isFailure(result)).toBe(true);
+					if (Exit.isFailure(result))
+						expect(Cause.pretty(result.cause)).toContain(
+							'Could not stop all services',
+						);
+					expect((yield* state.registry.get('run')).services[0]?.state).toBe(
+						'stopping',
+					);
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live('reports an actionable remedy for an unverifiable orphan', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				state.records.set('orphan', orphanedRun('orphan'));
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					state.terminate.mockReturnValueOnce(
+						new ProcessError({
+							message:
+								'Cannot verify recovered process group 98765 after its leader exited',
+						}),
+					);
+					const result = yield* Effect.exit(
+						daemon.request({
+							version: 1,
+							requestId: 'stop-orphan',
+							method: 'stopRun',
+							params: { runId: 'orphan' },
+						}),
+					);
+					expect(Exit.isFailure(result)).toBe(true);
+					if (Exit.isFailure(result)) {
+						const message = Cause.pretty(result.cause);
+						expect(message).toContain('Service web');
+						expect(message).toContain('run orphan');
+						expect(message).toContain('98765');
+						expect(message).toContain('kill -TERM -98765');
+						expect(message).toContain('devsess stop --force');
+					}
+					expect((yield* state.registry.get('orphan')).state).toBe('orphaned');
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live('points a blocked start at the orphan remedy', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				state.records.set('orphan', orphanedRun('orphan'));
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					const result = yield* Effect.exit(
+						daemon.request(start('replacement')),
+					);
+					expect(Exit.isFailure(result)).toBe(true);
+					if (Exit.isFailure(result)) {
+						const message = Cause.pretty(result.cause);
+						expect(message).toContain('service web');
+						expect(message).toContain('PID 98765 PGID 98765');
+						expect(message).toContain('devsess stop orphan --force');
+					}
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+	it.live('does not let an orphan in another checkout block start', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				state.records.set('orphan', {
+					...orphanedRun('orphan'),
+					canonicalCwd: '/other-checkout',
+				});
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					const replacement = yield* daemon.request(start('replacement'));
+					expect(replacement).toMatchObject({ runId: 'replacement' });
+					expect((yield* state.registry.get('orphan')).state).toBe('orphaned');
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live('ignores a finished run whose PID and PGID were reused', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				state.records.set('old', finishedRun('old'));
+				state.owns.mockReturnValue(Effect.succeed(false));
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					const runs = (yield* daemon.request(
+						list,
+					)) as ReadonlyArray<RunRecord>;
+					expect(formatStatus(runs, true)[0]).toContain('Nothing running');
+					const replacement = yield* daemon.request(start('replacement'));
+					expect(replacement).toMatchObject({ runId: 'replacement' });
+					expect((yield* state.registry.get('old')).state).toBe('failed');
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live(
+		'verifies historical finished processes once at startup, not on listRuns',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					for (let index = 0; index < 30; index += 1)
+						state.records.set(`old-${index}`, finishedRun(`old-${index}`));
+					state.owns.mockReturnValue(Effect.succeed(false));
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						expect(state.owns).toHaveBeenCalledTimes(30);
+						state.owns.mockClear();
+						yield* daemon.request(list);
+						yield* daemon.request(list);
+						const single = yield* daemon.request({
+							version: 1,
+							requestId: 'get',
+							method: 'getRun',
+							params: { runId: 'old-0' },
+						});
+						expect(single).toMatchObject({ runId: 'old-0' });
+						expect(state.owns).not.toHaveBeenCalled();
+						expect(state.groupAlive).not.toHaveBeenCalled();
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+
+	it.live(
+		'reports a verified surviving process from a finished run in status and on start',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					state.records.set('old', finishedRun('old'));
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						const runs = (yield* daemon.request(
+							list,
+						)) as ReadonlyArray<RunRecord>;
+						expect(formatStatus(runs, true).join('\n')).toContain(
+							'web: orphaned pid 98765',
+						);
+						const result = yield* Effect.exit(
+							daemon.request(start('replacement')),
+						);
+						expect(Exit.isFailure(result)).toBe(true);
+						if (Exit.isFailure(result)) {
+							const message = Cause.pretty(result.cause);
+							expect(message).toContain(
+								'run old service web PID 98765 PGID 98765',
+							);
+							expect(message).toContain('process verified alive');
+							expect(message).toContain('devsess stop old --force');
+						}
+						const unrelated = start('unrelated');
+						const started = yield* daemon.request({
+							...unrelated,
+							params: { ...unrelated.params, presetName: 'other' },
+						});
+						expect(started).toMatchObject({ runId: 'unrelated' });
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+
+	it.live('force stops an orphan and unblocks a replacement start', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				state.records.set('orphan', orphanedRun('orphan'));
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					state.groupAlive.mockReturnValueOnce(Effect.succeed(true));
+					state.groupAlive.mockReturnValue(Effect.succeed(false));
+					const result = yield* daemon.request({
+						version: 1,
+						requestId: 'force-stop-orphan',
+						method: 'stopRun',
+						params: { runId: 'orphan', force: true },
+					});
+					expect(result).toMatchObject({ state: 'exited' });
+					expect(state.terminate).toHaveBeenCalledWith(identity(98765), true);
+					state.owns.mockReturnValue(Effect.succeed(false));
+					const replacement = yield* daemon.request(start('replacement'));
+					expect(replacement).toMatchObject({ runId: 'replacement' });
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live(
+		'refuses duplicate identity when aggregate failed still contains a running service',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						yield* daemon.request(start());
+						const run = yield* state.registry.get('run');
+						yield* state.registry.replace({
+							...run,
+							state: 'failed',
+							services: [
+								...run.services,
+								{
+									name: 'broken',
+									command: 'false',
+									cwd: '/tmp',
+									state: 'failed',
+								},
+							],
+						});
+						const result = yield* Effect.exit(
+							daemon.request(start('duplicate')),
+						);
+						expect(Exit.isFailure(result)).toBe(true);
+						expect(state.records.has('duplicate')).toBe(false);
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+
+	it.live(
+		'keeps successful stop exits as exited after a later service fails to start',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					vi.mocked(createPty)
+						.mockReturnValueOnce(Effect.succeed(state.terminal))
+						.mockReturnValueOnce(
+							Effect.fail(
+								new PtyError({ message: 'Could not start second service' }),
+							),
+						);
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						const request = start();
+						const result = yield* Effect.exit(
+							daemon.request({
+								...request,
+								params: {
+									...request.params,
+									services: [
+										...request.params.services,
+										{ name: 'broken', command: 'false', cwd: '/tmp' },
+									],
+								},
+							}),
+						);
+						expect(Exit.isFailure(result)).toBe(true);
+						const stored = yield* state.registry.get('run');
+						expect(stored.services[0]).toMatchObject({
+							state: 'exited',
+							exitCode: 0,
+						});
+						expect(stored.services[0]?.state).not.toBe('failed');
+						expect(stored.services[1]).toMatchObject({
+							state: 'failed',
+							exitCode: 1,
+						});
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+
+	it.live('stops an orphaned run whose recovered group is already dead', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				state.records.set('orphan', orphanedRun('orphan'));
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					state.groupAlive.mockReturnValueOnce(Effect.succeed(false));
+					const result = yield* daemon.request({
+						version: 1,
+						requestId: 'stop-orphan',
+						method: 'stopRun',
+						params: { runId: 'orphan' },
+					});
+					expect(result).toMatchObject({ state: 'exited' });
+					expect(state.terminate).not.toHaveBeenCalled();
+					expect((yield* state.registry.get('orphan')).state).toBe('exited');
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live('resolves a processless starting record during reconciliation', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				state.records.set('crashed', processlessRun('crashed'));
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					const recovered = yield* state.registry.get('crashed');
+					expect(recovered.state).toBe('exited');
+					expect(recovered.services[0]?.state).toBe('exited');
+					expect(recovered.services[0]?.process).toBeUndefined();
+					const replacement = yield* daemon.request(start('replacement'));
+					expect(replacement).toMatchObject({ runId: 'replacement' });
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live(
+		'settles a persisted stopping run whose group is gone on startup',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					state.records.set('stuck', stoppingRun('stuck'));
+					state.groupAlive.mockReturnValue(Effect.succeed(false));
+					state.owns.mockReturnValue(
+						new ProcessError({ message: 'Could not inspect process 98765' }),
+					);
+					yield* Effect.gen(function* () {
+						yield* Daemon;
+						const settled = yield* state.registry.get('stuck');
+						expect(settled.state).toBe('exited');
+						expect(settled.services[0]?.state).toBe('exited');
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+
+	it.live(
+		'settles a stopping run whose group is gone when its preset starts again',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						state.records.set('stuck', stoppingRun('stuck'));
+						state.groupAlive.mockReturnValue(Effect.succeed(false));
+						state.owns.mockReturnValue(Effect.succeed(false));
+						yield* daemon.request(start('replacement'));
+						expect((yield* state.registry.get('stuck')).state).toBe('exited');
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+
+	describe('when process inspection fails as a service exits', () => {
+		const exitFailingInspection = (groupStillAlive: boolean) =>
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				const socketPath = join(root, 'daemon.sock');
+				return yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					yield* daemon.request(start());
+					state.terminate.mockReturnValue(
+						new ProcessError({ message: 'Could not inspect process tree' }),
+					);
+					state.groupAlive.mockReturnValue(Effect.succeed(groupStillAlive));
+					const onExit = state.terminal.onExit.mock.calls.at(-1)?.[0];
+					if (onExit === undefined)
+						return yield* Effect.die('Missing PTY exit callback');
+					onExit({ exitCode: 0 });
+					yield* Effect.gen(function* () {
+						while (
+							(yield* state.registry.get('run')).services[0]?.state ===
+							'running'
+						)
+							yield* Effect.sleep('10 millis');
+					}).pipe(Effect.timeout('2 seconds'));
+					expect(
+						yield* callDaemon(socketPath, {
+							version: 1,
+							requestId: 'info',
+							method: 'info',
+							params: {},
+						}),
+					).toMatchObject({ liveServiceCount: 0 });
+					const afterExit = (yield* state.registry.get('run')).services[0]
+						?.state;
+					if (groupStillAlive) return { afterExit };
+					const terminations = state.terminate.mock.calls.length;
+					const stopped = yield* daemon.request(stop);
+					expect(state.terminate.mock.calls.length).toBe(terminations);
+					return { afterExit, stopped };
+				}).pipe(Effect.provide(state.layer(socketPath)));
+			});
+
+		it.live(
+			'drops the terminal entry and ends a service whose group is gone',
+			() =>
+				runTest(
+					Effect.gen(function* () {
+						const result = yield* exitFailingInspection(false);
+						expect(result).toMatchObject({
+							afterExit: 'exited',
+							stopped: { state: 'exited' },
+						});
+					}),
+				),
+		);
+
+		it.live(
+			'drops the terminal entry of a service whose group is still alive and marks it orphaned',
+			() =>
+				runTest(
+					Effect.gen(function* () {
+						const result = yield* exitFailingInspection(true);
+						expect(result).toMatchObject({ afterExit: 'orphaned' });
+					}),
+				),
+		);
+	});
+
+	it.live('allows a new start after an orphaned group has disappeared', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				state.records.set('orphan', orphanedRun('orphan'));
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					state.groupAlive.mockReturnValue(Effect.succeed(false));
+					state.owns.mockReturnValue(Effect.succeed(false));
+					const result = yield* daemon.request(start('replacement'));
+					expect(result).toMatchObject({ runId: 'replacement' });
+					expect(state.records.has('replacement')).toBe(true);
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live('echoes a decodable request id for malformed requests', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				yield* Effect.gen(function* () {
+					yield* Daemon;
+					const malformed = {
+						version: 1,
+						requestId: 'validation',
+						method: 'stopRun',
+						params: { runId: '' },
+					} as unknown as DaemonRequest;
+					const result = yield* Effect.exit(
+						callDaemon(join(root, 'daemon.sock'), malformed),
+					);
+					expect(Exit.isFailure(result)).toBe(true);
+					if (Exit.isFailure(result)) {
+						const message = Cause.pretty(result.cause);
+						expect(message).not.toContain('Daemon response ID did not match');
+						expect(message).toContain('runId');
+					}
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live(
+		'immediately terminates a new terminal when identity capture fails',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						state.capture.mockReturnValueOnce(
+							new ProcessError({ message: 'capture failed' }),
+						);
+						expect(
+							Exit.isFailure(yield* Effect.exit(daemon.request(start()))),
+						).toBe(true);
+						expect(state.terminal.kill).toHaveBeenCalledWith('SIGKILL');
+						expect(terminatePty).not.toHaveBeenCalled();
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+
+	it.live(
+		'immediately rolls back the new owned terminal when persistence fails',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						const original = state.replace.getMockImplementation();
+						if (original === undefined)
+							return yield* Effect.die('Missing registry replacement');
+						state.replace.mockImplementationOnce(() =>
+							Schema.decodeUnknownEffect(Schema.Never)(undefined),
+						);
+						const result = yield* Effect.exit(
+							daemon.request(start()).pipe(Effect.timeout('1 second')),
+						);
+						expect(Exit.isFailure(result)).toBe(true);
+						expect(state.terminate).toHaveBeenCalledWith(identity(98765));
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+
+	it.live(
+		'cleans up the still-owned group before marking an exited PTY complete',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						yield* daemon.request(start());
+						const onExit = state.terminal.onExit.mock.calls[0]?.[0];
+						if (onExit === undefined)
+							return yield* Effect.die('Missing PTY exit callback');
+						state.terminate.mockImplementation(() =>
+							Effect.sync(() => {
+								state.owns.mockReturnValue(Effect.succeed(false));
+								return 15;
+							}),
+						);
+						onExit({ exitCode: 0 });
+						yield* daemon.request(list);
+						expect(state.terminate).toHaveBeenCalledWith(identity(98765));
+						expect((yield* state.registry.get('run')).services[0]?.state).toBe(
+							'exited',
+						);
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+
+	it.live('completes every socket subscription when a PTY exits', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					yield* daemon.request(start());
+					const client = createConnection(join(root, 'daemon.sock'));
+					client.on('error', () => undefined);
+					const response = yield* Deferred.make<void>();
+					const completed = yield* Deferred.make<void>();
+					let received = '';
+					client.on('data', (chunk) => {
+						received += chunk.toString();
+						if (received.includes('"ok":true'))
+							Deferred.succeed(response, undefined).pipe(Effect.runFork);
+						if (received.includes('"event":"exit"'))
+							Deferred.succeed(completed, undefined).pipe(Effect.runFork);
+					});
+					yield* Effect.promise(
+						() =>
+							new Promise<void>((resolve) => client.once('connect', resolve)),
+					);
+					client.write(
+						`${JSON.stringify({ version: 1, requestId: 'tail', method: 'tail', params: { runId: 'run', serviceName: 'web' } })}\n`,
+					);
+					yield* Deferred.await(response).pipe(Effect.timeout('1 second'));
+					const onExit = state.terminal.onExit.mock.calls[0]?.[0];
+					if (onExit === undefined)
+						return yield* Effect.die('Missing PTY exit callback');
+					onExit({ exitCode: 0, signal: 9 });
+					yield* Deferred.await(completed).pipe(Effect.timeout('1 second'));
+					expect(received).toContain('"event":"exit"');
+					expect(received).toContain('"exitCode":0');
+					expect(received).toContain('"signal":9');
+					expect(state.unsubscribe).toHaveBeenCalledOnce();
+					client.destroy();
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live('completes subscriptions when stop removes a live terminal', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					yield* daemon.request(start());
+					const client = createConnection(join(root, 'daemon.sock'));
+					client.on('error', () => undefined);
+					const response = yield* Deferred.make<void>();
+					const completed = yield* Deferred.make<void>();
+					let received = '';
+					client.on('data', (chunk) => {
+						received += chunk.toString();
+						if (received.includes('"requestId":"tail"'))
+							Deferred.succeed(response, undefined).pipe(Effect.runFork);
+						if (received.includes('"event":"exit"'))
+							Deferred.succeed(completed, undefined).pipe(Effect.runFork);
+					});
+					yield* Effect.promise(
+						() =>
+							new Promise<void>((resolve) => client.once('connect', resolve)),
+					);
+					client.write(
+						`${JSON.stringify({ version: 1, requestId: 'tail', method: 'tail', params: { runId: 'run', serviceName: 'web' } })}\n`,
+					);
+					yield* Deferred.await(response).pipe(Effect.timeout('1 second'));
+					state.terminate.mockReturnValueOnce(Effect.succeed(9));
+					yield* daemon.request(stop);
+					yield* Deferred.await(completed).pipe(Effect.timeout('1 second'));
+					expect(received).toContain('"event":"exit"');
+					expect(received).toContain('"signal":9');
+					expect((yield* state.registry.get('run')).services[0]).toMatchObject({
+						exitCode: 0,
+						signal: 9,
+					});
+					client.destroy();
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+
+	it.live(
+		'terminates and completes subscriptions after log persistence fails',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const failedLogs = Logs.of({
+						append: () =>
+							Effect.fail(
+								new PlatformError(
+									new SystemError({
+										_tag: 'Unknown',
+										module: 'test',
+										method: 'append',
+										description: 'disk full',
+									}),
+								),
+							),
+						replayAndSubscribe: () =>
+							Effect.succeed({
+								replay: [] as Array<LogEvent>,
+								flush: Effect.void,
+								unsubscribe: Effect.sync(state.unsubscribe),
+							}),
+					});
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						yield* daemon.request(start());
+						const client = createConnection(join(root, 'daemon.sock'));
+						client.on('error', () => undefined);
+						const completed = yield* Deferred.make<void>();
+						let received = '';
+						client.on('data', (chunk) => {
+							received += chunk.toString();
+							if (received.includes('"event":"exit"'))
+								Effect.runFork(Deferred.succeed(completed, undefined));
+						});
+						yield* Effect.promise(
+							() =>
+								new Promise<void>((resolve) => client.once('connect', resolve)),
+						);
+						client.write(
+							`${JSON.stringify({ version: 1, requestId: 'tail', method: 'tail', params: { runId: 'run', serviceName: 'web' } })}\n`,
+						);
+						const onData = state.terminal.onData.mock.calls[0]?.[0];
+						if (typeof onData !== 'function')
+							return yield* Effect.die('Missing PTY output callback');
+						onData('output before failure');
+						yield* Deferred.await(completed).pipe(Effect.timeout('1 second'));
+						expect(state.terminate).toHaveBeenCalledWith(identity(98765));
+						expect(received).toContain('"event":"exit"');
+						expect(received).toContain('"exitCode":1');
+						expect(
+							(yield* state.registry.get('run')).services[0],
+						).toMatchObject({
+							state: 'failed',
+							exitCode: 1,
+						});
+						client.destroy();
+					}).pipe(
+						Effect.provide(
+							state.layerWithLogs(join(root, 'daemon.sock'), failedLogs),
+						),
+						Effect.timeout('3 seconds'),
+					);
+				}),
+			),
+	);
+
+	it.live(
+		'replays and completes a service that exited before tail subscribed',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const finished = start('finished');
+					state.records.set('finished', {
+						...finished.params,
+						startedAt: '2026-09-09T00:00:00.000Z',
+						state: 'exited',
+						daemon: identity(12345),
+						services: [
+							{
+								name: 'web',
+								command: 'sleep 30',
+								cwd: '/tmp',
+								state: 'exited',
+								exitCode: 7,
+								signal: undefined,
+							},
+						],
+					});
+					yield* Effect.gen(function* () {
+						yield* Daemon;
+						const client = createConnection(join(root, 'daemon.sock'));
+						client.on('error', () => undefined);
+						const completed = yield* Deferred.make<void>();
+						let received = '';
+						client.on('data', (chunk) => {
+							received += chunk.toString();
+							if (received.includes('"event":"exit"'))
+								Deferred.succeed(completed, undefined).pipe(Effect.runFork);
+						});
+						yield* Effect.promise(
+							() =>
+								new Promise<void>((resolve) => client.once('connect', resolve)),
+						);
+						client.write(
+							`${JSON.stringify({ version: 1, requestId: 'tail-finished', method: 'tail', params: { runId: 'finished', serviceName: 'web' } })}\n`,
+						);
+						yield* Deferred.await(completed).pipe(Effect.timeout('1 second'));
+						expect(received).toContain('"exitCode":7');
+						client.destroy();
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+
+	it.live('replays and completes a dead service after daemon restart', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				const recovered = orphanedRun('recovered');
+				const recoveredService = recovered.services[0];
+				if (recoveredService === undefined)
+					return yield* Effect.die('Missing recovered service');
+				state.records.set('recovered', {
+					...recovered,
+					state: 'running',
+					services: [{ ...recoveredService, state: 'running' }],
+				});
+				state.owns.mockReturnValue(Effect.succeed(false));
+				state.groupAlive.mockReturnValue(Effect.succeed(false));
+				const unsubscribe = vi.fn();
+				const logs = Logs.of({
+					append: (_address, data) =>
+						Effect.succeed({ data, offset: data.length }),
+					replayAndSubscribe: () =>
+						Effect.succeed({
+							replay: [{ data: 'persisted', offset: 9 }],
+							flush: Effect.void,
+							unsubscribe: Effect.sync(unsubscribe),
+						}),
+				});
+				yield* Effect.gen(function* () {
+					yield* Daemon;
+					const client = createConnection(join(root, 'daemon.sock'));
+					client.on('error', () => undefined);
+					const completed = yield* Deferred.make<void>();
+					let received = '';
+					client.on('data', (chunk) => {
+						received += chunk.toString();
+						if (received.includes('"event":"exit"'))
+							Deferred.succeed(completed, undefined).pipe(Effect.runFork);
+					});
+					yield* Effect.promise(
+						() =>
+							new Promise<void>((resolve) => client.once('connect', resolve)),
+					);
+					client.write(
+						`${JSON.stringify({ version: 1, requestId: 'tail-recovered', method: 'tail', params: { runId: 'recovered', serviceName: 'web' } })}\n`,
+					);
+					yield* Deferred.await(completed).pipe(Effect.timeout('1 second'));
+					expect(received).toContain('"data":"persisted"');
+					expect(received).toContain('"exitCode":1');
+					expect(received).not.toContain('"signal"');
+					expect(
+						(yield* state.registry.get('recovered')).services[0],
+					).toMatchObject({
+						state: 'exited',
+						exitStatus: 'unknown',
+					});
+					client.destroy();
+					expect(unsubscribe).toHaveBeenCalledOnce();
+				}).pipe(
+					Effect.provide(state.layerWithLogs(join(root, 'daemon.sock'), logs)),
+				);
+			}),
+		),
+	);
+
+	it.live('delivers the last output chunk before the exit frame', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				const logs = delayedLogs();
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					yield* daemon.request(start());
+					const client = createConnection(join(root, 'daemon.sock'));
+					client.on('error', () => undefined);
+					const response = yield* Deferred.make<void>();
+					const completed = yield* Deferred.make<void>();
+					let received = '';
+					client.on('data', (chunk) => {
+						received += chunk.toString();
+						if (received.includes('"ok":true'))
+							Deferred.succeed(response, undefined).pipe(Effect.runFork);
+						if (received.includes('"event":"exit"'))
+							Deferred.succeed(completed, undefined).pipe(Effect.runFork);
+					});
+					yield* Effect.promise(
+						() =>
+							new Promise<void>((resolve) => client.once('connect', resolve)),
+					);
+					client.write(
+						`${JSON.stringify({ version: 1, requestId: 'tail', method: 'tail', params: { runId: 'run', serviceName: 'web' } })}\n`,
+					);
+					yield* Deferred.await(response).pipe(Effect.timeout('1 second'));
+					const onData = state.terminal.onData.mock.calls[0]?.[0];
+					const onExit = state.terminal.onExit.mock.calls[0]?.[0];
+					if (typeof onData !== 'function' || typeof onExit !== 'function')
+						return yield* Effect.die('Missing PTY callbacks');
+					onData('hello');
+					onExit({ exitCode: 0 });
+					yield* Deferred.await(completed).pipe(Effect.timeout('1 second'));
+					const output = received.indexOf('"event":"output"');
+					const exit = received.indexOf('"event":"exit"');
+					expect(output).toBeGreaterThanOrEqual(0);
+					expect(exit).toBeGreaterThan(output);
+					expect(received).toContain('"data":"hello"');
+					client.destroy();
+				}).pipe(
+					Effect.provide(state.layerWithLogs(join(root, 'daemon.sock'), logs)),
+				);
+			}),
+		),
+	);
+
+	it.live(
+		'waits for a backpressured socket before sending subsequent responses',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						const socket = new Socket();
+						const drained = yield* Deferred.make<void>();
+						let isDrained = false;
+						Object.defineProperty(socket, 'writableNeedDrain', {
+							configurable: true,
+							get: () => !isDrained,
+						});
+						const write = vi.spyOn(socket, 'write').mockImplementation(() => {
+							setTimeout(() => {
+								isDrained = true;
+								socket.emit('drain');
+								Effect.runFork(Deferred.succeed(drained, undefined));
+							}, 10);
+							return false;
+						});
+						lastServer().emit('connection', socket);
+						socket.emit('data', Buffer.from(`${JSON.stringify(list)}\n`));
+						yield* Deferred.await(drained).pipe(Effect.timeout('1 second'));
+						yield* daemon.request(list).pipe(Effect.timeout('1 second'));
+						expect(write).toHaveBeenCalledOnce();
+						expect(socket.destroyed).toBe(false);
+						expect(
+							yield* daemon.request(list).pipe(Effect.timeout('1 second')),
+						).toEqual([]);
+					}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+				}),
+			),
+	);
+
+	it.live(
+		'isolates a paused tail reader from other RPCs and releases it on close',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const subscribed = yield* Deferred.make<void>();
+					const released = yield* Deferred.make<void>();
+					const logs = streamingLogs(subscribed, released);
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						yield* daemon.request(start());
+						const socket = new Socket();
+						Object.defineProperty(socket, 'writableNeedDrain', {
+							configurable: true,
+							get: () => true,
+						});
+						vi.spyOn(socket, 'write').mockReturnValue(false);
+						lastServer().emit('connection', socket);
+						socket.emit(
+							'data',
+							Buffer.from(
+								`${JSON.stringify({ version: 1, requestId: 'tail', method: 'tail', params: { runId: 'run', serviceName: 'web' } })}\n`,
+							),
+						);
+						yield* Deferred.await(subscribed).pipe(Effect.timeout('1 second'));
+						const onData = state.terminal.onData.mock.calls[0]?.[0];
+						if (typeof onData !== 'function')
+							return yield* Effect.die('Missing PTY output callback');
+						for (let index = 0; index < 40; index += 1)
+							onData('x'.repeat(64 * 1024));
+						expect(
+							yield* callDaemon(join(root, 'daemon.sock'), list).pipe(
+								Effect.timeout('1 second'),
+							),
+						).toHaveLength(1);
+						yield* callDaemon(join(root, 'daemon.sock'), stop).pipe(
+							Effect.timeout('1 second'),
+						);
+						yield* Deferred.await(released).pipe(Effect.timeout('1 second'));
+						socket.destroy();
+					}).pipe(
+						Effect.provide(
+							state.layerWithLogs(join(root, 'daemon.sock'), logs),
+						),
+						Effect.timeout('3 seconds'),
+					);
+				}),
+			),
+	);
+
+	it.live('keeps control RPCs responsive during a real log burst', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				const realLogs = yield* Logs.pipe(
+					Effect.provide(
+						Logs.layer({ dataDirectory: root, maxBytes: 1024 * 1024 }),
+					),
+				);
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					yield* daemon.request(start());
+					const onData = state.terminal.onData.mock.calls[0]?.[0];
+					if (typeof onData !== 'function')
+						return yield* Effect.die('Missing PTY output callback');
+					for (let index = 0; index < 32; index += 1)
+						onData('x'.repeat(64 * 1024));
+					const started = performance.now();
+					const results = yield* Effect.all(
+						[daemon.request(list), daemon.request(stop)],
+						{ concurrency: 'unbounded' },
+					).pipe(Effect.timeout('1 second'));
+					const latency = performance.now() - started;
+					expect(results[0]).toHaveLength(1);
+					expect(results[1]).toMatchObject({ runId: 'run' });
+					expect(latency).toBeLessThan(500);
+				}).pipe(
+					Effect.provide(
+						state.layerWithLogs(join(root, 'daemon.sock'), realLogs),
+					),
+					Effect.timeout('3 seconds'),
+				);
+			}),
+		),
+	);
+
+	it.live('keeps control RPCs responsive with a paused real-log tail', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				const realLogs = yield* Logs.pipe(
+					Effect.provide(
+						Logs.layer({ dataDirectory: root, maxBytes: 1024 * 1024 }),
+					),
+				);
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					yield* daemon.request(start());
+					const client = createConnection(join(root, 'daemon.sock'));
+					client.on('error', () => undefined);
+					const ready = yield* Deferred.make<void>();
+					let received = '';
+					client.on('data', (chunk) => {
+						received += chunk.toString();
+						if (received.includes('"requestId":"tail","ok":true')) {
+							client.pause();
+							Effect.runFork(Deferred.succeed(ready, undefined));
+						}
+					});
+					yield* Effect.promise(
+						() =>
+							new Promise<void>((resolve) => client.once('connect', resolve)),
+					);
+					client.write(
+						`${JSON.stringify({ version: 1, requestId: 'tail', method: 'tail', params: { runId: 'run', serviceName: 'web' } })}\n`,
+					);
+					yield* Deferred.await(ready).pipe(Effect.timeout('1 second'));
+					const onData = state.terminal.onData.mock.calls[0]?.[0];
+					if (typeof onData !== 'function')
+						return yield* Effect.die('Missing PTY output callback');
+					for (let index = 0; index < 128; index += 1)
+						onData('x'.repeat(64 * 1024));
+					const started = performance.now();
+					const results = yield* Effect.all(
+						[daemon.request(list), daemon.request(stop)],
+						{ concurrency: 'unbounded' },
+					).pipe(Effect.timeout('1 second'));
+					const latency = performance.now() - started;
+					expect(results[0]).toHaveLength(1);
+					expect(results[1]).toMatchObject({ runId: 'run' });
+					expect(latency).toBeLessThan(500);
+					client.destroy();
+				}).pipe(
+					Effect.provide(
+						state.layerWithLogs(join(root, 'daemon.sock'), realLogs),
+					),
+					Effect.timeout('3 seconds'),
+				);
+			}),
+		),
+	);
+
+	it.live(
+		'replays a full retained window before completing a finished tail',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const root = yield* makeTempDir;
+					const state = fixture();
+					const realLogs = yield* Logs.pipe(
+						Effect.provide(
+							Logs.layer({ dataDirectory: root, maxBytes: 1024 * 1024 }),
+						),
+					);
+					yield* Effect.gen(function* () {
+						const daemon = yield* Daemon;
+						yield* daemon.request(start());
+						const onData = state.terminal.onData.mock.calls[0]?.[0];
+						const onExit = state.terminal.onExit.mock.calls[0]?.[0];
+						if (typeof onData !== 'function' || typeof onExit !== 'function')
+							return yield* Effect.die('Missing PTY callbacks');
+						state.terminate.mockImplementation(() =>
+							Effect.sync(() => {
+								state.owns.mockReturnValue(Effect.succeed(false));
+								return 15;
+							}),
+						);
+						onData('x'.repeat(1024 * 1024));
+						onExit({ exitCode: 0 });
+						for (let attempt = 0; attempt < 200; attempt += 1) {
+							if ((yield* state.registry.get('run')).state === 'exited') break;
+							yield* Effect.sleep('5 millis');
+						}
+						const listed = (yield* daemon.request(list)) as Array<RunRecord>;
+						expect(listed.find((run) => run.runId === 'run')?.state).toBe(
+							'exited',
+						);
+						const client = createConnection(join(root, 'daemon.sock'));
+						client.on('error', () => undefined);
+						const completed = yield* Deferred.make<void>();
+						let received = '';
+						client.on('data', (chunk) => {
+							received += chunk.toString();
+							if (received.includes('"event":"exit"'))
+								Effect.runFork(Deferred.succeed(completed, undefined));
+						});
+						yield* Effect.promise(
+							() =>
+								new Promise<void>((resolve) => client.once('connect', resolve)),
+						);
+						client.write(
+							`${JSON.stringify({ version: 1, requestId: 'tail', method: 'tail', params: { runId: 'run', serviceName: 'web' } })}\n`,
+						);
+						yield* Deferred.await(completed).pipe(Effect.timeout('2 seconds'));
+						const frames = received
+							.trim()
+							.split('\n')
+							.map(
+								(line) => JSON.parse(line) as { event?: string; data?: string },
+							);
+						const output = frames.find((frame) => frame.event === 'output');
+						expect(output?.data).toHaveLength(1024 * 1024);
+						expect(frames.some((frame) => frame.event === 'exit')).toBe(true);
+						client.destroy();
+					}).pipe(
+						Effect.provide(
+							state.layerWithLogs(join(root, 'daemon.sock'), realLogs),
+						),
+						Effect.timeout('4 seconds'),
+					);
+				}),
+			),
+	);
+
+	it.live('disconnects when the socket cannot accept an overflow frame', () =>
+		runTest(
+			Effect.gen(function* () {
+				const root = yield* makeTempDir;
+				const state = fixture();
+				yield* Effect.gen(function* () {
+					const daemon = yield* Daemon;
+					const socket = new Socket();
+					Object.defineProperty(socket, 'writableLength', {
+						configurable: true,
+						get: () => 1024 * 1024,
+					});
+					const destroy = vi.spyOn(socket, 'destroy').mockReturnValue(socket);
+					lastServer().emit('connection', socket);
+					socket.emit('data', Buffer.from(`${JSON.stringify(list)}\n`));
+					yield* Effect.sleep('1 millis');
+					expect(destroy).toHaveBeenCalledOnce();
+					yield* daemon.request(list).pipe(Effect.timeout('1 second'));
+				}).pipe(Effect.provide(state.layer(join(root, 'daemon.sock'))));
+			}),
+		),
+	);
+});

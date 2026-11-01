@@ -1,0 +1,132 @@
+import AppKit
+import SwiftUI
+
+@MainActor enum RunHeaderStyle {
+    static let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+    static let color = NSColor.secondaryLabelColor
+}
+
+struct RunHeaderTextStyle: ViewModifier {
+    var armed = false
+    var font: NSFont { RunHeaderStyle.font }
+    var color: NSColor { armed ? .systemRed : RunHeaderStyle.color }
+
+    func body(content: Content) -> some View {
+        content
+            .font(Font(font))
+            .foregroundStyle(Color(nsColor: color))
+    }
+}
+
+struct RunRow: View {
+    let run: RunRecord
+    let stopping: Bool
+    let error: String?
+    let claudeSessions: [ClaudeSession]
+    var snapshotMode = false
+    var previewState: RowPreviewState = .normal
+    let stop: () -> Void
+    let stopService: (ServiceRecord) -> Void
+    let isServiceStopping: (ServiceRecord) -> Bool
+    let restart: (ServiceRecord) -> Void
+    var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
+    @LegacyState private var headerHovered = false
+    @LegacyState private var headerArmed = false
+
+    private var headerSelected: Bool { headerHovered || runArmed || previewState == .headerHovered || previewState == .badgeHovered }
+    private var runArmed: Bool { headerArmed || previewState == .headerArmed }
+    private var badge: ClaudeSessionBadge {
+        ClaudeSessionBadge(sessions: claudeSessions, snapshotMode: snapshotMode,
+            previewHovered: previewState == .badgeHovered,
+            headerArmed: runArmed)
+    }
+
+    private var header: some View {
+        GeometryReader { geometry in
+            HStack(spacing: 0) {
+                Button {} label: {
+                    Text(runArmed ? RunHeaderGeometry.stopTitle(serviceCount: run.services.count)
+                        : "\(run.projectName) — \((run.canonicalCwd as NSString).lastPathComponent)")
+                        .modifier(RunHeaderTextStyle(armed: runArmed))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .padding(.leading, ServiceRowGeometry.horizontalInset)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(height: RunHeaderGeometry.height)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                HStack(spacing: RunHeaderGeometry.badgeGap - RunHeaderGeometry.badgeGlyphInset) {
+                    Button(action: stop) {
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(Color(nsColor: runArmed ? .systemRed : .secondaryLabelColor))
+                            .frame(width: RunHeaderGeometry.stopSquareSize, height: RunHeaderGeometry.stopSquareSize)
+                            .allowsHitTesting(false)
+                            .stopSquareTint(armed: runArmed)
+                            .frame(width: RunHeaderGeometry.stopZoneWidth, height: RunHeaderGeometry.height,
+                                alignment: .trailing)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!headerSelected || stopping || snapshotMode)
+                    .opacity(headerSelected ? 1 : 0)
+                    .allowsHitTesting(headerSelected)
+                    .accessibilityHidden(!headerSelected)
+                    .help("Stop all servers in \(run.projectName)")
+                    .accessibilityLabel(RunHeaderGeometry.stopTitle(serviceCount: run.services.count))
+                    if !claudeSessions.isEmpty {
+                        badge.frame(width: badge.restingSize.width, height: badge.restingSize.height)
+                    }
+                }
+                .padding(.trailing, RunHeaderGeometry.trailingInset)
+                .padding(.leading, ServiceRowGeometry.spacing)
+            }
+            .frame(height: RunHeaderGeometry.height)
+            .background {
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(headerSelected ? Color(nsColor: .quaternaryLabelColor) : .clear)
+                    .allowsHitTesting(false)
+            }
+            .contentShape(Rectangle())
+            .onContinuousHover { phase in
+                switch phase {
+                case .active(let point):
+                    headerHovered = !snapshotMode
+                    headerArmed = RunHeaderGeometry.shouldArm(at: point, width: geometry.size.width,
+                        badgeSize: claudeSessions.isEmpty ? nil : badge.restingSize,
+                        stopping: stopping, snapshotMode: snapshotMode)
+                case .ended:
+                    headerHovered = false
+                    headerArmed = false
+                }
+            }
+        }
+        .frame(height: RunHeaderGeometry.height)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            ForEach(run.services.indices, id: \.self) { index in
+                ServiceRow(service: run.services[index], run: run,
+                    stopping: stopping || isServiceStopping(run.services[index]),
+                    snapshotMode: snapshotMode,
+                    previewState: index == 0 ? previewState : .normal,
+                    headerHovered: headerSelected, headerArmed: runArmed,
+                    stop: { stopService(run.services[index]) },
+                    restart: { restart(run.services[index]) }, openURL: openURL)
+            }
+            ForEach(run.reportedServices) { reported in
+                ReportedServiceRow(child: reported.child, state: reported.state)
+            }
+            if let error {
+                Text(error)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(nsColor: .systemRed))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 3)
+            }
+        }
+    }
+}

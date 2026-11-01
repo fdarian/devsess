@@ -1,0 +1,170 @@
+import { describe, expect, it } from '@effect/vitest';
+import { Effect } from 'effect';
+import {
+	decodeRequest,
+	decodeRequestId,
+	decodeResponse,
+} from '../../src/cli/protocol';
+
+describe('CLI protocol validation', () => {
+	it.effect('decodes protocol-v1 stopServices with optional force', () =>
+		Effect.gen(function* () {
+			for (const force of [undefined, false, true]) {
+				const frame = {
+					version: 1,
+					requestId: 'stop',
+					method: 'stopServices',
+					params: {
+						runId: 'run',
+						serviceNames: ['web'],
+						...(force === undefined ? {} : { force }),
+					},
+				};
+				expect(yield* decodeRequest(JSON.stringify(frame))).toEqual(frame);
+			}
+			const invalid = yield* Effect.exit(
+				decodeRequest(
+					JSON.stringify({
+						version: 1,
+						requestId: 'stop',
+						method: 'stopServices',
+						params: { runId: 'run', serviceNames: ['../web'] },
+					}),
+				),
+			);
+			expect(invalid._tag).toBe('Failure');
+		}),
+	);
+	it.effect(
+		'accepts an additive getRun request and rejects unsafe run IDs',
+		() =>
+			Effect.gen(function* () {
+				const request = yield* decodeRequest(
+					JSON.stringify({
+						version: 1,
+						requestId: 'get',
+						method: 'getRun',
+						params: { runId: 'run' },
+					}),
+				);
+				expect(request.method).toBe('getRun');
+				const invalid = yield* Effect.exit(
+					decodeRequest(
+						JSON.stringify({
+							version: 1,
+							requestId: 'get',
+							method: 'getRun',
+							params: { runId: '../escape' },
+						}),
+					),
+				);
+				expect(invalid._tag).toBe('Failure');
+			}),
+	);
+	it.effect('rejects empty and unsafe request identifiers', () =>
+		Effect.gen(function* () {
+			const invalidRequests = [
+				{
+					version: 1,
+					requestId: '',
+					method: 'listRuns',
+					params: {},
+				},
+				{
+					version: 1,
+					requestId: 'request',
+					method: 'stopRun',
+					params: { runId: '../../escape' },
+				},
+				{
+					version: 1,
+					requestId: 'request',
+					method: 'tail',
+					params: { runId: 'run', serviceName: '' },
+				},
+			];
+			for (const request of invalidRequests) {
+				const exit = yield* Effect.exit(decodeRequest(JSON.stringify(request)));
+				expect(exit._tag).toBe('Failure');
+			}
+		}),
+	);
+
+	it.effect(
+		'recovers a valid request id from an otherwise malformed frame',
+		() =>
+			Effect.gen(function* () {
+				const request = yield* decodeRequestId(
+					JSON.stringify({ requestId: 'request', method: 'unknown' }),
+				);
+				expect(request.requestId).toBe('request');
+			}),
+	);
+
+	it.effect('rejects unsafe response identifiers too', () =>
+		Effect.gen(function* () {
+			const exit = yield* Effect.exit(
+				decodeResponse(
+					JSON.stringify({
+						version: 1,
+						requestId: '../escape',
+						ok: false,
+						error: 'invalid',
+					}),
+				),
+			);
+			expect(exit._tag).toBe('Failure');
+		}),
+	);
+
+	it.effect('accepts additive daemon info and shutdown requests', () =>
+		Effect.gen(function* () {
+			const info = yield* decodeRequest(
+				JSON.stringify({
+					version: 1,
+					requestId: 'info',
+					method: 'info',
+					params: {},
+				}),
+			);
+			const shutdown = yield* decodeRequest(
+				JSON.stringify({
+					version: 1,
+					requestId: 'shutdown',
+					method: 'shutdown',
+					params: { force: true },
+				}),
+			);
+			expect(info.method).toBe('info');
+			expect(shutdown.method).toBe('shutdown');
+		}),
+	);
+	it.effect(
+		'accepts publish and unpublish without changing protocol version',
+		() =>
+			Effect.gen(function* () {
+				const published = yield* decodeRequest(
+					JSON.stringify({
+						version: 1,
+						requestId: 'publish',
+						method: 'publish',
+						params: {
+							runId: 'run',
+							service: 'web',
+							value: { url: 'http://localhost:5173' },
+						},
+					}),
+				);
+				const unpublished = yield* decodeRequest(
+					JSON.stringify({
+						version: 1,
+						requestId: 'unpublish',
+						method: 'unpublish',
+						params: { runId: 'run', service: 'web' },
+					}),
+				);
+				expect(published.method).toBe('publish');
+				expect(unpublished.method).toBe('unpublish');
+			}),
+	);
+});

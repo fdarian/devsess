@@ -34,6 +34,8 @@ jobs:
           key: turbo-${{ github.sha }}
           restore-keys: turbo-
       - uses: ./.github/actions/setup
+      # The completions test syntax-checks the generated zsh script with `zsh -n`.
+      - run: sudo apt-get install -y zsh
       - run: pnpm turbo run check --affected
         env:
           TURBO_SCM_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}

@@ -1,0 +1,301 @@
+import { Effect, Schema } from 'effect';
+import { Identifier } from './identifiers';
+import { RunRecordSchema, ServiceRecordSchema } from './registry';
+
+export const ServiceChildSchema = Schema.Struct({
+	name: Identifier,
+	ports: Schema.optionalKey(Schema.Record(Schema.String, Schema.Int)),
+});
+export type ServiceChild = typeof ServiceChildSchema.Type;
+
+export const ServiceResponseSchema = Schema.Struct({
+	...ServiceRecordSchema.fields,
+	children: Schema.optionalKey(Schema.Array(ServiceChildSchema)),
+	memoryBytes: Schema.optionalKey(
+		Schema.Int.check(Schema.makeFilter((value) => value >= 0)),
+	),
+});
+export type ServiceResponse = typeof ServiceResponseSchema.Type;
+export const RunResponseSchema = Schema.Struct({
+	...RunRecordSchema.fields,
+	services: Schema.Array(ServiceResponseSchema),
+});
+export type RunResponse = typeof RunResponseSchema.Type;
+
+export const PROTOCOL_VERSION = 1;
+export const LIVE_OUTPUT_OVERFLOW_MESSAGE =
+	'This client fell too far behind live output; re-run devsess tail to replay from the retained log.';
+export { Identifier } from './identifiers';
+export const ServiceSnapshot = Schema.Struct({
+	name: Identifier,
+	command: Schema.NonEmptyString,
+	cwd: Schema.NonEmptyString,
+	awaitPublish: Schema.optional(Schema.Boolean),
+});
+export const StartRunRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('startRun'),
+	params: Schema.Struct({
+		runId: Identifier,
+		projectName: Identifier,
+		presetName: Identifier,
+		canonicalCwd: Schema.NonEmptyString,
+		invocationCwd: Schema.NonEmptyString,
+		configSnapshot: Schema.Json,
+		environment: Schema.Record(Schema.String, Schema.String),
+		services: Schema.Array(ServiceSnapshot),
+	}),
+});
+export const ListRunsRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('listRuns'),
+	params: Schema.Struct({}),
+});
+export const GetRunRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('getRun'),
+	params: Schema.Struct({ runId: Identifier }),
+});
+export const PublishRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('publish'),
+	params: Schema.Struct({
+		runId: Identifier,
+		service: Identifier,
+		value: Schema.Json,
+		instanceId: Schema.optionalKey(Identifier),
+	}),
+});
+export const UnpublishRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('unpublish'),
+	params: Schema.Struct({
+		runId: Identifier,
+		service: Identifier,
+		instanceId: Schema.optionalKey(Identifier),
+	}),
+});
+export const InfoRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('info'),
+	params: Schema.Struct({}),
+});
+export const ShutdownRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('shutdown'),
+	params: Schema.Struct({ force: Schema.optional(Schema.Boolean) }),
+});
+export const StopRunRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('stopRun'),
+	params: Schema.Struct({
+		runId: Identifier,
+		force: Schema.optional(Schema.Boolean),
+	}),
+});
+export const StopServicesRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('stopServices'),
+	params: Schema.Struct({
+		runId: Identifier,
+		serviceNames: Schema.Array(Identifier),
+		force: Schema.optional(Schema.Boolean),
+	}),
+});
+export const RestartServicesRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('restartServices'),
+	params: Schema.Struct({
+		runId: Identifier,
+		serviceNames: Schema.Array(Identifier),
+	}),
+});
+export const TailRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('tail'),
+	params: Schema.Struct({
+		runId: Identifier,
+		serviceName: Identifier,
+		after: Schema.optional(Schema.Int),
+		lines: Schema.optional(
+			Schema.Int.check(Schema.makeFilter((value) => value >= 0)),
+		),
+		follow: Schema.optional(Schema.Boolean),
+	}),
+});
+export const AttachRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('attach'),
+	params: Schema.Struct({ runId: Identifier, serviceName: Identifier }),
+});
+export const InputRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('input'),
+	params: Schema.Struct({
+		runId: Identifier,
+		serviceName: Identifier,
+		leaseId: Identifier,
+		data: Schema.String,
+	}),
+});
+export const ResizeRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('resize'),
+	params: Schema.Struct({
+		runId: Identifier,
+		serviceName: Identifier,
+		leaseId: Identifier,
+		cols: Schema.Int,
+		rows: Schema.Int,
+	}),
+});
+export const DetachRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('detach'),
+	params: Schema.Struct({
+		runId: Identifier,
+		serviceName: Identifier,
+		leaseId: Identifier,
+	}),
+});
+export const ReportServiceRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('reportService'),
+	params: Schema.Struct({
+		runId: Identifier,
+		service: Identifier,
+		...ServiceChildSchema.fields,
+		instanceId: Schema.optionalKey(Identifier),
+	}),
+});
+export const RetractServiceRequest = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	method: Schema.Literal('retractService'),
+	params: Schema.Struct({
+		runId: Identifier,
+		service: Identifier,
+		name: Identifier,
+		instanceId: Schema.optionalKey(Identifier),
+	}),
+});
+export const DaemonRequest = Schema.Union([
+	ReportServiceRequest,
+	RetractServiceRequest,
+	StartRunRequest,
+	ListRunsRequest,
+	GetRunRequest,
+	PublishRequest,
+	UnpublishRequest,
+	InfoRequest,
+	ShutdownRequest,
+	StopRunRequest,
+	StopServicesRequest,
+	RestartServicesRequest,
+	TailRequest,
+	AttachRequest,
+	InputRequest,
+	ResizeRequest,
+	DetachRequest,
+]);
+
+export type DaemonRequest = typeof DaemonRequest.Type;
+
+export const DaemonInfo = Schema.Struct({
+	pid: Schema.Int,
+	startedAt: Schema.NonEmptyString,
+	executable: Schema.NonEmptyString,
+	scriptPath: Schema.NonEmptyString,
+	packageVersion: Schema.NonEmptyString,
+	protocolVersion: Schema.Literal(PROTOCOL_VERSION),
+	socketPath: Schema.NonEmptyString,
+	dataDirectory: Schema.NonEmptyString,
+	logsDirectory: Schema.optional(Schema.NonEmptyString),
+	runCount: Schema.Int,
+	liveServiceCount: Schema.Int,
+	attachedClientCount: Schema.Int,
+});
+
+export type DaemonInfo = typeof DaemonInfo.Type;
+
+export const DaemonResponse = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	ok: Schema.Boolean,
+	result: Schema.optional(Schema.Unknown),
+	error: Schema.optional(Schema.String),
+});
+
+export type DaemonResponse = typeof DaemonResponse.Type;
+
+export const DaemonOutputEvent = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	event: Schema.Literal('output'),
+	data: Schema.String,
+	offset: Schema.Int,
+});
+export const DaemonExitEvent = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	event: Schema.Literal('exit'),
+	exitCode: Schema.Int,
+	signal: Schema.optional(Schema.Int),
+});
+export const DaemonEndEvent = Schema.Struct({
+	version: Schema.Literal(PROTOCOL_VERSION),
+	requestId: Identifier,
+	event: Schema.Literal('end'),
+});
+export const DaemonEvent = Schema.Union([
+	DaemonOutputEvent,
+	DaemonExitEvent,
+	DaemonEndEvent,
+]);
+export type DaemonEvent = typeof DaemonEvent.Type;
+export const decodeRequest = Schema.decodeUnknownEffect(
+	Schema.fromJsonString(DaemonRequest),
+);
+export const decodeRequestId = Schema.decodeUnknownEffect(
+	Schema.fromJsonString(Schema.Struct({ requestId: Identifier })),
+);
+export const decodeResponse = Schema.decodeUnknownEffect(
+	Schema.fromJsonString(DaemonResponse),
+);
+export const encodeFrame = (frame: DaemonResponse | DaemonEvent) =>
+	Effect.succeed(JSON.stringify(frame));
+
+export const MAX_FRAME_BYTES = 1024 * 1024;
+
+export const splitFrames = (buffer: string, chunk: string) => {
+	const next = `${buffer}${chunk}`;
+	if (Buffer.byteLength(next) > MAX_FRAME_BYTES) {
+		return { _tag: 'TooLarge' as const };
+	}
+	const frames = next.split('\n');
+	const remainder = frames.pop();
+	if (remainder === undefined) {
+		return { _tag: 'TooLarge' as const };
+	}
+	return {
+		_tag: 'Frames' as const,
+		frames: frames.filter((frame) => frame.length > 0),
+		remainder,
+	};
+};

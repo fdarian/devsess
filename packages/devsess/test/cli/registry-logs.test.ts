@@ -1,0 +1,637 @@
+import { describe, expect, it } from '@effect/vitest';
+import { Deferred, Duration, Effect, Exit, Ref, Schema, Stream } from 'effect';
+import { FileSystem } from 'effect/FileSystem';
+import { Path } from 'effect/Path';
+import { vi } from 'vitest';
+import { LogAddressSchema, Logs } from '../../src/cli/logs';
+import {
+	Registry,
+	type RunRecord,
+	RunRecordSchema,
+	refreshService,
+} from '../../src/cli/registry';
+import { runTest } from '../support/run-test';
+import { makeTempDir } from '../support/temp-dir';
+
+const run = (runId: string): RunRecord => ({
+	runId,
+	projectName: 'workspace',
+	presetName: 'dev',
+	canonicalCwd: '/workspace',
+	invocationCwd: '/workspace/apps/web',
+	configSnapshot: { projects: {} },
+	startedAt: '2026-09-09T00:00:00.000Z',
+	state: 'starting',
+	daemon: {
+		pid: 123,
+		processGroupId: 123,
+		startedAt: 'Tue Sep  9 00:00:00 2026',
+	},
+	services: [],
+});
+
+describe('Registry', () => {
+	it.effect(
+		'keeps the latest finished run per project, preset, and checkout and removes older logs',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const dataDirectory = yield* makeTempDir;
+					const fileSystem = yield* FileSystem;
+					const path = yield* Path;
+					const logsDirectory = path.join(dataDirectory, 'external-logs');
+					const registry = yield* Registry.pipe(
+						Effect.provide(Registry.layer({ dataDirectory, logsDirectory })),
+					);
+					const old = crypto.randomUUID();
+					const current = crypto.randomUUID();
+					const differentPreset = crypto.randomUUID();
+					const differentCwd = crypto.randomUUID();
+					const active = crypto.randomUUID();
+					const orphan = crypto.randomUUID();
+					const finished = (id: string, startedAt: string): RunRecord => ({
+						...run(id),
+						startedAt,
+						state: 'exited',
+						services: [
+							{
+								name: 'web',
+								command: 'exit 0',
+								cwd: '/workspace',
+								state: 'exited',
+								exitCode: 0,
+							},
+						],
+					});
+					const records = [
+						finished(old, '2026-09-09T00:00:00.000Z'),
+						finished(current, '2026-09-10T00:00:00.000Z'),
+						{
+							...finished(differentPreset, '2026-09-09T00:00:00.000Z'),
+							presetName: 'other',
+						},
+						{
+							...finished(differentCwd, '2026-09-09T00:00:00.000Z'),
+							canonicalCwd: '/another',
+						},
+						{
+							...run(active),
+							presetName: 'active',
+							services: [
+								{
+									name: 'web',
+									command: 'sleep 30',
+									cwd: '/workspace',
+									state: 'running' as const,
+								},
+							],
+							state: 'running' as const,
+						},
+						{
+							...run(orphan),
+							services: [
+								{
+									name: 'web',
+									command: 'sleep 30',
+									cwd: '/workspace',
+									state: 'orphaned' as const,
+								},
+							],
+							state: 'orphaned' as const,
+						},
+					];
+					for (const record of records) {
+						yield* registry.reserve(record);
+						yield* fileSystem.makeDirectory(
+							path.join(logsDirectory, record.runId),
+							{ recursive: true },
+						);
+					}
+					yield* registry.prune;
+					expect((yield* registry.list).map((record) => record.runId)).toEqual([
+						current,
+						differentPreset,
+						differentCwd,
+						active,
+						orphan,
+					]);
+					expect(yield* fileSystem.exists(path.join(logsDirectory, old))).toBe(
+						false,
+					);
+					for (const id of [
+						current,
+						differentPreset,
+						differentCwd,
+						active,
+						orphan,
+					])
+						expect(yield* fileSystem.exists(path.join(logsDirectory, id))).toBe(
+							true,
+						);
+					const next = crypto.randomUUID();
+					yield* registry.reserve(run(next));
+					yield* registry.replace(finished(next, '2026-09-11T00:00:00.000Z'));
+					yield* registry.prune;
+					expect(
+						(yield* registry.list).map((record) => record.runId),
+					).not.toContain(current);
+					expect(
+						yield* fileSystem.exists(path.join(logsDirectory, current)),
+					).toBe(false);
+					expect((yield* registry.get(next)).state).toBe('exited');
+				}),
+			),
+	);
+	it('rejects unsafe persisted process identifiers', () => {
+		const exit = Effect.runSyncExit(
+			Schema.decodeUnknownEffect(RunRecordSchema)({
+				...run('unsafe'),
+				daemon: {
+					pid: 1,
+					processGroupId: 0,
+					startedAt: 'birth',
+				},
+			}),
+		);
+		expect(exit._tag).toBe('Failure');
+	});
+
+	it('accepts persisted service completion status', () => {
+		const exit = Effect.runSyncExit(
+			Schema.decodeUnknownEffect(RunRecordSchema)({
+				...run('finished'),
+				state: 'exited',
+				services: [
+					{
+						name: 'web',
+						command: 'exit 7',
+						cwd: '/workspace',
+						state: 'failed',
+						exitCode: 7,
+					},
+				],
+			}),
+		);
+		expect(exit._tag).toBe('Success');
+	});
+
+	it('accepts an explicit unknown completion status', () => {
+		const exit = Effect.runSyncExit(
+			Schema.decodeUnknownEffect(RunRecordSchema)({
+				...run('unknown'),
+				state: 'exited',
+				services: [
+					{
+						name: 'web',
+						command: 'sleep 30',
+						cwd: '/workspace',
+						state: 'exited',
+						exitStatus: 'unknown',
+					},
+				],
+			}),
+		);
+		expect(exit._tag).toBe('Success');
+	});
+
+	it('records unknown status when a persisted process is already dead', () => {
+		const service = {
+			name: 'web',
+			command: 'sleep 30',
+			cwd: '/workspace',
+			state: 'running' as const,
+			process: { pid: 123, processGroupId: 123, startedAt: 'birth' },
+			exitCode: 7,
+			signal: 9,
+		};
+		expect(refreshService(service, 'dead')).toMatchObject({
+			state: 'exited',
+			exitStatus: 'unknown',
+		});
+		expect(refreshService(service, 'dead').exitCode).toBeUndefined();
+		expect(refreshService(service, 'dead').signal).toBeUndefined();
+	});
+
+	it.effect(
+		'atomically reserves the project, preset, and checkout identity',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const dataDirectory = yield* makeTempDir;
+					const path = yield* Path;
+					const registry = yield* Registry.pipe(
+						Effect.provide(
+							Registry.layer({
+								dataDirectory,
+								logsDirectory: path.join(dataDirectory, 'logs'),
+							}),
+						),
+					);
+					const exit = yield* Effect.exit(
+						Effect.all(
+							[registry.reserve(run('first')), registry.reserve(run('second'))],
+							{ concurrency: 'unbounded' },
+						),
+					);
+					expect(exit._tag).toBe('Failure');
+					expect((yield* registry.list).map((record) => record.runId)).toEqual([
+						'first',
+					]);
+				}),
+			),
+	);
+	it.effect('allows the same project and preset in another checkout', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const path = yield* Path;
+				const registry = yield* Registry.pipe(
+					Effect.provide(
+						Registry.layer({
+							dataDirectory,
+							logsDirectory: path.join(dataDirectory, 'logs'),
+						}),
+					),
+				);
+				yield* registry.reserve(run('first'));
+				yield* registry.reserve({
+					...run('second'),
+					canonicalCwd: '/other-checkout',
+				});
+				expect((yield* registry.list).map((record) => record.runId)).toEqual([
+					'first',
+					'second',
+				]);
+			}),
+		),
+	);
+});
+
+describe('Logs', () => {
+	it.effect('writes and replays from the configured logs directory', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const path = yield* Path;
+				const fileSystem = yield* FileSystem;
+				const logsDirectory = path.join(dataDirectory, 'mac-logs');
+				const logs = yield* Logs.pipe(
+					Effect.provide(
+						Logs.layer({ dataDirectory, logsDirectory, maxBytes: 1024 }),
+					),
+				);
+				const address = { runId: 'run', serviceName: 'web' };
+				yield* logs.append(address, 'hello');
+				expect(
+					yield* fileSystem.exists(
+						path.join(logsDirectory, 'run', 'web.jsonl'),
+					),
+				).toBe(true);
+				expect(
+					yield* fileSystem.exists(
+						path.join(dataDirectory, 'logs', 'run', 'web.jsonl'),
+					),
+				).toBe(false);
+				const replay = yield* logs.replayAndSubscribe(
+					address,
+					0,
+					() => Effect.void,
+				);
+				expect(replay.replay.map((event) => event.data)).toEqual(['hello']);
+				yield* replay.unsubscribe;
+			}),
+		),
+	);
+	it.effect('rejects path traversal in log addresses', () =>
+		Effect.gen(function* () {
+			const exit = yield* Effect.exit(
+				Schema.decodeUnknownEffect(LogAddressSchema)({
+					runId: '../../escape',
+					serviceName: 'web',
+				}),
+			);
+			expect(exit._tag).toBe('Failure');
+		}),
+	);
+
+	it.effect(
+		'bounds persisted events and has no replay-to-subscribe loss gap',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const dataDirectory = yield* makeTempDir;
+					const logs = yield* Logs.pipe(
+						Effect.provide(Logs.layer({ dataDirectory, maxBytes: 3 })),
+					);
+					const address = { runId: 'run', serviceName: 'web' };
+					yield* logs.append(address, 'ab');
+					const delivered = yield* Ref.make([] as Array<string>);
+					const deliveredSignal = yield* Deferred.make<void>();
+					const subscription = yield* logs.replayAndSubscribe(
+						address,
+						0,
+						(event) =>
+							Effect.andThen(
+								Ref.update(delivered, (events) => [...events, event.data]),
+								Deferred.succeed(deliveredSignal, undefined),
+							),
+					);
+					yield* logs.append(address, 'cd');
+					yield* Deferred.await(deliveredSignal);
+					expect(subscription.replay.map((event) => event.data)).toEqual([
+						'ab',
+					]);
+					expect(yield* Ref.get(delivered)).toEqual(['cd']);
+					yield* subscription.unsubscribe;
+					const retained = yield* logs.replayAndSubscribe(
+						address,
+						0,
+						() => Effect.void,
+					);
+					expect(retained.replay.map((event) => event.data)).toEqual([
+						'ab',
+						'cd',
+					]);
+					yield* retained.unsubscribe;
+				}),
+			),
+	);
+
+	it.effect('does not let a slow listener block append', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const logs = yield* Logs.pipe(
+					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 1024 })),
+				);
+				const subscription = yield* logs.replayAndSubscribe(
+					{ runId: 'run', serviceName: 'web' },
+					0,
+					() => Effect.never,
+				);
+				const result = yield* Effect.exit(
+					Effect.timeout(
+						logs.append({ runId: 'run', serviceName: 'web' }, 'output'),
+						Duration.seconds(1),
+					),
+				);
+				expect(Exit.isSuccess(result)).toBe(true);
+				yield* subscription.unsubscribe;
+			}),
+		),
+	);
+
+	it.effect('disconnects an overflowing listener without blocking append', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const logs = yield* Logs.pipe(
+					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 1024 * 1024 })),
+				);
+				const overflowed = yield* Deferred.make<void>();
+				const subscription = yield* logs.replayAndSubscribe(
+					{ runId: 'run', serviceName: 'web' },
+					0,
+					() => Effect.never,
+					() => Deferred.succeed(overflowed, undefined),
+				);
+				for (let index = 0; index < 3; index += 1)
+					yield* logs.append(
+						{ runId: 'run', serviceName: 'web' },
+						'x'.repeat(600 * 1024),
+					);
+				yield* Deferred.await(overflowed).pipe(Effect.timeout('1 second'));
+				yield* subscription.unsubscribe;
+			}),
+		),
+	);
+
+	it.effect('retains a burst while a subscription listener is paused', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const logs = yield* Logs.pipe(
+					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 4096 })),
+				);
+				const subscription = yield* logs.replayAndSubscribe(
+					{ runId: 'run', serviceName: 'web' },
+					0,
+					() => Effect.sleep('1 millis'),
+				);
+				for (let index = 0; index < 128; index += 1)
+					yield* logs.append({ runId: 'run', serviceName: 'web' }, 'x');
+				yield* subscription.unsubscribe;
+				const replay = yield* logs.replayAndSubscribe(
+					{ runId: 'run', serviceName: 'web' },
+					0,
+					() => Effect.void,
+				);
+				expect(replay.replay).toHaveLength(128);
+				yield* replay.unsubscribe;
+			}),
+		),
+	);
+
+	it.effect('keeps oversized events within the retention bound', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const logs = yield* Logs.pipe(
+					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 3 })),
+				);
+				const address = { runId: 'run', serviceName: 'web' };
+				yield* logs.append(address, 'abcd');
+				const subscription = yield* logs.replayAndSubscribe(
+					address,
+					0,
+					() => Effect.void,
+				);
+				expect(subscription.replay.map((event) => event.data)).toEqual([
+					'abc',
+					'd',
+				]);
+				yield* subscription.unsubscribe;
+			}),
+		),
+	);
+
+	it.effect('rotates JSONL segments and replays the newest two in order', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const fileSystem = yield* FileSystem;
+				const remove = vi.spyOn(fileSystem, 'remove');
+				const logs = yield* Logs.pipe(
+					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 80 })),
+				);
+				const address = { runId: 'run', serviceName: 'web' };
+				for (const value of ['a', 'b', 'c', 'd', 'e', 'f', 'g'])
+					yield* logs.append(address, value);
+				const subscription = yield* logs.replayAndSubscribe(
+					address,
+					0,
+					() => Effect.void,
+				);
+				const values = subscription.replay.map((event) => event.data);
+				expect(values.length).toBeGreaterThan(0);
+				expect(values).toEqual(['d', 'e', 'f', 'g']);
+				const path = yield* Path;
+				const directory = path.join(dataDirectory, 'logs', 'run');
+				expect(
+					yield* fileSystem.exists(path.join(directory, 'web.jsonl')),
+				).toBe(true);
+				expect(
+					yield* fileSystem.exists(path.join(directory, 'web.1.jsonl')),
+				).toBe(true);
+				expect(
+					yield* fileSystem.exists(path.join(directory, 'web.2.jsonl')),
+				).toBe(false);
+				expect(remove).not.toHaveBeenCalled();
+				yield* subscription.unsubscribe;
+			}),
+		),
+	);
+
+	it.effect('ignores a partial trailing JSONL line after a crash', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const fileSystem = yield* FileSystem;
+				const path = yield* Path;
+				const directory = path.join(dataDirectory, 'logs', 'run');
+				const target = path.join(directory, 'web.jsonl');
+				yield* fileSystem.makeDirectory(directory, { recursive: true });
+				yield* fileSystem.writeFileString(
+					target,
+					'{"data":"ok","offset":2}\n{"data":"crashed"',
+					{ mode: 0o600 },
+				);
+				const logs = yield* Logs.pipe(
+					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 1024 })),
+				);
+				const subscription = yield* logs.replayAndSubscribe(
+					{ runId: 'run', serviceName: 'web' },
+					0,
+					() => Effect.void,
+				);
+				expect(subscription.replay.map((event) => event.data)).toEqual(['ok']);
+				yield* subscription.unsubscribe;
+			}),
+		),
+	);
+
+	it.effect('discards a valid partial record before the next append', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const fileSystem = yield* FileSystem;
+				const path = yield* Path;
+				const directory = path.join(dataDirectory, 'logs', 'run');
+				const target = path.join(directory, 'web.jsonl');
+				yield* fileSystem.makeDirectory(directory, { recursive: true });
+				yield* fileSystem.writeFileString(
+					target,
+					'{"data":"partial","offset":7}',
+					{ mode: 0o600 },
+				);
+				const logs = yield* Logs.pipe(
+					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 1024 })),
+				);
+				const address = { runId: 'run', serviceName: 'web' };
+				yield* logs.append(address, 'next');
+				const subscription = yield* logs.replayAndSubscribe(
+					address,
+					0,
+					() => Effect.void,
+				);
+				expect(subscription.replay.map((event) => event.data)).toEqual([
+					'next',
+				]);
+				expect(yield* fileSystem.readFileString(target)).toContain('\n');
+				yield* subscription.unsubscribe;
+			}),
+		),
+	);
+
+	it.effect('ignores legacy JSON logs instead of rewriting them', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const fileSystem = yield* FileSystem;
+				const path = yield* Path;
+				const directory = path.join(dataDirectory, 'logs', 'run');
+				yield* fileSystem.makeDirectory(directory, { recursive: true });
+				yield* fileSystem.writeFileString(
+					path.join(directory, 'web.json'),
+					JSON.stringify({
+						nextOffset: 4,
+						events: [{ data: 'old', offset: 4 }],
+					}),
+				);
+				const logs = yield* Logs.pipe(
+					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 1024 })),
+				);
+				const subscription = yield* logs.replayAndSubscribe(
+					{ runId: 'run', serviceName: 'web' },
+					0,
+					() => Effect.void,
+				);
+				expect(subscription.replay).toEqual([]);
+				yield* subscription.unsubscribe;
+			}),
+		),
+	);
+
+	it.effect('keeps lazy replay offsets ordered across rotation', () =>
+		runTest(
+			Effect.gen(function* () {
+				const dataDirectory = yield* makeTempDir;
+				const fileSystem = yield* FileSystem;
+				const rename = vi.spyOn(fileSystem, 'rename');
+				const logs = yield* Logs.pipe(
+					Effect.provide(Logs.layer({ dataDirectory, maxBytes: 64 })),
+				);
+				const address = { runId: 'run', serviceName: 'web' };
+				for (const value of ['a', 'b', 'c', 'd', 'e', 'f'])
+					yield* logs.append(address, value);
+				rename.mockClear();
+				const liveEvents: Array<{ data: string; offset: number }> = [];
+				const lazy = logs.replayAndSubscribeLazy;
+				if (lazy === undefined)
+					return yield* Effect.die('Missing lazy log replay support');
+				const subscription = yield* lazy(address, 0, (event) =>
+					Effect.sync(() => {
+						liveEvents.push(event);
+					}),
+				);
+				const replaySource = subscription.replay;
+				if (Array.isArray(replaySource))
+					return yield* Effect.die('Lazy replay returned an eager array');
+				yield* logs.append(address, 'live');
+				expect(rename).toHaveBeenCalled();
+				const replayChunk = yield* Stream.runCollect(replaySource);
+				const replay = Array.from(replayChunk);
+				if (subscription.completeReplay === undefined)
+					return yield* Effect.die('Replay completion signal is missing');
+				yield* subscription.completeReplay;
+				yield* subscription.flush;
+				const events = [...replay, ...liveEvents];
+				expect(liveEvents).toHaveLength(1);
+				expect(new Set(events.map((event) => event.offset)).size).toBe(
+					events.length,
+				);
+				for (let index = 1; index < events.length; index += 1) {
+					const previous = events[index - 1];
+					const current = events[index];
+					if (previous === undefined || current === undefined)
+						return yield* Effect.die('Replay event disappeared');
+					expect(current.offset).toBeGreaterThan(previous.offset);
+					expect(current.offset).toBe(
+						previous.offset + Buffer.byteLength(current.data),
+					);
+				}
+				yield* subscription.unsubscribe;
+			}),
+		),
+	);
+});

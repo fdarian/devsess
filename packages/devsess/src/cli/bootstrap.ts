@@ -1,0 +1,724 @@
+import { execFile, spawn } from 'node:child_process';
+import {
+	closeSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	unlinkSync,
+	writeFileSync,
+} from 'node:fs';
+import { dirname, join, parse } from 'node:path';
+import { Effect, Schema } from 'effect';
+import { callDaemon, DaemonClientError } from './client';
+import {
+	PROCESS_KILL_TIMEOUT_MS,
+	PROCESS_TERM_TIMEOUT_MS,
+	terminateProcess,
+} from './daemon-termination';
+import { PROCESS_INSPECTION_TIMEOUT_MS } from './termination';
+
+export class DaemonBootstrapError extends Schema.TaggedError<DaemonBootstrapError>()(
+	'DaemonBootstrapError',
+	{
+		message: Schema.String,
+		cause: Schema.optional(Schema.Defect()),
+	},
+) {}
+
+export const awaitDaemonHandshake = (options: {
+	socketPath: string;
+	timeoutMs: number;
+}) => {
+	const deadline = Date.now() + options.timeoutMs;
+	const attempt = (
+		lastError?: DaemonClientError,
+	): Effect.Effect<unknown, DaemonClientError> =>
+		Effect.suspend(() => {
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) {
+				if (lastError !== undefined) return lastError;
+				return new DaemonClientError({
+					message: `Timed out contacting daemon at ${options.socketPath}`,
+					kind: 'timeout',
+				});
+			}
+			const timeoutMs = Math.min(remaining, 250);
+			return callDaemon(
+				options.socketPath,
+				{
+					version: 1,
+					requestId: crypto.randomUUID(),
+					method: 'info',
+					params: {},
+				},
+				timeoutMs,
+			).pipe(
+				Effect.catchTag('DaemonClientError', (error) =>
+					error.kind === 'rejected' && deadline > Date.now()
+						? callDaemon(
+								options.socketPath,
+								{
+									version: 1,
+									requestId: crypto.randomUUID(),
+									method: 'listRuns',
+									params: {},
+								},
+								Math.min(deadline - Date.now(), 250),
+							)
+						: error,
+				),
+				Effect.catch((error) => {
+					const nextRemaining = deadline - Date.now();
+					if (nextRemaining <= 0) return error;
+					return Effect.sleep(Math.min(nextRemaining, 25)).pipe(
+						Effect.andThen(attempt(error)),
+					);
+				}),
+			);
+		});
+	return attempt().pipe(
+		Effect.asVoid,
+		Effect.mapError(
+			(cause) =>
+				new DaemonBootstrapError({
+					message: `Could not complete daemon handshake at ${options.socketPath}`,
+					cause,
+				}),
+		),
+	);
+};
+
+export const daemonLogPath = (logsDirectory: string) =>
+	join(logsDirectory, 'daemon.log');
+
+/** Set in a detached daemon's environment so a daemon child mis-parsed into a normal command can tell it must not launch another daemon. */
+export const DAEMON_LAUNCH_ENV = 'DEVSESS_DAEMON_LAUNCH';
+
+/** The daemon's stdout and stderr are appended to `daemon.log`, so a daemon that hangs or crashes leaves a trace. */
+export const launchDetachedDaemon = (options: {
+	command: string;
+	args: Array<string>;
+	logsDirectory: string;
+}) =>
+	Effect.try({
+		try: () => {
+			mkdirSync(options.logsDirectory, { recursive: true, mode: 0o700 });
+			const log = openSync(daemonLogPath(options.logsDirectory), 'a', 0o600);
+			try {
+				const child = spawn(options.command, options.args, {
+					detached: true,
+					env: { ...process.env, [DAEMON_LAUNCH_ENV]: '1' },
+					stdio: ['ignore', log, log],
+				});
+				child.unref();
+				if (child.pid === undefined) {
+					throw new Error(
+						`Detached daemon ${options.command} did not receive a PID`,
+					);
+				}
+				return child.pid;
+			} finally {
+				closeSync(log);
+			}
+		},
+		catch: (cause) =>
+			new DaemonBootstrapError({
+				message: `Could not launch detached daemon ${options.command}`,
+				cause,
+			}),
+	});
+
+type DaemonLocation = {
+	dataDirectory: string;
+	socketPath: string;
+};
+
+type LaunchDaemon = () => Effect.Effect<unknown, DaemonBootstrapError>;
+
+const lockDirectory = (location: DaemonLocation) =>
+	join(location.dataDirectory, 'daemon-launch.lock');
+const ownerPath = (location: DaemonLocation) =>
+	join(lockDirectory(location), 'owner');
+
+/** Linux exposes a process birth value that lets a stale lock distinguish PID reuse. */
+const processBirth = (pid: number) =>
+	Effect.tryPromise({
+		try: async () => {
+			if (process.platform === 'linux') {
+				const stat = await import('node:fs/promises')
+					.then((fs) => fs.readFile(`/proc/${pid}/stat`, 'utf8'))
+					.catch((cause) => {
+						if (
+							cause instanceof Error &&
+							'code' in cause &&
+							cause.code === 'ENOENT'
+						)
+							return undefined;
+						throw cause;
+					});
+				if (stat === undefined) return undefined;
+				const fields = stat
+					.slice(stat.lastIndexOf(')') + 2)
+					.trim()
+					.split(/\s+/);
+				const startedAt = fields[19];
+				if (startedAt === undefined)
+					throw new Error(`PID ${pid} has no birth value`);
+				return `linux:${startedAt}`;
+			}
+			return await new Promise<string | undefined>((resolve, reject) => {
+				execFile(
+					'ps',
+					['-o', 'lstart=', '-p', String(pid)],
+					{ timeout: PROCESS_INSPECTION_TIMEOUT_MS },
+					(error, stdout) => {
+						if (error !== null && 'code' in error && Number(error.code) === 1) {
+							resolve(undefined);
+							return;
+						}
+						if (error !== null) {
+							reject(error);
+							return;
+						}
+						const startedAt = stdout.trim();
+						if (startedAt.length === 0) {
+							reject(new Error(`PID ${pid} has no birth value`));
+							return;
+						}
+						resolve(`ps:${startedAt}`);
+					},
+				);
+			});
+		},
+		catch: (cause) =>
+			new DaemonBootstrapError({
+				message: `Could not inspect process birth for PID ${pid}`,
+				cause,
+			}),
+	});
+
+const owner = (location: DaemonLocation) =>
+	Effect.try({
+		try: () => {
+			try {
+				const lines = readFileSync(ownerPath(location), 'utf8').split('\n');
+				const pid = Number(lines[0]);
+				const startedAt = lines[1];
+				const token = lines[2];
+				if (
+					!Number.isSafeInteger(pid) ||
+					pid <= 0 ||
+					startedAt === undefined ||
+					startedAt.length === 0 ||
+					token === undefined ||
+					token.length === 0
+				)
+					return undefined;
+				return { pid, startedAt, token };
+			} catch (cause) {
+				if (
+					cause instanceof Error &&
+					'code' in cause &&
+					cause.code === 'ENOENT'
+				)
+					return undefined;
+				throw cause;
+			}
+		},
+		catch: (cause) =>
+			new DaemonBootstrapError({
+				message: `Could not read daemon launch owner at ${ownerPath(location)}`,
+				cause,
+			}),
+	});
+
+const ownsLock = (value: { pid: number; startedAt: string }) =>
+	processBirth(value.pid).pipe(
+		Effect.map((startedAt) => startedAt === value.startedAt),
+	);
+
+const createDirectories = (location: DaemonLocation) =>
+	Effect.try({
+		try: () => {
+			const ensurePrivateDirectory = (path: string) => {
+				mkdirSync(path, { recursive: true, mode: 0o700 });
+				const stat = lstatSync(path);
+				const uid = process.getuid?.();
+				if (
+					!stat.isDirectory() ||
+					stat.isSymbolicLink() ||
+					(uid !== undefined && stat.uid !== uid) ||
+					(stat.mode & 0o077) !== 0
+				)
+					throw new Error(
+						`Daemon directory ${path} must be private and user-owned`,
+					);
+			};
+			ensurePrivateDirectory(location.dataDirectory);
+			ensurePrivateDirectory(dirname(location.socketPath));
+		},
+		catch: (cause) =>
+			new DaemonBootstrapError({
+				message: `Could not create daemon directories for ${location.socketPath}`,
+				cause,
+			}),
+	});
+
+const removeStaleLock = (location: DaemonLocation) =>
+	Effect.try({
+		try: () => {
+			const stale = `${lockDirectory(location)}.stale-${crypto.randomUUID()}`;
+			try {
+				renameSync(lockDirectory(location), stale);
+			} catch (cause) {
+				if (
+					cause instanceof Error &&
+					'code' in cause &&
+					cause.code === 'ENOENT'
+				)
+					return false;
+				throw cause;
+			}
+			rmSync(stale, { recursive: true, force: true });
+			return true;
+		},
+		catch: (cause) =>
+			new DaemonBootstrapError({
+				message: `Could not recover stale daemon launch lock at ${lockDirectory(location)}`,
+				cause,
+			}),
+	});
+
+const unlinkIfPresent = (path: string, description: string) =>
+	Effect.try({
+		try: () => {
+			try {
+				unlinkSync(path);
+			} catch (cause) {
+				if (
+					cause instanceof Error &&
+					'code' in cause &&
+					cause.code === 'ENOENT'
+				)
+					return;
+				throw cause;
+			}
+		},
+		catch: (cause) =>
+			new DaemonBootstrapError({
+				message: `Could not remove ${description} at ${path}`,
+				cause,
+			}),
+	});
+
+export const removeStaleSocket = (socketPath: string) =>
+	unlinkIfPresent(socketPath, 'stale daemon socket');
+
+/** Lives beside the socket and is derived from it, so a daemon on a temp socket never touches another daemon's pidfile. */
+export const daemonPidfilePath = (socketPath: string) => {
+	const parsed = parse(socketPath);
+	return join(parsed.dir, `${parsed.name}.pid`);
+};
+
+const readPidfile = (socketPath: string) =>
+	Effect.try({
+		try: () => {
+			try {
+				const lines = readFileSync(daemonPidfilePath(socketPath), 'utf8').split(
+					'\n',
+				);
+				const pid = Number(lines[0]);
+				const birth = lines[1];
+				if (
+					!Number.isSafeInteger(pid) ||
+					pid <= 1 ||
+					birth === undefined ||
+					birth.length === 0
+				)
+					return undefined;
+				return { pid, birth };
+			} catch (cause) {
+				if (
+					cause instanceof Error &&
+					'code' in cause &&
+					cause.code === 'ENOENT'
+				)
+					return undefined;
+				throw cause;
+			}
+		},
+		catch: (cause) =>
+			new DaemonBootstrapError({
+				message: `Could not read daemon pidfile at ${daemonPidfilePath(socketPath)}`,
+				cause,
+			}),
+	});
+
+/** Records the PID with its process birth value so a reused PID is never mistaken for the daemon. */
+export const writeDaemonPidfile = (socketPath: string) =>
+	processBirth(process.pid).pipe(
+		Effect.flatMap((birth) => {
+			if (birth === undefined)
+				return new DaemonBootstrapError({
+					message: `Could not record daemon PID ${process.pid}: process not found`,
+				});
+			return Effect.try({
+				try: () => {
+					const path = daemonPidfilePath(socketPath);
+					const staging = `${path}.${process.pid}.tmp`;
+					writeFileSync(staging, `${process.pid}\n${birth}\n`, { mode: 0o600 });
+					renameSync(staging, path);
+				},
+				catch: (cause) =>
+					new DaemonBootstrapError({
+						message: `Could not write daemon pidfile at ${daemonPidfilePath(socketPath)}`,
+						cause,
+					}),
+			});
+		}),
+	);
+
+export const removeStalePidfile = (socketPath: string) =>
+	unlinkIfPresent(daemonPidfilePath(socketPath), 'stale daemon pidfile');
+
+/** Removes the pidfile only if it still names `pid`, so a daemon that lost the socket never deletes the winner's. */
+export const removeOwnPidfile = (socketPath: string, pid: number) =>
+	readPidfile(socketPath).pipe(
+		Effect.flatMap((recorded) =>
+			recorded === undefined || recorded.pid !== pid
+				? Effect.void
+				: removeStalePidfile(socketPath),
+		),
+	);
+
+/** The PID recorded beside the socket, or undefined when there is no pidfile or that process is gone. */
+export const liveDaemonPid = (socketPath: string) =>
+	readPidfile(socketPath).pipe(
+		Effect.flatMap((recorded) =>
+			recorded === undefined
+				? Effect.succeed(undefined)
+				: processBirth(recorded.pid).pipe(
+						Effect.map((birth) =>
+							birth === recorded.birth ? recorded.pid : undefined,
+						),
+					),
+		),
+	);
+
+const endpointIsMissing = (error: DaemonBootstrapError) =>
+	error.cause instanceof DaemonClientError &&
+	error.cause.cause instanceof Error &&
+	'code' in error.cause.cause &&
+	(error.cause.cause.code === 'ENOENT' ||
+		error.cause.cause.code === 'ECONNREFUSED');
+
+const endpointIsUnresponsive = (error: DaemonBootstrapError) =>
+	error.cause instanceof DaemonClientError &&
+	error.cause.kind === 'unresponsive';
+
+const connectFailure = (error: DaemonBootstrapError) =>
+	error.cause instanceof DaemonClientError &&
+	error.cause.kind === 'connect-failed'
+		? error.cause
+		: undefined;
+
+const endpointTimedOut = (error: DaemonBootstrapError) =>
+	error.cause instanceof DaemonClientError && error.cause.kind === 'timeout';
+
+/** A cold start runs a ps-based reconcile before the daemon listens; on a loaded machine that alone took about 5 s. */
+export const POST_LAUNCH_HANDSHAKE_TIMEOUT_MS = 15_000;
+
+/** How long a live daemon whose socket vanished gets to re-bind it on its own before it is terminated; the daemon's watchdog re-binds within 2 s. */
+export const ORPHAN_REBIND_GRACE_MS = 4_000;
+
+/** Leaves room for the initial probe and the lock handoff around the post-launch handshake, plus the worst case of reclaiming an orphaned daemon first. */
+const bootstrapTimeoutMs =
+	POST_LAUNCH_HANDSHAKE_TIMEOUT_MS +
+	ORPHAN_REBIND_GRACE_MS +
+	PROCESS_TERM_TIMEOUT_MS +
+	PROCESS_KILL_TIMEOUT_MS +
+	5_000;
+
+const timeoutError = (
+	location: DaemonLocation,
+	current?: { pid: number; startedAt: string; token: string },
+) =>
+	new DaemonBootstrapError({
+		message:
+			current === undefined
+				? `Timed out bootstrapping daemon at ${location.socketPath}; launch lock ${lockDirectory(location)} did not become available (owner record ${ownerPath(location)})`
+				: `Timed out bootstrapping daemon at ${location.socketPath}; launch lock ${lockDirectory(location)} is held by owner PID ${current.pid} (owner record ${ownerPath(location)})`,
+	});
+
+const timeoutWithOwner = (location: DaemonLocation) =>
+	owner(location).pipe(
+		Effect.matchEffect({
+			onFailure: () => timeoutError(location),
+			onSuccess: (current) => timeoutError(location, current),
+		}),
+	);
+
+const waitForDaemon = (
+	location: DaemonLocation,
+	deadline: number,
+): Effect.Effect<boolean, DaemonBootstrapError> =>
+	Effect.suspend(() => {
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) return Effect.succeed(false);
+		return awaitDaemonHandshake({
+			socketPath: location.socketPath,
+			timeoutMs: Math.min(remaining, 100),
+		}).pipe(
+			Effect.as(true),
+			Effect.catch(() => Effect.succeed(false)),
+		);
+	});
+
+/** Serializes per-user daemon startup; stale owners are identified by PID and process birth value. */
+export const ensureDaemon = (options: {
+	location: DaemonLocation;
+	launch: LaunchDaemon;
+	timeoutMs?: number;
+	/** Where the launched daemon writes `daemon.log`, so a failed start can point at it. */
+	logsDirectory?: string;
+	launchHandshakeTimeoutMs?: number;
+	orphanRebindGraceMs?: number;
+}) => {
+	const timeoutMs =
+		options.timeoutMs === undefined ? bootstrapTimeoutMs : options.timeoutMs;
+	const launchHandshakeTimeoutMs =
+		options.launchHandshakeTimeoutMs === undefined
+			? POST_LAUNCH_HANDSHAKE_TIMEOUT_MS
+			: options.launchHandshakeTimeoutMs;
+	const orphanRebindGraceMs =
+		options.orphanRebindGraceMs === undefined
+			? ORPHAN_REBIND_GRACE_MS
+			: options.orphanRebindGraceMs;
+	const deadline = Date.now() + timeoutMs;
+	const handshake = (limitMs: number) =>
+		Effect.suspend(() => {
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) return timeoutWithOwner(options.location);
+			return awaitDaemonHandshake({
+				socketPath: options.location.socketPath,
+				timeoutMs: Math.min(remaining, limitMs),
+			});
+		});
+	/** A live pidfile PID with no reachable socket means the daemon is up but unreachable. Resolves true if it re-bound the socket on its own, otherwise terminates it. */
+	const reclaimOrphan = (pid: number) =>
+		handshake(orphanRebindGraceMs).pipe(
+			Effect.as(true),
+			Effect.catch(() =>
+				terminateProcess(pid).pipe(
+					Effect.mapError(
+						(cause) =>
+							new DaemonBootstrapError({
+								message: `Daemon PID ${pid} is running but unreachable at ${options.location.socketPath}, and could not be terminated: ${cause.message}. Run \`devsess daemon stop --force\`, then retry.`,
+								cause,
+							}),
+					),
+					Effect.as(false),
+				),
+			),
+		);
+	const acquire = (
+		missingOwnerAttempts: number,
+	): Effect.Effect<void, DaemonBootstrapError> =>
+		Effect.tryPromise({
+			try: () =>
+				new Promise<boolean>((resolve, reject) => {
+					try {
+						mkdirSync(lockDirectory(options.location), { mode: 0o700 });
+						resolve(true);
+					} catch (cause) {
+						if (
+							cause instanceof Error &&
+							'code' in cause &&
+							cause.code === 'EEXIST'
+						) {
+							resolve(false);
+							return;
+						}
+						reject(cause);
+					}
+				}),
+			catch: (cause) =>
+				new DaemonBootstrapError({
+					message: `Could not acquire daemon launch lock at ${lockDirectory(options.location)}`,
+					cause,
+				}),
+		}).pipe(
+			Effect.flatMap((acquired) => {
+				if (acquired) {
+					const token = crypto.randomUUID();
+					return processBirth(process.pid).pipe(
+						Effect.flatMap((startedAt) => {
+							if (startedAt === undefined)
+								return new DaemonBootstrapError({
+									message: `Could not record daemon launch owner for PID ${process.pid}`,
+								});
+							const content = `${process.pid}\n${startedAt}\n${token}\n`;
+							const release = Effect.sync(() => {
+								try {
+									if (
+										readFileSync(ownerPath(options.location), 'utf8') ===
+										content
+									)
+										rmSync(lockDirectory(options.location), {
+											recursive: true,
+											force: true,
+										});
+								} catch (cause) {
+									if (
+										cause instanceof Error &&
+										'code' in cause &&
+										cause.code === 'ENOENT'
+									)
+										return;
+									throw cause;
+								}
+							});
+							return Effect.try({
+								try: () =>
+									writeFileSync(ownerPath(options.location), content, {
+										mode: 0o600,
+									}),
+								catch: (cause) =>
+									new DaemonBootstrapError({
+										message: `Could not write daemon launch owner at ${ownerPath(options.location)}`,
+										cause,
+									}),
+							}).pipe(
+								Effect.andThen(
+									handshake(150).pipe(
+										Effect.catch((error) => {
+											const launchFresh = liveDaemonPid(
+												options.location.socketPath,
+											).pipe(
+												Effect.flatMap((pid) =>
+													pid === undefined
+														? removeStaleSocket(options.location.socketPath)
+														: Effect.void,
+												),
+												Effect.andThen(options.launch()),
+												Effect.andThen(
+													handshake(launchHandshakeTimeoutMs).pipe(
+														Effect.catch((cause) =>
+															liveDaemonPid(options.location.socketPath).pipe(
+																Effect.flatMap(
+																	(pid) =>
+																		new DaemonBootstrapError({
+																			message: `Daemon did not finish starting within ${launchHandshakeTimeoutMs / 1000} s at ${options.location.socketPath}${pid === undefined ? '' : `; PID ${pid} is running but not answering`}${options.logsDirectory === undefined ? '' : `; see ${daemonLogPath(options.logsDirectory)}`}`,
+																			cause,
+																		}),
+																),
+															),
+														),
+													),
+												),
+											);
+											const relaunch = liveDaemonPid(
+												options.location.socketPath,
+											).pipe(
+												Effect.flatMap((pid) =>
+													pid === undefined
+														? launchFresh
+														: reclaimOrphan(pid).pipe(
+																Effect.flatMap((healed) =>
+																	healed ? Effect.void : launchFresh,
+																),
+															),
+												),
+											);
+											if (endpointIsMissing(error)) return relaunch;
+											const connectFailed = connectFailure(error);
+											if (connectFailed !== undefined)
+												return new DaemonBootstrapError({
+													message: connectFailed.message,
+													cause: connectFailed,
+												});
+											if (endpointTimedOut(error))
+												return liveDaemonPid(options.location.socketPath).pipe(
+													Effect.flatMap((pid) =>
+														pid === undefined
+															? error
+															: new DaemonBootstrapError({
+																	message: `Daemon PID ${pid} is busy or unresponsive at ${options.location.socketPath}: it did not complete the handshake in time. Retry shortly, or run \`devsess daemon restart --force\` to terminate it and stop its live runs.`,
+																	cause: error,
+																}),
+													),
+												);
+											if (!endpointIsUnresponsive(error)) return error;
+											return liveDaemonPid(options.location.socketPath).pipe(
+												Effect.flatMap((pid) =>
+													pid === undefined
+														? removeStalePidfile(
+																options.location.socketPath,
+															).pipe(Effect.andThen(relaunch))
+														: new DaemonBootstrapError({
+																message: `Daemon PID ${pid} accepts connections at ${options.location.socketPath} but does not reply. Run \`devsess daemon stop --force\` to terminate it, then retry.`,
+																cause: error,
+															}),
+												),
+											);
+										}),
+									),
+								),
+								Effect.ensuring(release),
+							);
+						}),
+					);
+				}
+				return waitForDaemon(options.location, deadline).pipe(
+					Effect.flatMap((ready) => {
+						if (ready) return Effect.succeed(undefined);
+						return owner(options.location).pipe(
+							Effect.flatMap((current) => {
+								if (deadline - Date.now() <= 0)
+									return timeoutError(options.location, current);
+								if (current === undefined && missingOwnerAttempts < 10)
+									return Effect.sleep(Math.min(25, deadline - Date.now())).pipe(
+										Effect.andThen(acquire(missingOwnerAttempts + 1)),
+									);
+								if (current === undefined)
+									return new DaemonBootstrapError({
+										message: `Daemon launch lock at ${lockDirectory(options.location)} has no valid owner`,
+									});
+								return ownsLock(current).pipe(
+									Effect.flatMap((live) =>
+										live
+											? Effect.suspend(() => {
+													const remaining = deadline - Date.now();
+													if (remaining <= 0)
+														return timeoutError(options.location, current);
+													return Effect.sleep(Math.min(25, remaining)).pipe(
+														Effect.andThen(acquire(0)),
+													);
+												})
+											: removeStaleLock(options.location).pipe(
+													Effect.andThen(acquire(0)),
+												),
+									),
+								);
+							}),
+						);
+					}),
+				);
+			}),
+		);
+	return handshake(150)
+		.pipe(
+			Effect.catch(() =>
+				createDirectories(options.location).pipe(Effect.andThen(acquire(0))),
+			),
+		)
+		.pipe(
+			Effect.timeoutOrElse({
+				duration: timeoutMs,
+				orElse: () => timeoutWithOwner(options.location),
+			}),
+		);
+};
