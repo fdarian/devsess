@@ -280,11 +280,24 @@ const fixture = () => {
 		list: Effect.sync(() => [...records.values()]),
 		prune: Effect.suspend(prune),
 	});
+	type ExitListener = (event: { exitCode: number; signal?: number }) => void;
+	const exitListeners: Array<{ pid: number; listener: ExitListener }> = [];
+	/** A real PTY reports its exit shortly after the process dies; stopping a service waits for that report to know its output is drained. */
+	const reportPtyExit = (pid: number) => {
+		setImmediate(() => {
+			for (const entry of exitListeners)
+				if (entry.pid === pid) entry.listener({ exitCode: 0 });
+		});
+	};
 	const terminate = vi.fn(
 		(
-			_identity: ReturnType<typeof identity>,
+			target: ReturnType<typeof identity>,
 			_force?: boolean,
-		): Effect.Effect<number | undefined, ProcessError> => Effect.succeed(15),
+		): Effect.Effect<number | undefined, ProcessError> =>
+			Effect.sync(() => {
+				reportPtyExit(target.pid);
+				return 15;
+			}),
 	);
 	const groupAlive = vi.fn(() => Effect.succeed(true));
 	const capture = vi.fn(
@@ -337,11 +350,10 @@ const fixture = () => {
 		onData: vi.fn((_listener: (data: string) => void) => ({
 			dispose: () => undefined,
 		})),
-		onExit: vi.fn(
-			(_listener: (event: { exitCode: number; signal?: number }) => void) => ({
-				dispose: () => undefined,
-			}),
-		),
+		onExit: vi.fn(function (this: { pid: number }, listener: ExitListener) {
+			exitListeners.push({ pid: this.pid, listener });
+			return { dispose: () => undefined };
+		}),
 		write: vi.fn(),
 		resize: vi.fn(),
 		kill: vi.fn(),

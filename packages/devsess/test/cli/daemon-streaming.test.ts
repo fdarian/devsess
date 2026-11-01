@@ -4,11 +4,11 @@ import { createConnection } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from '@effect/vitest';
-import { Deferred, Effect, Fiber, Layer } from 'effect';
+import { Deferred, type Duration, Effect, Fiber, Layer } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { callDaemon } from '../../src/cli/client';
 import { Daemon, makeDaemon } from '../../src/cli/daemon';
-import { Logs } from '../../src/cli/logs';
+import { type LogAddress, Logs } from '../../src/cli/logs';
 import { Processes } from '../../src/cli/processes';
 import {
 	type DaemonRequest,
@@ -242,107 +242,151 @@ const attachUntilSuccessful = (
 		),
 	);
 
-describe('daemon streaming integration', () => {
-	it.live('drains output before stop completes and sends the final chunk', () =>
-		runTest(
-			Effect.gen(function* () {
-				const root = yield* makeTempDir;
-				const socketPath = join(root, 'daemon.sock');
-				const dependencies = Layer.mergeAll(
-					Registry.layer({
-						dataDirectory: root,
-						logsDirectory: join(root, 'logs'),
-					}),
-					Logs.layer({ dataDirectory: root, maxBytes: 1024 * 1024 }),
-					Processes.layer,
+const laggingLogs = (
+	logsOptions: { readonly dataDirectory: string; readonly maxBytes: number },
+	appendDelay: Duration.Input | undefined,
+) => {
+	const base = Logs.layer(logsOptions);
+	if (appendDelay === undefined) return base;
+	return Layer.effect(
+		Logs,
+		Effect.gen(function* () {
+			const logs = yield* Logs;
+			return {
+				...logs,
+				append: (address: LogAddress, data: string) =>
+					Effect.sleep(appendDelay).pipe(
+						Effect.andThen(logs.append(address, data)),
+					),
+			};
+		}),
+	).pipe(Layer.provide(base));
+};
+
+const stopDrainTest = (options: {
+	readonly runId: string;
+	readonly appendDelay: Duration.Input | undefined;
+	readonly floodBytes: number;
+}) =>
+	runTest(
+		Effect.gen(function* () {
+			const root = yield* makeTempDir;
+			const socketPath = join(root, 'daemon.sock');
+			const dependencies = Layer.mergeAll(
+				Registry.layer({
+					dataDirectory: root,
+					logsDirectory: join(root, 'logs'),
+				}),
+				laggingLogs(
+					{ dataDirectory: root, maxBytes: 1024 * 1024 },
+					options.appendDelay,
+				),
+				Processes.layer,
+			);
+			const daemonLayer = Layer.effect(Daemon, makeDaemon({ socketPath })).pipe(
+				Layer.provideMerge(dependencies),
+			);
+			yield* Effect.gen(function* () {
+				const daemon = yield* Daemon;
+				const readyPath = join(root, `${options.runId}.ready`);
+				yield* daemon.request(
+					startRequest(
+						options.runId,
+						`${process.execPath} -e 'const fs = require("node:fs"); process.stdout.write("x".repeat(${options.floodBytes})); process.stdout.write("FINAL"); fs.writeFileSync(${JSON.stringify(readyPath)}, "ready"); setTimeout(() => {}, 30000)'`,
+					),
 				);
-				const daemonLayer = Layer.effect(
-					Daemon,
-					makeDaemon({ socketPath }),
-				).pipe(Layer.provideMerge(dependencies));
-				yield* Effect.gen(function* () {
-					const daemon = yield* Daemon;
-					const readyPath = join(root, 'stop-drain.ready');
-					yield* daemon.request(
-						startRequest(
-							'stop-drain',
-							`${process.execPath} -e 'const fs = require("node:fs"); process.stdout.write("x".repeat(32 * 1024 * 1024)); process.stdout.write("FINAL"); fs.writeFileSync(${JSON.stringify(readyPath)}, "ready"); setTimeout(() => {}, 30000)'`,
-						),
-					);
-					const socket = yield* Effect.acquireRelease(
-						Effect.sync(() => createConnection(socketPath)),
-						(socket) => Effect.sync(() => socket.destroy()),
-					);
-					yield* waitForConnection(socket);
-					const receivedChunks: Array<string> = [];
-					let remainder = '';
-					let tailReady = false;
-					let tailDone = false;
-					const ready = yield* Deferred.make<void>();
-					const outputReady = yield* Deferred.make<void>();
-					const finished = yield* Deferred.make<void>();
-					socket.on('data', (chunk) => {
-						const text = chunk.toString();
-						receivedChunks.push(text);
-						const frames = `${remainder}${text}`.split('\n');
-						const nextRemainder = frames.pop();
-						if (nextRemainder === undefined) return;
-						remainder = nextRemainder;
-						for (const frame of frames) {
-							if (frame.length === 0) continue;
-							const value = JSON.parse(frame) as {
-								ok?: boolean;
-								event?: string;
-								data?: string;
-							};
-							if (value.ok === true) {
-								tailReady = true;
-								Effect.runFork(Deferred.succeed(ready, undefined));
-							}
-							if (value.event === 'exit') {
-								tailDone = true;
-								Effect.runFork(Deferred.succeed(finished, undefined));
-							}
-							if (value.data?.includes('FINAL') === true)
-								Effect.runFork(Deferred.succeed(outputReady, undefined));
+				const socket = yield* Effect.acquireRelease(
+					Effect.sync(() => createConnection(socketPath)),
+					(socket) => Effect.sync(() => socket.destroy()),
+				);
+				yield* waitForConnection(socket);
+				const receivedChunks: Array<string> = [];
+				let remainder = '';
+				let tailReady = false;
+				let tailDone = false;
+				const ready = yield* Deferred.make<void>();
+				const outputReady = yield* Deferred.make<void>();
+				const finished = yield* Deferred.make<void>();
+				socket.on('data', (chunk) => {
+					const text = chunk.toString();
+					receivedChunks.push(text);
+					const frames = `${remainder}${text}`.split('\n');
+					const nextRemainder = frames.pop();
+					if (nextRemainder === undefined) return;
+					remainder = nextRemainder;
+					for (const frame of frames) {
+						if (frame.length === 0) continue;
+						const value = JSON.parse(frame) as {
+							ok?: boolean;
+							event?: string;
+							data?: string;
+						};
+						if (value.ok === true) {
+							tailReady = true;
+							Effect.runFork(Deferred.succeed(ready, undefined));
 						}
-					});
-					socket.write(`${JSON.stringify(tailRequest('stop-drain'))}\n`);
-					yield* Deferred.await(ready).pipe(Effect.timeout('2 seconds'));
-					const fileSystem = yield* FileSystem;
-					let emitted = false;
-					for (let attempt = 0; attempt < 150; attempt += 1) {
-						if (yield* fileSystem.exists(readyPath)) {
-							emitted = true;
-							break;
+						if (value.event === 'exit') {
+							tailDone = true;
+							Effect.runFork(Deferred.succeed(finished, undefined));
 						}
-						yield* Effect.sleep('20 millis');
+						if (value.data?.includes('FINAL') === true)
+							Effect.runFork(Deferred.succeed(outputReady, undefined));
 					}
-					expect(emitted).toBe(true);
-					yield* daemon.request({
-						version: 1,
-						requestId: 'stop',
-						method: 'stopRun',
-						params: { runId: 'stop-drain' },
-					} as DaemonRequest);
-					yield* Deferred.await(outputReady).pipe(Effect.timeout('30 seconds'));
-					yield* Deferred.await(finished).pipe(Effect.timeout('5 seconds'));
-					expect(tailReady).toBe(true);
-					expect(tailDone).toBe(true);
-					expect(receivedChunks.join('')).toContain('FINAL');
-					const logs = yield* Logs;
-					const replay = yield* logs.replayAndSubscribe(
-						{ runId: 'stop-drain', serviceName: 'web' },
-						0,
-						() => Effect.void,
-					);
-					yield* replay.unsubscribe;
-					expect(replay.replay.map((event) => event.data).join('')).toContain(
-						'FINAL',
-					);
-				}).pipe(Effect.provide(daemonLayer));
+				});
+				socket.write(`${JSON.stringify(tailRequest(options.runId))}\n`);
+				yield* Deferred.await(ready).pipe(Effect.timeout('60 seconds'));
+				const fileSystem = yield* FileSystem;
+				/** The ready file is written only after the service finished writing FINAL into its PTY, so waiting on it is a completion signal; the bound is a safety net, not a throughput budget. */
+				yield* Effect.gen(function* () {
+					while (!(yield* fileSystem.exists(readyPath)))
+						yield* Effect.sleep('20 millis');
+				}).pipe(Effect.timeout('60 seconds'));
+				yield* daemon.request({
+					version: 1,
+					requestId: 'stop',
+					method: 'stopRun',
+					params: { runId: options.runId },
+				} as DaemonRequest);
+				const logs = yield* Logs;
+				const replay = yield* logs.replayAndSubscribe(
+					{ runId: options.runId, serviceName: 'web' },
+					0,
+					() => Effect.void,
+				);
+				yield* replay.unsubscribe;
+				expect(replay.replay.map((event) => event.data).join('')).toContain(
+					'FINAL',
+				);
+				yield* Deferred.await(outputReady).pipe(Effect.timeout('60 seconds'));
+				yield* Deferred.await(finished).pipe(Effect.timeout('60 seconds'));
+				expect(tailReady).toBe(true);
+				expect(tailDone).toBe(true);
+				expect(receivedChunks.join('')).toContain('FINAL');
+			}).pipe(Effect.provide(daemonLayer));
+		}),
+	);
+
+describe('daemon streaming integration', () => {
+	it.live(
+		'drains output before stop completes and sends the final chunk',
+		() =>
+			stopDrainTest({
+				runId: 'stop-drain',
+				appendDelay: undefined,
+				floodBytes: 4 * 1024 * 1024,
 			}),
-		),
+		120_000,
+	);
+
+	it.live(
+		'keeps the final chunk when persistence lags behind the service at stop',
+		() =>
+			stopDrainTest({
+				runId: 'stop-lagging',
+				appendDelay: '300 millis',
+				floodBytes: 1024 * 1024,
+			}),
+		120_000,
 	);
 
 	it.live('stops a burst with a paused tail without blocking persistence', () =>

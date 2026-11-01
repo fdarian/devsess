@@ -17,6 +17,7 @@ export type OutputState = {
 	pendingBytes: number;
 	processing: boolean;
 	paused: boolean;
+	draining: boolean;
 	closed: boolean;
 	failed: boolean;
 	failureQueued: boolean;
@@ -34,6 +35,11 @@ export type OutputWorker = {
 		terminal?: IPty,
 	) => Effect.Effect<void>;
 	readonly close: (address: LogAddress, terminal?: IPty) => Effect.Effect<void>;
+	/** Stops applying backpressure for good and resumes a paused terminal. Call before terminating the process: node-pty destroys a paused socket 200ms after the leader exits, dropping whatever it had not read yet. */
+	readonly releaseBackpressure: (
+		address: LogAddress,
+		terminal: IPty,
+	) => Effect.Effect<void>;
 	readonly appendMarker: (
 		address: LogAddress,
 		data: string,
@@ -111,6 +117,15 @@ export const makeOutputWorker = (options: {
 					),
 				);
 			});
+		const releaseBackpressure = (address: LogAddress, terminal: IPty) =>
+			Effect.sync(() => {
+				const output = outputs.get(serviceKey(address));
+				if (output === undefined || output.terminal !== terminal) return;
+				output.draining = true;
+				if (!output.paused) return;
+				output.paused = false;
+				output.terminal.resume();
+			});
 		const enqueue = (address: LogAddress, terminal: IPty, data: string) => {
 			const output = outputs.get(serviceKey(address));
 			if (
@@ -122,7 +137,11 @@ export const makeOutputWorker = (options: {
 				return;
 			output.pending += data;
 			output.pendingBytes += Buffer.byteLength(data);
-			if (output.pendingBytes > MAX_OUTPUT_BACKLOG_BYTES && !output.paused) {
+			if (
+				output.pendingBytes > MAX_OUTPUT_BACKLOG_BYTES &&
+				!output.paused &&
+				!output.draining
+			) {
 				output.paused = true;
 				output.terminal.pause();
 			}
@@ -140,6 +159,7 @@ export const makeOutputWorker = (options: {
 					pendingBytes: 0,
 					processing: false,
 					paused: false,
+					draining: false,
 					closed: false,
 					failed: false,
 					failureQueued: false,
@@ -196,6 +216,7 @@ export const makeOutputWorker = (options: {
 			enqueue,
 			awaitIdle,
 			close,
+			releaseBackpressure,
 			appendMarker: (address, data) =>
 				options.logs.append(address, data).pipe(Effect.asVoid),
 		};

@@ -497,7 +497,7 @@ export const makeRequestDispatcher = (options: {
 				live.ownership.identity.pid,
 			);
 			if (updated === undefined) return;
-			yield* options.runStop.finishService(address, exit, live.terminal);
+			yield* options.runStop.finishService(address, exit, live);
 			if (state === 'orphaned') return;
 			yield* options.subscriptions.markPersisted(address);
 			yield* forgetFinished(address.runId);
@@ -539,7 +539,7 @@ export const makeRequestDispatcher = (options: {
 							return Effect.void;
 						options.terminals.delete(key);
 						return options.runStop
-							.finishService(message.address, exit, live.terminal)
+							.finishService(message.address, exit, live)
 							.pipe(
 								Effect.andThen(
 									options.subscriptions.markPersisted(message.address),

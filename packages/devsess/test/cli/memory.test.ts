@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
-import { Effect } from 'effect';
+import { Deferred, Effect } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
 import { vi } from 'vitest';
 import {
@@ -96,12 +96,14 @@ describe('service memory', () => {
 					);
 					yield* registry.reserve(run);
 					const read = vi.fn(() => Effect.succeed(tree));
+					const drained = yield* Deferred.make<void>();
 					const live: LiveService = {
 						instanceId: 'instance',
 						children: [],
 						exit: undefined,
 						address: { runId: 'run', serviceName: 'web' },
 						ownership: { identity, terminate: Effect.succeed(undefined) },
+						drained,
 						lease: undefined,
 						terminal: {} as never,
 					};

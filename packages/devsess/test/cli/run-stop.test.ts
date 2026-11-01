@@ -1,9 +1,10 @@
 import { describe, expect, it } from '@effect/vitest';
-import { Cause, Effect, Exit, Option } from 'effect';
+import { Cause, Deferred, Effect, Exit, Fiber, Option } from 'effect';
 import { vi } from 'vitest';
 import { ProcessError, type ProcessIdentity } from '../../src/cli/processes';
 import type { RunRecord } from '../../src/cli/registry';
 import { makeRunStop } from '../../src/cli/run-stop';
+import type { LiveService } from '../../src/cli/service-state';
 import { runTest } from '../support/run-test';
 
 describe('stop failures', () => {
@@ -173,6 +174,88 @@ describe('stop deadline', () => {
 					expect(hung.stored().services[0]?.process?.pid).toBe(3);
 					if (Exit.isFailure(result))
 						expect(Cause.pretty(result.cause)).toContain('survived SIGKILL');
+				}),
+			),
+	);
+});
+
+describe('stop output drain', () => {
+	it.live(
+		'resumes the PTY before terminating and flushes output only after the PTY reports end of output',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const identity = { pid: 3, processGroupId: 3, startedAt: 'birth' };
+					const run: RunRecord = {
+						runId: 'run',
+						projectName: 'project',
+						presetName: 'dev',
+						canonicalCwd: '/tmp',
+						invocationCwd: '/tmp',
+						configSnapshot: {},
+						startedAt: '2026-09-22T00:00:00.000Z',
+						state: 'running',
+						daemon: { pid: 2, processGroupId: 2, startedAt: 'birth' },
+						services: [
+							{
+								name: 'web',
+								command: 'sleep 30',
+								cwd: '/tmp',
+								state: 'running',
+								process: identity,
+							},
+						],
+					};
+					const calls: Array<string> = [];
+					const drained = yield* Deferred.make<void>();
+					const live: LiveService = {
+						instanceId: 'instance',
+						children: [],
+						exit: undefined,
+						address: { runId: 'run', serviceName: 'web' },
+						ownership: {
+							identity,
+							terminate: Effect.sync(() => {
+								calls.push('terminate');
+								return undefined;
+							}),
+						},
+						drained,
+						lease: undefined,
+						terminal: {} as never,
+					};
+					const stop = makeRunStop({
+						registry: {
+							prune: Effect.void,
+							get: () => Effect.succeed(run),
+							replace: (updated) => Effect.succeed(updated),
+							list: Effect.succeed([run]),
+							reserve: () => Effect.void,
+						},
+						processes: {} as never,
+						terminals: new Map([['run:web', live]]),
+						output: {
+							releaseBackpressure: () =>
+								Effect.sync(() => calls.push('releaseBackpressure')),
+							awaitIdle: () => Effect.sync(() => calls.push('awaitIdle')),
+							close: () => Effect.sync(() => calls.push('close')),
+						} as never,
+						subscriptions: {
+							finishSubscriptions: () => Effect.void,
+							markPersisted: () => Effect.void,
+						} as never,
+					});
+					const stopping = yield* Effect.forkChild(stop.stopRun('run', false));
+					yield* Effect.sleep('100 millis');
+					expect(calls).toEqual(['releaseBackpressure', 'terminate']);
+					yield* Deferred.succeed(drained, undefined);
+					yield* Fiber.join(stopping).pipe(Effect.timeout('2 seconds'));
+					expect(calls).toEqual([
+						'releaseBackpressure',
+						'terminate',
+						'awaitIdle',
+						'close',
+					]);
 				}),
 			),
 	);

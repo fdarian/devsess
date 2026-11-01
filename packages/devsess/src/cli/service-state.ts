@@ -1,5 +1,5 @@
 import type { Socket } from 'node:net';
-import { Effect } from 'effect';
+import { type Deferred, Effect } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { IPty } from 'node-pty';
@@ -27,6 +27,8 @@ export type LiveService = {
 	readonly terminal: IPty;
 	readonly address: LogAddress;
 	readonly ownership: LiveProcessOwnership;
+	/** Resolved by the PTY's exit event, which node-pty only emits once the master socket has closed, i.e. after every byte the service wrote reached `onData`. */
+	readonly drained: Deferred.Deferred<void>;
 	exit: ServiceExit | undefined;
 	lease:
 		| { readonly id: string; readonly socket: Socket | undefined }

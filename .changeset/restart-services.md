@@ -2,4 +2,4 @@
 "devsess": minor
 ---
 
-Restart individual services or all services within an active run, preserving its run ID and logs while refreshing readiness.
+Add `devsess restart` and `devsess stop --service` to restart or stop individual services without ending the run.
