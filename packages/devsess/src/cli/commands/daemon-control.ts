@@ -110,6 +110,10 @@ const readRuns = (socketPath: string, timeoutMs?: number) =>
 		Effect.flatMap(decodeRunListResponse),
 	);
 
+// Linux lsof appends the socket type to the name ("/path/daemon.sock type=STREAM"); macOS does not.
+const socketNameWithoutType = (name: string) =>
+	name.replace(/ type=[A-Z]+$/, '');
+
 const readSocketOwnerPid = (socketPath: string) =>
 	Effect.tryPromise({
 		try: () =>
@@ -130,7 +134,7 @@ const readSocketOwnerPid = (socketPath: string) =>
 							}
 							if (
 								!line.startsWith('n') ||
-								line.slice(1) !== socketPath ||
+								socketNameWithoutType(line.slice(1)) !== socketPath ||
 								currentPid === undefined
 							)
 								continue;

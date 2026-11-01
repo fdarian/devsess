@@ -75,7 +75,7 @@ it('fails with a bounded log tail if the host exits while a readiness connection
 	const paths = hostPaths(root, 'exit');
 	await mkdir(paths.dir, { recursive: true });
 	try {
-		const script = join(root, 'exit.ts');
+		const script = join(root, 'exit.mts');
 		const address = await socketPath(paths);
 		await writeFile(
 			script,
@@ -119,7 +119,7 @@ it('decodes split UTF-8 and caps lines by bytes', async () => {
 it('preserves sticky-port entries written by concurrent processes', async () => {
 	const root = await mkdtemp(join(tmpdir(), 'devsess-ports-'));
 	try {
-		const script = join(root, 'ports.ts');
+		const script = join(root, 'ports.mts');
 		await symlink(
 			fileURLToPath(new URL('../../node_modules', import.meta.url)),
 			join(root, 'node_modules'),
@@ -164,7 +164,7 @@ it('launches from a path with spaces, strips daemon env, and leaves handler data
 			fileURLToPath(new URL('../../node_modules', import.meta.url)),
 			join(root, 'node_modules'),
 		);
-		const script = join(root, 'consumer.ts');
+		const script = join(root, 'consumer.mts');
 		await writeFile(
 			script,
 			`import { Service } from './dist/services/index.js';
