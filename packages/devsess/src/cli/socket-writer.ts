@@ -21,6 +21,7 @@ export type SocketWriterReplay =
 
 type SocketWriterOptions = {
 	readonly maxBytes?: number;
+	readonly overflowDrainTimeoutMs?: number;
 	readonly onClose: () => void;
 	readonly onOverflow: () => Effect.Effect<void>;
 };
@@ -40,7 +41,8 @@ export type SocketWriter = {
 };
 
 const overflowMessage = 'Daemon output buffer exceeded 1 MiB; disconnecting';
-const OVERFLOW_DRAIN_TIMEOUT_MS = 3_000;
+/** How long a client that overflowed may take to read the frames already sent before the socket is destroyed, undelivered bytes included. */
+export const OVERFLOW_DRAIN_TIMEOUT_MS = 3_000;
 
 export const makeSocketWriter = (
 	socket: Socket,
@@ -48,6 +50,10 @@ export const makeSocketWriter = (
 ): SocketWriter => {
 	const maxBytes =
 		options.maxBytes === undefined ? MAX_FRAME_BYTES : options.maxBytes;
+	const overflowDrainTimeoutMs =
+		options.overflowDrainTimeoutMs === undefined
+			? OVERFLOW_DRAIN_TIMEOUT_MS
+			: options.overflowDrainTimeoutMs;
 	const queue: Array<QueuedFrame> = [];
 	const drainWaiters = new Set<() => void>();
 	const idleWaiters = new Set<() => void>();
@@ -189,7 +195,7 @@ export const makeSocketWriter = (
 			if (closed) return;
 			cleanup(true);
 			destroySocket();
-		}, OVERFLOW_DRAIN_TIMEOUT_MS);
+		}, overflowDrainTimeoutMs);
 		timeout.unref();
 		overflowTimer = timeout;
 		try {

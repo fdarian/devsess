@@ -277,6 +277,7 @@ export const makeDaemon = (options: {
 	logsDirectory?: string;
 	shutdownTimeoutMs?: number;
 	runStopDeadlineMs?: number;
+	overflowDrainTimeoutMs?: number;
 	socketWatchIntervalMs?: number;
 }): Effect.Effect<
 	DaemonService,
@@ -518,6 +519,7 @@ export const makeDaemon = (options: {
 			);
 		const onConnection = (socket: Socket) => {
 			const writer = makeSocketWriter(socket, {
+				overflowDrainTimeoutMs: options.overflowDrainTimeoutMs,
 				onOverflow: () => subscriptions.releaseSocketOwnership(socket),
 				onClose: () => Effect.runFork(subscriptions.releaseSocket(socket)),
 			});

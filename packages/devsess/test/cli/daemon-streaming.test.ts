@@ -366,6 +366,9 @@ const stopDrainTest = (options: {
 		}),
 	);
 
+/** The test resumes its client only after the whole 8 MiB has been persisted, which on a slow disk takes longer than the daemon's default bound on a stalled client. The bound itself is covered in socket-writer.test.ts. */
+const overflowDrainTimeoutMs = 60_000;
+
 describe('daemon streaming integration', () => {
 	it.live(
 		'drains output before stop completes and sends the final chunk',
@@ -537,7 +540,7 @@ describe('daemon streaming integration', () => {
 					);
 					const daemonLayer = Layer.effect(
 						Daemon,
-						makeDaemon({ socketPath }),
+						makeDaemon({ socketPath, overflowDrainTimeoutMs }),
 					).pipe(Layer.provideMerge(dependencies));
 					yield* Effect.scoped(
 						Effect.gen(function* () {
@@ -626,7 +629,7 @@ describe('daemon streaming integration', () => {
 					);
 					const daemonLayer = Layer.effect(
 						Daemon,
-						makeDaemon({ socketPath }),
+						makeDaemon({ socketPath, overflowDrainTimeoutMs }),
 					).pipe(Layer.provideMerge(dependencies));
 					yield* Effect.scoped(
 						Effect.gen(function* () {

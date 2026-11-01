@@ -3,7 +3,10 @@ import { describe, expect, it } from '@effect/vitest';
 import { Effect } from 'effect';
 import { vi } from 'vitest';
 import { LIVE_OUTPUT_OVERFLOW_MESSAGE } from '../../src/cli/protocol';
-import { makeSocketWriter } from '../../src/cli/socket-writer';
+import {
+	makeSocketWriter,
+	OVERFLOW_DRAIN_TIMEOUT_MS,
+} from '../../src/cli/socket-writer';
 
 const response = {
 	version: 1 as const,
@@ -171,4 +174,97 @@ describe('socket writer', () => {
 				expect(writer.isClosed()).toBe(false);
 			}),
 	);
+	describe('overflow drain bound', () => {
+		const overflowBeforeClientDrains = (options: {
+			readonly overflowDrainTimeoutMs?: number;
+		}) => {
+			const socket = new Socket();
+			const writer = makeSocketWriter(socket, {
+				...options,
+				onClose: () => undefined,
+				onOverflow: () => Effect.void,
+				maxBytes: 256,
+			});
+			let needDrain = true;
+			Object.defineProperty(socket, 'writableNeedDrain', {
+				configurable: true,
+				get: () => needDrain,
+			});
+			const write = vi.spyOn(socket, 'write').mockReturnValue(false);
+			const destroy = vi.spyOn(socket, 'destroy').mockReturnValue(socket);
+			return {
+				socket,
+				writer,
+				destroy,
+				overflow: Effect.gen(function* () {
+					yield* writer.send({
+						version: 1,
+						requestId: 'request',
+						event: 'output',
+						data: 'x'.repeat(300),
+						offset: 300,
+					});
+					const callback = write.mock.calls[0]?.find(
+						(argument) => typeof argument === 'function',
+					);
+					if (typeof callback !== 'function')
+						return yield* Effect.die(
+							'Overflow write did not receive a callback',
+						);
+					return callback;
+				}),
+				flush: (callback: () => void) => {
+					needDrain = false;
+					callback();
+					socket.emit('drain');
+				},
+			};
+		};
+
+		it.effect(
+			'destroys a socket whose client has not read the overflow frame within the bound',
+			() =>
+				Effect.gen(function* () {
+					vi.useFakeTimers();
+					const fixture = overflowBeforeClientDrains({});
+					yield* fixture.overflow;
+					vi.advanceTimersByTime(OVERFLOW_DRAIN_TIMEOUT_MS - 1);
+					expect(fixture.destroy).not.toHaveBeenCalled();
+					vi.advanceTimersByTime(1);
+					expect(fixture.destroy).toHaveBeenCalledOnce();
+					expect(fixture.writer.isClosed()).toBe(true);
+				}).pipe(Effect.ensuring(Effect.sync(() => vi.useRealTimers()))),
+		);
+
+		it.effect(
+			'keeps the socket until a client that drains inside the bound has read the overflow frame',
+			() =>
+				Effect.gen(function* () {
+					vi.useFakeTimers();
+					const fixture = overflowBeforeClientDrains({});
+					const callback = yield* fixture.overflow;
+					vi.advanceTimersByTime(OVERFLOW_DRAIN_TIMEOUT_MS - 1);
+					expect(fixture.destroy).not.toHaveBeenCalled();
+					fixture.flush(callback);
+					yield* Effect.promise(() => Promise.resolve());
+					expect(fixture.destroy).toHaveBeenCalledOnce();
+					vi.advanceTimersByTime(OVERFLOW_DRAIN_TIMEOUT_MS);
+					expect(fixture.destroy).toHaveBeenCalledOnce();
+				}).pipe(Effect.ensuring(Effect.sync(() => vi.useRealTimers()))),
+		);
+
+		it.effect('uses the configured bound instead of the default', () =>
+			Effect.gen(function* () {
+				vi.useFakeTimers();
+				const fixture = overflowBeforeClientDrains({
+					overflowDrainTimeoutMs: OVERFLOW_DRAIN_TIMEOUT_MS * 10,
+				});
+				yield* fixture.overflow;
+				vi.advanceTimersByTime(OVERFLOW_DRAIN_TIMEOUT_MS * 10 - 1);
+				expect(fixture.destroy).not.toHaveBeenCalled();
+				vi.advanceTimersByTime(1);
+				expect(fixture.destroy).toHaveBeenCalledOnce();
+			}).pipe(Effect.ensuring(Effect.sync(() => vi.useRealTimers()))),
+		);
+	});
 });
