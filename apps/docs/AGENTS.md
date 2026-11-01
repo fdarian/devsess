@@ -9,7 +9,8 @@ Documentation site for `devsess`, built with [Blume](https://useblume.dev) (Astr
 Stop the dev server before a regular build or the root `pnpm run check`: Blume prevents concurrent use of its runtime. `pnpm build --isolated` verifies into `.blume-verify/dist/` without stopping dev.
 
 ## Layout
-- blume.config.ts — site config + navigation
+- blume.config.ts — site config + navigation, wrapped in `withPreset` from `@fdarian/blume-preset`
+- theme.css, components.ts — wiring only; the look and the chapter rail live in the preset (`~/code/fdarian/blume-preset`)
 - src/pages/**/*.mdx — pages with title frontmatter; paths define URLs
 - The changelog content source reads `packages/devsess/CHANGELOG.md`; builds require no GitHub token or network fetch.
 - .blume/ — generated runtime, gitignored

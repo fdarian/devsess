@@ -1,6 +1,6 @@
 import { createConnection } from 'node:net';
-import { StringDecoder } from 'node:string_decoder';
 import { Config, ConfigProvider, Effect, Option, Schema } from 'effect';
+import { readSocketLine } from '../socket-line';
 
 // The daemon serves requests one at a time, so a readiness report can queue
 // behind slow ones (e.g. `devsess start` polling the run list while it waits).
@@ -59,8 +59,6 @@ export const sendDaemonRequest = (
 		try: () =>
 			new Promise<string>((resolve, reject) => {
 				const socket = createConnection(identity.socketPath);
-				const decoder = new StringDecoder('utf8');
-				let input = '';
 				let settled = false;
 				const finish = (complete: () => void) => {
 					if (settled) return;
@@ -76,20 +74,9 @@ export const sendDaemonRequest = (
 				socket.once('connect', () =>
 					socket.write(`${JSON.stringify(request)}\n`),
 				);
-				socket.on('data', (chunk) => {
-					input += decoder.write(chunk);
-					if (Buffer.byteLength(input) > MAX_RESPONSE_BYTES) {
-						finish(() => reject(new Error('Daemon response is too large')));
-						return;
-					}
-					const boundary = input.indexOf('\n');
-					if (boundary !== -1) finish(() => resolve(input.slice(0, boundary)));
-				});
-				socket.once('error', (cause) => finish(() => reject(cause)));
-				socket.once('close', () =>
-					finish(() =>
-						reject(new Error('Daemon closed before acknowledging request')),
-					),
+				readSocketLine(socket, MAX_RESPONSE_BYTES).then(
+					(line) => finish(() => resolve(line)),
+					(cause) => finish(() => reject(cause)),
 				);
 			}),
 		catch: (cause) => new Error('Could not send request to daemon', { cause }),
