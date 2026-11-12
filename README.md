@@ -1,6 +1,6 @@
 # devsess
 
-Monorepo for [`devsess`](packages/devsess) — scaffold dev scripts with reusable dev sessions and a per-session PGlite + Drizzle adapter, built on [Effect](https://effect.website).
+Monorepo for [`devsess`](packages/devsess) — scaffold dev scripts with reusable dev sessions and a per-session PGlite + Drizzle adapter, built on [Effect](https://effect.website). Docs: [devsess.fdarian.com](https://devsess.fdarian.com)
 
 ## Packages
 
