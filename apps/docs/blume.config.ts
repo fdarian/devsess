@@ -1,14 +1,18 @@
 import { readFile } from 'node:fs/promises';
 import { withPreset } from '@fdarian/blume-preset';
 import { defineConfig } from 'blume';
+import { posthog } from 'blume/analytics';
 import { custom, filesystem } from 'blume/sources';
 import devsessPackageJson from '../../packages/devsess/package.json' with {
 	type: 'json',
 };
 
+const ph = process.env.POSTHOG_KEY;
+
 export default defineConfig(
 	withPreset({
 		title: 'devsess',
+		...(ph ? { analytics: [posthog({ key: ph })] } : {}),
 		description:
 			'Isolated, managed dev servers — each worktree gets its own session, with its own port and its own database.',
 		content: {
