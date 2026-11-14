@@ -9,6 +9,33 @@ import devsessPackageJson from '../../packages/devsess/package.json' with {
 
 const ph = process.env.POSTHOG_KEY;
 
+async function loadChangelog(options: {
+	packageDir: string;
+	packageName: string;
+	ref: string;
+}) {
+	const changelog = await readFile(
+		new URL(
+			`../../packages/${options.packageDir}/CHANGELOG.md`,
+			import.meta.url,
+		),
+		'utf8',
+	);
+	const heading = `# ${options.packageName}\n`;
+	if (!changelog.startsWith(heading)) {
+		throw new Error(
+			`Expected the ${options.packageName} changelog package heading.`,
+		);
+	}
+	const text = changelog.slice(heading.length);
+	return {
+		ref: options.ref,
+		data: { title: options.packageName },
+		body: { format: 'md' as const, text },
+		raw: `---\ntitle: ${JSON.stringify(options.packageName)}\n---\n${text}`,
+	};
+}
+
 export default defineConfig(
 	withPreset({
 		title: 'devsess',
@@ -22,24 +49,18 @@ export default defineConfig(
 					name: 'changelog',
 					staged: true,
 					async load() {
-						const changelog = await readFile(
-							new URL('../../packages/devsess/CHANGELOG.md', import.meta.url),
-							'utf8',
-						);
-						if (!changelog.startsWith('# devsess\n')) {
-							throw new Error(
-								'Expected the devsess changelog package heading.',
-							);
-						}
-						const text = changelog.slice('# devsess\n'.length);
 						return {
 							entries: [
-								{
+								await loadChangelog({
+									packageDir: 'devsess',
+									packageName: 'devsess',
 									ref: 'changelog.md',
-									data: { title: 'Changelog' },
-									body: { format: 'md', text },
-									raw: `---\ntitle: Changelog\n---\n${text}`,
-								},
+								}),
+								await loadChangelog({
+									packageDir: 'cli',
+									packageName: '@devsess/cli',
+									ref: 'changelog/cli.md',
+								}),
 							],
 							diagnostics: [],
 						};
@@ -72,7 +93,13 @@ export default defineConfig(
 						},
 					],
 				},
-				'/changelog',
+				{
+					label: 'Changelog',
+					items: [
+						{ label: 'devsess', href: '/changelog' },
+						{ label: '@devsess/cli', href: '/changelog/cli' },
+					],
+				},
 				{
 					label: 'Reference',
 					items: [
