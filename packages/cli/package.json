@@ -1,0 +1,61 @@
+{
+	"name": "@devsess/cli",
+	"version": "0.6.0",
+	"description": "The devsess CLI — run and manage isolated dev-session servers from a background daemon",
+	"license": "Apache-2.0",
+	"homepage": "https://devsess.fdarian.com",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/fdarian/devsess.git",
+		"directory": "packages/cli"
+	},
+	"bugs": {
+		"url": "https://github.com/fdarian/devsess/issues"
+	},
+	"type": "module",
+	"keywords": [
+		"effect",
+		"dev",
+		"cli",
+		"dev-server",
+		"daemon"
+	],
+	"files": [
+		"dist",
+		"docs/cli"
+	],
+	"bin": {
+		"devsess": "./dist/cli.js"
+	},
+	"exports": {
+		"./package.json": "./package.json"
+	},
+	"publishConfig": {
+		"access": "public",
+		"provenance": true
+	},
+	"scripts": {
+		"build": "tsup",
+		"build:exe": "tsdown --config tsdown.exe.config.ts",
+		"dev": "tsup --watch",
+		"check:type": "tsrs --noEmit",
+		"check:lint": "biome check",
+		"test": "vitest run",
+		"prepack": "pnpm run build"
+	},
+	"dependencies": {
+		"@effect/platform-node": "4.0.0",
+		"effect": "4.0.0",
+		"node-pty": "1.2.0-beta.15"
+	},
+	"devDependencies": {
+		"@devsess/config": "workspace:*",
+		"@effect/vitest": "^4.0.0",
+		"@types/node": "^22.0.0",
+		"tsdown": "^0.23.1",
+		"tsrs": "^0.18.0-ts7.1.0-dev.20260929",
+		"tsup": "^8.5.1",
+		"typescript": "^7.0.2",
+		"vitest": "^5.0.3"
+	}
+}
