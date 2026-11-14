@@ -1,6 +1,6 @@
 # Shell completion
 
-Load completion in your shell after installing `devsess`:
+Load completion in your shell after installing `@devsess/cli`:
 
 ```zsh
 # zsh: after compinit

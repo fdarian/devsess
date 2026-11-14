@@ -148,4 +148,4 @@ vite.config.ts.timestamp-*
 apps/docs/src/pages/reference/cli/
 
 # devsess SEA binary output
-packages/devsess/build/
+packages/cli/build/

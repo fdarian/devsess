@@ -26,15 +26,11 @@
 	"sideEffects": false,
 	"files": [
 		"dist",
-		"docs/cli",
 		"README.md"
 	],
 	"main": "./dist/index.js",
 	"module": "./dist/index.js",
 	"types": "./dist/index.d.ts",
-	"bin": {
-		"devsess": "./dist/cli.js"
-	},
 	"exports": {
 		".": {
 			"types": "./dist/index.d.ts",
@@ -60,7 +56,6 @@
 	},
 	"scripts": {
 		"build": "tsup && tsc -p tsconfig.build.json",
-		"build:exe": "tsdown --config tsdown.exe.config.ts",
 		"dev": "tsup --watch",
 		"check:type": "tsrs --noEmit",
 		"check:lint": "biome check",
@@ -72,7 +67,6 @@
 		"@effect/platform-node-shared": "4.0.0",
 		"effect": "4.0.0",
 		"get-port": "^7.2.0",
-		"node-pty": "1.2.0-beta.15",
 		"proper-lockfile": "^4.1.2",
 		"random-word-slugs": "^0.1.7"
 	},
@@ -96,7 +90,6 @@
 		"@types/node": "^22.0.0",
 		"@types/proper-lockfile": "^4.1.4",
 		"drizzle-orm": "1.0.0-rc.5-5935859",
-		"tsdown": "^0.23.1",
 		"tsrs": "^0.18.0-ts7.1.0-dev.20260929",
 		"tsup": "^8.5.1",
 		"typescript": "^7.0.2",

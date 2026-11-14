@@ -1,6 +1,6 @@
 import { mkdir, readdir } from 'node:fs/promises';
 
-const source = new URL('../../../packages/devsess/docs/cli/', import.meta.url);
+const source = new URL('../../../packages/cli/docs/cli/', import.meta.url);
 const target = new URL('../src/pages/reference/cli/', import.meta.url);
 
 await mkdir(target, { recursive: true });

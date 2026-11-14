@@ -9,6 +9,5 @@
 		"rootDir": "src",
 		"outDir": "dist"
 	},
-	"include": ["src/**/*"],
-	"exclude": ["src/cli/sea"]
+	"include": ["src/**/*"]
 }

@@ -1,15 +1,16 @@
-# Release `devsess` to npm via Changesets + OIDC trusted publishing.
+# Release `devsess` and `@devsess/cli` to npm via Changesets + OIDC trusted publishing.
 #
 # Authentication is OIDC — there is NO NPM_TOKEN / NODE_AUTH_TOKEN secret.
 # Requirements:
 #   1. `permissions.id-token: write` (granted below) for the OIDC token.
 #   2. `actions/setup-node` with the npm registry URL.
 #   3. npm >= 11.5.1 on the runner (we install npm@latest before publish).
-#   4. The package sets `publishConfig.provenance: true` + `access: public`.
+#   4. Each package sets `publishConfig.provenance: true` + `access: public`.
 #
-# First-publish bootstrap: OIDC trusted publishing can only be configured on
-# npmjs.com AFTER the package exists. Do the very first publish manually once:
-#   cd packages/devsess && npm publish --access public
+# First-publish bootstrap (once per published package: `devsess`, `@devsess/cli`):
+# OIDC trusted publishing can only be configured on npmjs.com AFTER the package
+# exists. Do the very first publish manually from the package directory:
+#   cd packages/<name> && npm publish --access public
 # then configure the trusted publisher (this repo + this workflow) on npmjs.com.
 #
 # Normal flow: `pnpm changeset` to record a bump, merge to main. Changesets opens
@@ -53,7 +54,7 @@ jobs:
         working-directory: ${{ runner.temp }}
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter devsess build
+      - run: pnpm --filter devsess --filter @devsess/cli build
       - id: changesets
         uses: changesets/action@v1
         with:
