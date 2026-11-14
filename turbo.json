@@ -10,7 +10,8 @@
 			"inputs": [
 				"$TURBO_DEFAULT$",
 				"$TURBO_ROOT$/packages/devsess/CHANGELOG.md",
-				"$TURBO_ROOT$/packages/devsess/package.json"
+				"$TURBO_ROOT$/packages/devsess/package.json",
+				"$TURBO_ROOT$/packages/cli/docs/cli/**"
 			],
 			"outputs": ["dist/**"]
 		},
