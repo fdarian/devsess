@@ -7,8 +7,8 @@
 	"type": "module",
 	"packageManager": "pnpm@12.16.1",
 	"scripts": {
-		"build": "pnpm --filter devsess build",
-		"build:exe": "pnpm --filter devsess build:exe",
+		"build": "pnpm --filter devsess --filter @devsess/cli build",
+		"build:exe": "pnpm --filter @devsess/cli build:exe",
 		"docs": "pnpm --filter docs dev",
 		"check": "turbo run check",
 		"test": "turbo run test",

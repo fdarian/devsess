@@ -7,6 +7,7 @@ Monorepo for [`devsess`](packages/devsess) — scaffold dev scripts with reusabl
 | Path | Description |
 | --- | --- |
 | [`packages/devsess`](packages/devsess) | The `devsess` library (published to npm). |
+| [`packages/cli`](packages/cli) | The `devsess` CLI and daemon, published as `@devsess/cli`. |
 | [`apps/docs`](apps/docs) | Documentation site, built with [Blume](https://useblume.dev). |
 
 ## Development
@@ -15,13 +16,13 @@ This is a [pnpm](https://pnpm.io) workspace. Install [Bun](https://bun.sh) separ
 
 ```bash
 pnpm install       # install all workspaces
-pnpm run build     # build the library (tsup + tsc declarations)
+pnpm run build     # build the library and the CLI
 pnpm run check     # typecheck + lint (turbo)
 pnpm run format    # biome format
 pnpm run docs      # run the docs site locally
 ```
 
-The published package also provides a `devsess` CLI for detached, per-worktree service groups. Its configuration and command behavior are documented in the [CLI reference](packages/devsess/docs/cli/index.md).
+The `devsess` CLI for detached, per-worktree service groups lives in `@devsess/cli`. Its configuration and command behavior are documented in the [CLI reference](packages/cli/docs/cli/index.md).
 
 ## Releasing
 

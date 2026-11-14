@@ -9,7 +9,7 @@ Scaffold dev scripts with reusable **dev sessions** and a per-session **PGlite +
 
 It runs on **Node or Bun** — devsess depends on neither directly, you supply whichever platform package's layer you use (`NodeServices.layer`/`BunServices.layer`, or the equivalent `platform` object for `devsess/async`). The examples below use the [Effect](https://effect.website) API (`devsess`); if you'd rather not deal with Effect directly, `devsess/async` exposes the same dev-session scaffolding as a plain, Promise-based API — see [API](#api).
 
-The package also installs a `devsess` CLI for detached, per-worktree service groups. See the [CLI reference](./docs/cli/index.md) for configuration, project matching, `start`/`list`/`stop`/`tail`/`attach`, and recovery behavior.
+The `devsess` CLI for detached, per-worktree service groups is a separate package, [`@devsess/cli`](https://www.npmjs.com/package/@devsess/cli). See the [CLI reference](https://github.com/fdarian/devsess/blob/main/packages/cli/docs/cli/index.md) for configuration, project matching, `start`/`list`/`stop`/`tail`/`attach`, and recovery behavior.
 
 ## Install
 
