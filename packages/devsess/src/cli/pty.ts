@@ -39,8 +39,8 @@ export const spawnPty = (options: PtyOptions) =>
 		),
 	);
 
-const signalGroup = (
-	pid: number,
+const signalTarget = (
+	target: number,
 	signal: NodeJS.Signals | 0,
 	command: string,
 ) =>
@@ -48,7 +48,7 @@ const signalGroup = (
 		try: () =>
 			new Promise<boolean>((resolve, reject) => {
 				try {
-					process.kill(-pid, signal);
+					process.kill(target, signal);
 					resolve(true);
 				} catch (cause) {
 					if (
@@ -66,6 +66,12 @@ const signalGroup = (
 			new PtyError({ message: `Could not stop PTY ${command}`, cause }),
 	});
 
+const signalGroup = (
+	pid: number,
+	signal: NodeJS.Signals | 0,
+	command: string,
+) => signalTarget(-pid, signal, command);
+
 const waitForExit = (
 	pid: number,
 	command: string,
@@ -80,8 +86,34 @@ const waitForExit = (
 		}),
 	);
 
+/**
+ * A freshly spawned child hasn't necessarily called setsid() yet, so its
+ * process group doesn't exist and the group signal fails with ESRCH even
+ * though the process is running. Retry while the leader is alive; signalling
+ * the bare pid instead would orphan its children once it has exec'd.
+ */
+const terminateGroup = (
+	pid: number,
+	command: string,
+	remaining: number,
+): Effect.Effect<boolean, PtyError> =>
+	signalGroup(pid, 'SIGTERM', command).pipe(
+		Effect.flatMap((signalled) => {
+			if (signalled || remaining <= 0) return Effect.succeed(signalled);
+			return signalTarget(pid, 0, command).pipe(
+				Effect.flatMap((leaderAlive) =>
+					leaderAlive
+						? Effect.sleep('20 millis').pipe(
+								Effect.andThen(terminateGroup(pid, command, remaining - 1)),
+							)
+						: Effect.succeed(false),
+				),
+			);
+		}),
+	);
+
 export const terminatePty = (terminal: pty.IPty, command: string) =>
-	signalGroup(terminal.pid, 'SIGTERM', command).pipe(
+	terminateGroup(terminal.pid, command, 50).pipe(
 		Effect.flatMap((signalled) =>
 			signalled
 				? waitForExit(terminal.pid, command, 250).pipe(
