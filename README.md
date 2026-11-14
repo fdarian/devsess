@@ -24,18 +24,6 @@ pnpm run docs      # run the docs site locally
 
 The `devsess` CLI for detached, per-worktree service groups lives in `@devsess/cli`. Its configuration and command behavior are documented in the [CLI reference](packages/cli/docs/cli/index.md).
 
-## Releasing
-
-Publishing is automated via GitHub Actions (`.github/workflows/release.yml`):
-bump the version in `packages/devsess/package.json`, commit, then tag and push:
-
-```bash
-git tag v0.0.1
-git push --tags
-```
-
-Requires an `NPM_TOKEN` repository secret. See the release workflow for details.
-
 ## License
 
 Apache-2.0
