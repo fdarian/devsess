@@ -821,6 +821,7 @@ export class Processes extends Context.Service<Processes>()(
 								const verified = yield* Effect.forEach(
 									[...groupMembers.values()],
 									ownsTreeProcess,
+									{ concurrency: 'unbounded' },
 								);
 								if (!verified.some(Boolean) && !(yield* owns(identity))) {
 									if (!(yield* groupAlive(identity.processGroupId))) {
