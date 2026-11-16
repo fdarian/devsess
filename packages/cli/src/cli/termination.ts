@@ -1,12 +1,16 @@
 export const TERMINATION_POLL_INTERVAL_MS = 25;
 export const TERMINATION_PHASE_TIMEOUT_MS = 5_000;
-export const STOP_REQUEST_MARGIN_MS = 1_000;
-export const STOP_REQUEST_TIMEOUT_MS =
-	TERMINATION_PHASE_TIMEOUT_MS * 2 + STOP_REQUEST_MARGIN_MS;
 export const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 5_000;
 
 /** Overall bound on stopping a run, so one stuck service cannot hold the daemon's request queue. What outlives it is SIGKILLed. */
 export const RUN_STOP_DEADLINE_MS = TERMINATION_PHASE_TIMEOUT_MS * 2;
+/** Bounds `settleAfterDeadline` per service, so a stop always replies within `RUN_STOP_DEADLINE_MS` plus this even when `ps` is slow. */
+export const RUN_STOP_SETTLE_TIMEOUT_MS = 5_000;
+/** Covers the registry writes and prune that run before the stop reply. */
+export const STOP_REQUEST_MARGIN_MS = 2_000;
+/** The daemon's worst case for a stop; clients must wait at least this long (the menu bar's `stopTimeout` must stay above it). */
+export const STOP_REQUEST_TIMEOUT_MS =
+	RUN_STOP_DEADLINE_MS + RUN_STOP_SETTLE_TIMEOUT_MS + STOP_REQUEST_MARGIN_MS;
 /** How long to wait for a process group to disappear after the deadline's SIGKILL. */
 export const FORCE_KILL_SETTLE_TIMEOUT_MS = 1_000;
 /** A log append that has not finished by then is abandoned so it cannot block settling a service. */
