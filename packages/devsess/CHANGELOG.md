@@ -1,5 +1,15 @@
 # devsess
 
+## 0.7.0
+
+### Minor Changes
+
+- 18a6a31: The `devsess` binary moved to `@devsess/cli`, so the library no longer installs `node-pty`; existing CLI users must `npm install -g @devsess/cli` and run `devsess daemon restart`, since the launchd job points at the old install path.
+
+### Patch Changes
+
+- aace586: Stopping a service right after starting it no longer leaves it running.
+
 ## 0.6.0
 
 ### Minor Changes
