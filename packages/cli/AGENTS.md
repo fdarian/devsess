@@ -16,4 +16,4 @@ The `devsess` binary: a detached per-user daemon that runs named groups of dev s
 
 ## Common gotchas
 - On macOS the launchd plist embeds the absolute path of `dist/cli.js` and the Node binary, so moving or reinstalling the package leaves the job stale until `devsess daemon restart`.
-- `apps/menubar` (Swift) speaks the same socket protocol; its stop timeout must stay above `RUN_STOP_DEADLINE_MS` in `src/cli/termination.ts`.
+- `apps/menubar` (Swift) speaks the same socket protocol; its stop timeout must stay above `STOP_REQUEST_TIMEOUT_MS` (stop deadline + settle + margin) in `src/cli/termination.ts`.

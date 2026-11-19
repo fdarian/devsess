@@ -50,9 +50,10 @@ enum DaemonMethod: String {
     case listRuns, stopRun, stopServices, restartServices
 
     static let readTimeout: TimeInterval = 5
-    // Must stay above the daemon's RUN_STOP_DEADLINE_MS (packages/cli/src/cli/termination.ts, 10 s):
-    // a stop that escalates to SIGKILL still succeeds, and must not be reported as a timeout.
-    static let stopTimeout: TimeInterval = 15
+    // Must stay above the CLI's STOP_REQUEST_TIMEOUT_MS (packages/cli/src/cli/termination.ts, 17 s:
+    // stop deadline + post-deadline settle + margin): a stop that escalates to SIGKILL still
+    // replies within it, and must not be reported as a timeout.
+    static let stopTimeout: TimeInterval = 20
 
     var timeout: TimeInterval {
         switch self {

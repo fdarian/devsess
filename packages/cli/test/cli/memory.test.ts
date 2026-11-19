@@ -1,7 +1,8 @@
 import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
-import { Deferred, Effect } from 'effect';
+import { Deferred, Effect, Fiber } from 'effect';
 import { FileSystem } from 'effect/FileSystem';
+import { TestClock } from 'effect/testing';
 import { vi } from 'vitest';
 import {
 	decodeRunListResponse,
@@ -17,6 +18,7 @@ import {
 import { Registry, type RunRecord } from '../../src/cli/registry';
 import { makeRequestDispatcher } from '../../src/cli/request-dispatch';
 import type { LiveService } from '../../src/cli/service-state';
+import { MEMORY_SAMPLE_MAX_WAIT_MS } from '../../src/cli/termination';
 import { runTest } from '../support/run-test';
 import { makeTempDir } from '../support/temp-dir';
 
@@ -250,6 +252,77 @@ describe('service memory', () => {
 					expect(skippedRead).not.toHaveBeenCalled();
 				}),
 			),
+	);
+
+	it.effect('concurrent callers share one read', () =>
+		Effect.gen(function* () {
+			const read = vi.fn(() =>
+				Effect.sleep('100 millis').pipe(Effect.as(tree)),
+			);
+			const sample = makeMemorySampler(read, () => 0);
+			const results = yield* Effect.all(
+				[sample, sample, sample, TestClock.adjust('100 millis')],
+				{ concurrency: 'unbounded' },
+			);
+			expect(read).toHaveBeenCalledTimes(1);
+			for (const result of results.slice(0, 3)) expect(result).toBe(tree);
+		}),
+	);
+
+	it.effect(
+		'answers within the wait bound while a slow read finishes in the background',
+		() =>
+			Effect.gen(function* () {
+				let now = 0;
+				const slow = Effect.sleep('2 seconds');
+				const next = parseProcessTree('300 1 300 S Tue Sep 22 00:00:00 2026 1');
+				const read = vi.fn(() => slow.pipe(Effect.as(next)));
+				const sample = makeMemorySampler(read, () => now);
+
+				const first = yield* Effect.forkChild(sample);
+				yield* TestClock.adjust(`${MEMORY_SAMPLE_MAX_WAIT_MS} millis`);
+				expect(yield* Fiber.join(first)).toBeUndefined();
+
+				yield* TestClock.adjust('2 seconds');
+				expect(yield* sample).toBe(next);
+				expect(read).toHaveBeenCalledTimes(1);
+
+				now = 2000;
+				const stale = yield* Effect.forkChild(sample);
+				yield* TestClock.adjust(`${MEMORY_SAMPLE_MAX_WAIT_MS} millis`);
+				expect(yield* Fiber.join(stale)).toBe(next);
+				expect(read).toHaveBeenCalledTimes(2);
+			}),
+	);
+
+	it.effect(
+		'keeps the previous tree after a failed read and backs off before retrying',
+		() =>
+			Effect.gen(function* () {
+				let now = 0;
+				let failing = false;
+				const read = vi.fn(() =>
+					failing
+						? Effect.fail(new ProcessError({ message: 'ps too slow' }))
+						: Effect.succeed(tree),
+				);
+				const sample = makeMemorySampler(read, () => now);
+				expect(yield* sample).toBe(tree);
+
+				failing = true;
+				now = 2000;
+				expect(yield* sample).toBe(tree);
+				expect(read).toHaveBeenCalledTimes(2);
+
+				now = 3999;
+				expect(yield* sample).toBe(tree);
+				expect(read).toHaveBeenCalledTimes(2);
+
+				now = 4000;
+				failing = false;
+				expect(yield* sample).toBe(tree);
+				expect(read).toHaveBeenCalledTimes(3);
+			}),
 	);
 
 	it('formats optional memory compactly and accepts old responses', () => {

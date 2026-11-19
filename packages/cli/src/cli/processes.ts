@@ -14,6 +14,7 @@ import {
 	GROUP_LIVENESS_BACKOFF_INITIAL_MS,
 	GROUP_LIVENESS_BACKOFF_MAX_MS,
 	GROUP_LIVENESS_MIN_INTERVAL_MS,
+	MEMORY_SAMPLE_MAX_WAIT_MS,
 	PROCESS_INSPECTION_TIMEOUT_MS,
 	TERMINATION_KILL_SIGNAL,
 	TERMINATION_PHASE_TIMEOUT_MS,
@@ -104,7 +105,25 @@ export const descendantProcesses = (
 	);
 };
 
-const readProcessTree = () =>
+/** Concurrent callers join one in-flight run. It runs detached, so a caller giving up never cancels it for the others. */
+const singleFlight = <A, E>(effect: Effect.Effect<A, E>) => {
+	let inFlight: Deferred.Deferred<A, E> | undefined;
+	return Effect.suspend(() => {
+		if (inFlight !== undefined) return Deferred.await(inFlight);
+		const flight = Deferred.makeUnsafe<A, E>();
+		inFlight = flight;
+		return effect.pipe(
+			Effect.onExit((exit) => {
+				if (inFlight === flight) inFlight = undefined;
+				return Deferred.done(flight, exit);
+			}),
+			Effect.forkDetach,
+			Effect.andThen(Deferred.await(flight)),
+		);
+	});
+};
+
+const readProcessTreeOnce = () =>
 	Effect.tryPromise({
 		try: () =>
 			new Promise<ReadonlyArray<TreeProcess>>((resolve, reject) => {
@@ -119,6 +138,8 @@ const readProcessTree = () =>
 		catch: (cause) =>
 			new ProcessError({ message: 'Could not inspect process tree', cause }),
 	});
+
+const readProcessTree = singleFlight(Effect.suspend(readProcessTreeOnce));
 
 const readTreeProcess = (pid: number) =>
 	Effect.tryPromise({
@@ -179,25 +200,44 @@ export const makeProcessSampler = (
 	};
 };
 
+const MEMORY_SAMPLE_TTL_MS = 2000;
+
 export const makeMemorySampler = (
 	readTree: () => Effect.Effect<
 		ReadonlyArray<TreeProcess>,
 		ProcessError
-	> = readProcessTree,
+	> = () => readProcessTree,
 	now: () => number = Date.now,
 ) => {
 	let cached:
-		| { expiresAt: number; tree: ReadonlyArray<TreeProcess> | undefined }
+		| { expiresAt: number; tree: ReadonlyArray<TreeProcess> }
 		| undefined;
+	let retryAfter = 0;
+	const refresh = singleFlight(
+		Effect.suspend(readTree).pipe(
+			Effect.matchEffect({
+				onSuccess: (tree) =>
+					Effect.sync(() => {
+						cached = { tree, expiresAt: now() + MEMORY_SAMPLE_TTL_MS };
+					}),
+				onFailure: (error) =>
+					Effect.logWarning(error).pipe(
+						Effect.andThen(
+							Effect.sync(() => {
+								retryAfter = now() + MEMORY_SAMPLE_TTL_MS;
+							}),
+						),
+					),
+			}),
+		),
+	);
 	return Effect.gen(function* () {
 		if (cached !== undefined && now() < cached.expiresAt) return cached.tree;
-		const tree = yield* Effect.suspend(readTree).pipe(
-			Effect.catch((error) =>
-				Effect.logWarning(error).pipe(Effect.as(undefined)),
-			),
-		);
-		cached = { tree, expiresAt: now() + 2000 };
-		return tree;
+		if (now() >= retryAfter)
+			yield* refresh.pipe(
+				Effect.timeoutOption(`${MEMORY_SAMPLE_MAX_WAIT_MS} millis`),
+			);
+		return cached?.tree;
 	});
 };
 
@@ -554,7 +594,7 @@ export class Processes extends Context.Service<Processes>()(
 	{
 		make: Effect.gen(function* () {
 			const livenessFallbacks = new Map<number, GroupLivenessFallback>();
-			const sampler = makeProcessSampler(readProcessTree);
+			const sampler = makeProcessSampler(() => readProcessTree);
 			let monitor: Fiber.Fiber<void> | undefined;
 			const stopMonitor = Effect.gen(function* () {
 				const running = monitor;
@@ -781,6 +821,7 @@ export class Processes extends Context.Service<Processes>()(
 								const verified = yield* Effect.forEach(
 									[...groupMembers.values()],
 									ownsTreeProcess,
+									{ concurrency: 'unbounded' },
 								);
 								if (!verified.some(Boolean) && !(yield* owns(identity))) {
 									if (!(yield* groupAlive(identity.processGroupId))) {

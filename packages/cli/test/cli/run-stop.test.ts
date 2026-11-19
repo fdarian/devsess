@@ -86,18 +86,27 @@ describe('stop deadline', () => {
 		],
 	});
 	/** A stop whose graceful termination never returns, over a group that dies when SIGKILLed. */
-	const hungStop = (options: { groupSurvivesKill: boolean }) => {
+	const hungStop = (options: {
+		groupSurvivesKill: boolean;
+		killNeverReturns?: boolean;
+		outputNeverIdle?: boolean;
+		settleTimeoutMs?: number;
+	}) => {
 		let stored = runningRun();
 		let alive = true;
 		const kill = vi.fn((_identity: ProcessIdentity) =>
-			Effect.sync(() => {
-				alive = options.groupSurvivesKill;
-				return true;
-			}),
+			options.killNeverReturns === true
+				? Effect.never
+				: Effect.sync(() => {
+						alive = options.groupSurvivesKill;
+						return true;
+					}),
 		);
 		const markPersisted = vi.fn(() => Effect.void);
 		const stop = makeRunStop({
 			deadlineMs: 50,
+			settleTimeoutMs:
+				options.settleTimeoutMs === undefined ? 5_000 : options.settleTimeoutMs,
 			registry: {
 				prune: Effect.void,
 				get: () => Effect.sync(() => stored),
@@ -116,7 +125,8 @@ describe('stop deadline', () => {
 			} as never,
 			terminals: new Map(),
 			output: {
-				awaitIdle: () => Effect.void,
+				awaitIdle: () =>
+					options.outputNeverIdle === true ? Effect.never : Effect.void,
 				close: () => Effect.void,
 			} as never,
 			subscriptions: {
@@ -174,6 +184,52 @@ describe('stop deadline', () => {
 					expect(hung.stored().services[0]?.process?.pid).toBe(3);
 					if (Exit.isFailure(result))
 						expect(Cause.pretty(result.cause)).toContain('survived SIGKILL');
+				}),
+			),
+	);
+
+	it.live(
+		'replies within deadline plus settle and records a hung kill as orphaned',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const hung = hungStop({
+						groupSurvivesKill: false,
+						killNeverReturns: true,
+						settleTimeoutMs: 100,
+					});
+					const startedAt = Date.now();
+					const result = yield* Effect.exit(hung.stop.stopRun('run', false));
+					expect(Date.now() - startedAt).toBeLessThan(1_000);
+					expect(Exit.isFailure(result)).toBe(true);
+					expect(hung.stored().services[0]).toMatchObject({
+						state: 'orphaned',
+						process: { pid: 3, processGroupId: 3, startedAt: 'birth' },
+					});
+					expect(hung.stored().state).toBe('orphaned');
+					if (Exit.isFailure(result))
+						expect(Cause.pretty(result.cause)).toContain(
+							'Service engine: could not be settled within 100ms',
+						);
+				}),
+			),
+	);
+
+	it.live(
+		'does not orphan a service whose process already ended when only log flushing is slow',
+		() =>
+			runTest(
+				Effect.gen(function* () {
+					const hung = hungStop({
+						groupSurvivesKill: false,
+						outputNeverIdle: true,
+						settleTimeoutMs: 100,
+					});
+					const stopped = yield* hung.stop.stopRun('run', false);
+					expect(stopped.services[0]).toMatchObject({
+						state: 'exited',
+						signal: 9,
+					});
 				}),
 			),
 	);

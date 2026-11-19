@@ -274,6 +274,38 @@ describe('live process group ownership', () => {
 		}),
 	);
 
+	it.live('verifies group members concurrently before signaling', () =>
+		Effect.gen(function* () {
+			const group = fakeGroup();
+			const processes = yield* Processes.make;
+			const owned = yield* processes.captureLive(98765);
+			const inspect = vi.mocked(execFile).getMockImplementation();
+			if (inspect === undefined) return yield* Effect.die('Expected fake ps');
+			let inFlight = 0;
+			let peak = 0;
+			vi.mocked(execFile).mockImplementation((...args: Array<unknown>) => {
+				const commandArgs = args[1];
+				const callback = args.at(-1);
+				if (
+					!Array.isArray(commandArgs) ||
+					commandArgs[0] === '-A' ||
+					typeof callback !== 'function'
+				)
+					return inspect(...(args as Parameters<typeof execFile>));
+				inFlight += 1;
+				peak = Math.max(peak, inFlight);
+				setTimeout(() => {
+					inFlight -= 1;
+					inspect(...(args as Parameters<typeof execFile>));
+				}, 50);
+				return {} as ReturnType<typeof execFile>;
+			});
+			yield* owned.terminate;
+			expect(group.kill).toHaveBeenCalledWith(-98765, 'SIGTERM');
+			expect(peak).toBe(2);
+		}),
+	);
+
 	it.live('does not signal an invalid recovered process group', () =>
 		Effect.gen(function* () {
 			const group = fakeGroup();

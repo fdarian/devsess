@@ -1,4 +1,4 @@
-import { Cause, Deferred, Effect, Exit, Option } from 'effect';
+import { Cause, Deferred, Effect, Exit, Option, Ref } from 'effect';
 import type { FileSystem } from 'effect/FileSystem';
 import type { Path } from 'effect/Path';
 import type { Scope } from 'effect/Scope';
@@ -25,6 +25,7 @@ import {
 	FORCE_KILL_SETTLE_TIMEOUT_MS,
 	OUTPUT_IDLE_TIMEOUT_MS,
 	RUN_STOP_DEADLINE_MS,
+	RUN_STOP_SETTLE_TIMEOUT_MS,
 	TERMINATION_KILL_SIGNAL,
 	TERMINATION_POLL_INTERVAL_MS,
 } from './termination';
@@ -79,11 +80,16 @@ export const makeRunStop = (options: {
 	readonly output: OutputWorker;
 	readonly subscriptions: Subscriptions;
 	readonly deadlineMs?: number;
+	readonly settleTimeoutMs?: number;
 }): RunStop => {
 	const deadlineMs =
 		options.deadlineMs === undefined
 			? RUN_STOP_DEADLINE_MS
 			: options.deadlineMs;
+	const settleTimeoutMs =
+		options.settleTimeoutMs === undefined
+			? RUN_STOP_SETTLE_TIMEOUT_MS
+			: options.settleTimeoutMs;
 	const groupGone = (identity: ProcessIdentity) =>
 		options.processes.groupAlive(identity.processGroupId).pipe(
 			Effect.map((alive) => !alive),
@@ -280,6 +286,7 @@ export const makeRunStop = (options: {
 		runId: string,
 		service: ServiceRecord,
 		failedAddress: LogAddress | undefined,
+		confirmedEnded: Ref.Ref<SettledService | undefined>,
 	): Effect.Effect<SettledService, never, FileSystem | Path | Scope> =>
 		Effect.gen(function* () {
 			const address = { runId, serviceName: service.name };
@@ -317,13 +324,52 @@ export const makeRunStop = (options: {
 			const exit = failed
 				? { exitCode: 1, signal: terminationSignal }
 				: stoppedExit(live, terminationSignal);
+			const settled = {
+				record: completedService(service, exit, failed),
+				failure: undefined,
+			};
+			yield* Ref.set(confirmedEnded, settled);
 			yield* finishService(address, exit, live).pipe(
 				Effect.timeoutOption(FORCE_KILL_SETTLE_TIMEOUT_MS),
 				Effect.catch((cause) => Effect.logError(cause)),
 			);
+			return settled;
+		});
+	/**
+	 * A timeout can only land before SIGKILL is sent or while waiting for the group to vanish, so it
+	 * is recorded like `unverified`: orphaned with its identity kept, for a later stop to resolve.
+	 * Once the process is confirmed ended, only log flushing is left; that is not orphaning it.
+	 */
+	const settleWithinTimeout = (
+		runId: string,
+		service: ServiceRecord,
+		failedAddress: LogAddress | undefined,
+	): Effect.Effect<SettledService, never, FileSystem | Path | Scope> =>
+		Effect.gen(function* () {
+			const confirmedEnded = yield* Ref.make<SettledService | undefined>(
+				undefined,
+			);
+			const settled = yield* settleService(
+				runId,
+				service,
+				failedAddress,
+				confirmedEnded,
+			).pipe(Effect.timeoutOption(settleTimeoutMs));
+			if (Option.isSome(settled)) return settled.value;
+			const ended = yield* Ref.get(confirmedEnded);
+			if (ended !== undefined) return ended;
+			const live = options.terminals.get(
+				serviceKey({ runId, serviceName: service.name }),
+			);
+			const identity =
+				live === undefined ? service.process : live.ownership.identity;
+			if (identity === undefined)
+				return yield* Effect.die(
+					`Service ${service.name} timed out settling without a process identity`,
+				);
 			return {
-				record: completedService(service, exit, failed),
-				failure: undefined,
+				record: { ...service, process: identity, state: 'orphaned' as const },
+				failure: `Service ${service.name}: could not be settled within ${settleTimeoutMs}ms, so process group ${identity.processGroupId} may still be alive`,
 			};
 		});
 	/** Runs once the graceful stop blew its deadline: kill what is left and record every selected service as ended, so nothing stays `stopping` with dead PIDs. */
@@ -344,7 +390,7 @@ export const makeRunStop = (options: {
 				): Effect.Effect<SettledService, never, FileSystem | Path | Scope> =>
 					(serviceNames === undefined || serviceNames.has(service.name)) &&
 					(isActive(service.state) || service.state === 'orphaned')
-						? settleService(runId, service, failedAddress)
+						? settleWithinTimeout(runId, service, failedAddress)
 						: Effect.succeed({ record: service, failure: undefined }),
 				{ concurrency: 'unbounded' },
 			);
