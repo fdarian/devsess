@@ -8,7 +8,7 @@ The `devsess` command: run named groups of dev services (servers, workers, watch
 brew install fdarian/tap/devsess
 ```
 
-macOS or Linux. Services themselves can run under any runtime, including Bun.
+Apple Silicon macOS, or Linux (x64/arm64). Services themselves can run under any runtime, including Bun.
 
 ## Use
 
