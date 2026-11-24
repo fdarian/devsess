@@ -14,12 +14,16 @@
 # then configure the trusted publisher (this repo + this workflow) on npmjs.com.
 #
 # `@devsess/cli` is private: `changeset publish` skips npm but still tags it
-# (`@devsess/cli@<version>`). When that tag is released, the `binaries` job
-# builds a Node SEA per platform on native runners (the SEA bundles the host's
-# node-pty prebuild, so it cannot be cross-compiled), and the `homebrew` job
-# uploads the tarballs to the GitHub Release and updates the formula in
-# fdarian/homebrew-tap. That needs the `HOMEBREW_TAP_TOKEN` repository secret:
-# a PAT with contents:write on fdarian/homebrew-tap.
+# (`@devsess/cli@<version>`). The CLI part is idempotent and driven by state,
+# not by changesets' output: `cli-release-check` publishes the version in
+# packages/cli/package.json whenever its tag exists on origin and the formula
+# in fdarian/homebrew-tap is older. The `binaries` job then builds a Node SEA
+# per platform on native runners (the SEA bundles the host's node-pty prebuild,
+# so it cannot be cross-compiled) from that tag, and the `homebrew` job uploads
+# the tarballs to the GitHub Release and updates the formula. A failed run is
+# retried with workflow_dispatch (Actions tab > release > Run workflow). That
+# needs the `HOMEBREW_TAP_TOKEN` repository secret: a PAT with contents:write
+# on fdarian/homebrew-tap.
 #
 # Normal flow: `pnpm changeset` to record a bump, merge to main. Changesets opens
 # a "Version Packages" PR; merging it runs this workflow and releases.
@@ -29,7 +33,8 @@ name: release
 on:
   push:
     branches: [main]
-    paths: ['.changeset/**']
+    paths: ['.changeset/**', '.github/workflows/release.yml']
+  workflow_dispatch:
 
 concurrency:
   group: release-${{ github.ref }}
@@ -43,8 +48,6 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    outputs:
-      cli-version: ${{ steps.cli-version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -74,17 +77,63 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # NO NODE_AUTH_TOKEN / NPM_TOKEN — auth is via OIDC, not a secret.
-      - id: cli-version
-        if: steps.changesets.outputs.published == 'true'
+
+  cli-release-check:
+    needs: release
+    # `!cancelled()` drops the implicit success() so the CLI release still runs
+    # when the library publish failed.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: check
         env:
-          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.published-packages }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION=$(echo "$PUBLISHED_PACKAGES" | jq -r '.[] | select(.name == "@devsess/cli") | .version')
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          VERSION=$(jq -r .version packages/cli/package.json)
+          TAG="@devsess/cli@${VERSION}"
+
+          STATUS=0
+          git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null || STATUS=$?
+          if [ "$STATUS" -eq 2 ]; then
+            echo "Tag ${TAG} does not exist on origin; changesets has not tagged it yet. No CLI release."
+            echo "version=" >> "$GITHUB_OUTPUT"
+            exit 0
+          elif [ "$STATUS" -ne 0 ]; then
+            echo "git ls-remote failed with status ${STATUS}" >&2
+            exit "$STATUS"
+          fi
+
+          ERR=$(mktemp)
+          if CONTENT=$(gh api repos/fdarian/homebrew-tap/contents/Formula/devsess.rb --jq .content 2>"$ERR"); then
+            PUBLISHED=$(echo "$CONTENT" | base64 -d | sed -nE 's/^[[:space:]]*version "([^"]+)".*/\1/p' | head -n 1)
+            if [ -z "$PUBLISHED" ]; then
+              echo "Could not find a version line in the tap formula" >&2
+              exit 1
+            fi
+          elif grep -q 'HTTP 404' "$ERR"; then
+            PUBLISHED=""
+          else
+            cat "$ERR" >&2
+            exit 1
+          fi
+
+          if [ "$PUBLISHED" = "$VERSION" ]; then
+            echo "Tap formula is already at ${VERSION}. No CLI release."
+            echo "version=" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag ${TAG} exists and the tap formula is at '${PUBLISHED:-<absent>}'. Releasing ${VERSION}."
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          fi
 
   binaries:
-    needs: release
-    if: needs.release.outputs.cli-version != ''
+    needs: cli-release-check
+    if: needs.cli-release-check.outputs.version != ''
     permissions:
       contents: read
     strategy:
@@ -103,7 +152,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.sha }}
+          ref: refs/tags/@devsess/cli@${{ needs.cli-release-check.outputs.version }}
 
       - uses: pnpm/setup@v2
         with:
@@ -128,7 +177,7 @@ jobs:
           if-no-files-found: error
 
   homebrew:
-    needs: [release, binaries]
+    needs: [cli-release-check, binaries]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -144,7 +193,7 @@ jobs:
       - name: Upload release assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.release.outputs.cli-version }}
+          VERSION: ${{ needs.cli-release-check.outputs.version }}
         run: |
           TAG="@devsess/cli@${VERSION}"
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes "Release $VERSION"
@@ -155,5 +204,5 @@ jobs:
         working-directory: packages/cli
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          VERSION: ${{ needs.release.outputs.cli-version }}
+          VERSION: ${{ needs.cli-release-check.outputs.version }}
         run: bun run scripts/update-homebrew.ts
