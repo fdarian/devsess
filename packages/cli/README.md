@@ -5,10 +5,10 @@ The `devsess` command: run named groups of dev services (servers, workers, watch
 ## Install
 
 ```bash
-npm install -g @devsess/cli
+brew install fdarian/tap/devsess
 ```
 
-Requires Node.js on macOS or Linux. Services themselves can run under any runtime, including Bun.
+macOS or Linux. Services themselves can run under any runtime, including Bun.
 
 ## Use
 
@@ -30,7 +30,7 @@ devsess docs
 <details>
 <summary>Upgrading from the CLI bundled in `devsess` 0.6</summary>
 
-The binary moved here, so the `devsess` library no longer installs it (or `node-pty`). Install `@devsess/cli` globally and run `devsess daemon restart`: on macOS the launchd job still points at the old install path.
+The CLI now ships as its own binary, so the `devsess` library no longer installs it (or `node-pty`). Install it with Homebrew and run `devsess daemon restart`: on macOS the launchd job still points at the old install path.
 
 </details>
 

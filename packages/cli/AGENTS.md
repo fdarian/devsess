@@ -1,6 +1,6 @@
 # @devsess/cli
 
-The `devsess` binary: a detached per-user daemon that runs named groups of dev services in PTYs, plus the client commands that drive it. Published separately from the `devsess` library so library consumers don't install `node-pty` (a native dependency). Shares no code with the library — the library's `src/dev/daemon-client.ts` talks to the daemon over its socket using its own copy of the protocol schema, so a protocol change needs both sides updated.
+The `devsess` binary: a detached per-user daemon that runs named groups of dev services in PTYs, plus the client commands that drive it. Released separately from the `devsess` library (as Homebrew/GitHub Release binaries, not on npm) so library consumers don't install `node-pty` (a native dependency). Shares no code with the library — the library's `src/dev/daemon-client.ts` talks to the daemon over its socket using its own copy of the protocol schema, so a protocol change needs both sides updated.
 
 ## Stack
 - effect (v4) — `effect/cli` for commands, services/layers for the daemon internals
@@ -15,5 +15,6 @@ The `devsess` binary: a detached per-user daemon that runs named groups of dev s
 - CLI output is persisted as rotating JSONL segments. Replay snapshots both segments before reading to avoid rotation gaps; live writers have independent bounded buffers, so a slow tail client disconnects on overflow without throttling the service.
 
 ## Common gotchas
-- On macOS the launchd plist embeds the absolute path of `dist/cli.js` and the Node binary, so moving or reinstalling the package leaves the job stale until `devsess daemon restart`.
+- On macOS the launchd plist embeds `process.execPath`, i.e. the binary itself, which for a Homebrew install is a versioned Cellar path, so `brew upgrade` leaves the job stale until `devsess daemon restart` (the formula's caveats say so).
+- Releases: `.github/workflows/release.yml` builds the SEA per platform on native runners (a SEA bundles the host's node-pty prebuild, so it can't cross-compile), then `scripts/update-homebrew.ts` (Bun, outside the tsconfig) writes the formula to `fdarian/homebrew-tap`. Changesets only versions and tags this private package.
 - `apps/menubar` (Swift) speaks the same socket protocol; its stop timeout must stay above `STOP_REQUEST_TIMEOUT_MS` (stop deadline + settle + margin) in `src/cli/termination.ts`.
