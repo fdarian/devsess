@@ -4,7 +4,10 @@
 # is NO NPM_TOKEN / NODE_AUTH_TOKEN secret. Requirements:
 #   1. `permissions.id-token: write` (granted below) for the OIDC token.
 #   2. `actions/setup-node` with the npm registry URL.
-#   3. npm >= 11.5.1 on the runner (we install npm@latest before publish).
+#   3. npm >= 11.5.1 on the runner: Node 26's bundled npm 11. Don't install
+#      npm@latest: npm 12 changed `npm info --json` to return an array, so
+#      `changeset publish` thinks every version is unpublished and tries to
+#      republish.
 #   4. The package sets `publishConfig.provenance: true` + `access: public`.
 #
 # First-publish bootstrap (once, for `devsess`): OIDC trusted publishing can
@@ -60,11 +63,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - uses: actions/setup-node@v7
         with:
+          node-version: '26'
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
-
-      - run: npm install -g npm@latest
-        working-directory: ${{ runner.temp }}
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter devsess build
