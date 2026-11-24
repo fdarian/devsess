@@ -12,7 +12,7 @@ if (!HOMEBREW_TAP_TOKEN) {
 	throw new Error('HOMEBREW_TAP_TOKEN environment variable is required');
 }
 
-const labels = ['darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64'];
+const labels = ['darwin-arm64', 'linux-x64', 'linux-arm64'];
 
 function sha256File(path: string): string {
 	const hasher = new Bun.CryptoHasher('sha256');
@@ -40,13 +40,9 @@ const formula = `class Devsess < Formula
   version "${VERSION}"
 
   on_macos do
-    if Hardware::CPU.arm?
-      url "${assetUrl('darwin-arm64')}"
-      sha256 "${shas['darwin-arm64']}"
-    else
-      url "${assetUrl('darwin-x64')}"
-      sha256 "${shas['darwin-x64']}"
-    end
+    depends_on arch: :arm64
+    url "${assetUrl('darwin-arm64')}"
+    sha256 "${shas['darwin-arm64']}"
   end
 
   on_linux do

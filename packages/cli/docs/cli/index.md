@@ -1,6 +1,6 @@
 # devsess CLI
 
-`devsess` runs named groups of development services in a detached daemon shared by your user across projects and worktrees. It keeps each checkout's run separate while letting you return to the shell. The CLI runs on macOS or Linux as a standalone binary; service commands can use any installed runtime, including Bun.
+`devsess` runs named groups of development services in a detached daemon shared by your user across projects and worktrees. It keeps each checkout's run separate while letting you return to the shell. The CLI runs on Apple Silicon macOS or Linux (x64/arm64) as a standalone binary; service commands can use any installed runtime, including Bun.
 
 Install with `brew install fdarian/tap/devsess`. In a configured checkout, start a preset with `devsess start`, inspect it with `devsess status`, read output with `devsess tail`, refresh a service with `devsess restart`, and finish with `devsess stop`.
 

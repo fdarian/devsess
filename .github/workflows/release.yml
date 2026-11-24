@@ -142,10 +142,9 @@ jobs:
       fail-fast: true
       matrix:
         include:
+          # darwin-x64 (macos-15-intel) is left out: its SEA segfaults at startup with Node 25 (cause not yet found).
           - label: darwin-arm64
             runner: macos-latest
-          - label: darwin-x64
-            runner: macos-15-intel
           - label: linux-x64
             runner: ubuntu-latest
           - label: linux-arm64
