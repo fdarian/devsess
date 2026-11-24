@@ -1,20 +1,28 @@
-# Release `devsess` and `@devsess/cli` to npm via Changesets + OIDC trusted publishing.
+# Release `devsess` to npm and `@devsess/cli` as binaries via Changesets.
 #
-# Authentication is OIDC — there is NO NPM_TOKEN / NODE_AUTH_TOKEN secret.
-# Requirements:
+# `devsess` (the library) publishes to npm with OIDC trusted publishing — there
+# is NO NPM_TOKEN / NODE_AUTH_TOKEN secret. Requirements:
 #   1. `permissions.id-token: write` (granted below) for the OIDC token.
 #   2. `actions/setup-node` with the npm registry URL.
 #   3. npm >= 11.5.1 on the runner (we install npm@latest before publish).
-#   4. Each package sets `publishConfig.provenance: true` + `access: public`.
+#   4. The package sets `publishConfig.provenance: true` + `access: public`.
 #
-# First-publish bootstrap (once per published package: `devsess`, `@devsess/cli`):
-# OIDC trusted publishing can only be configured on npmjs.com AFTER the package
-# exists. Do the very first publish manually from the package directory:
-#   cd packages/<name> && npm publish --access public
+# First-publish bootstrap (once, for `devsess`): OIDC trusted publishing can
+# only be configured on npmjs.com AFTER the package exists. Do the very first
+# publish manually from `packages/devsess`:
+#   npm publish --access public
 # then configure the trusted publisher (this repo + this workflow) on npmjs.com.
 #
+# `@devsess/cli` is private: `changeset publish` skips npm but still tags it
+# (`@devsess/cli@<version>`). When that tag is released, the `binaries` job
+# builds a Node SEA per platform on native runners (the SEA bundles the host's
+# node-pty prebuild, so it cannot be cross-compiled), and the `homebrew` job
+# uploads the tarballs to the GitHub Release and updates the formula in
+# fdarian/homebrew-tap. That needs the `HOMEBREW_TAP_TOKEN` repository secret:
+# a PAT with contents:write on fdarian/homebrew-tap.
+#
 # Normal flow: `pnpm changeset` to record a bump, merge to main. Changesets opens
-# a "Version Packages" PR; merging it runs this workflow and publishes.
+# a "Version Packages" PR; merging it runs this workflow and releases.
 
 name: release
 
@@ -35,6 +43,8 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      cli-version: ${{ steps.cli-version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -54,7 +64,7 @@ jobs:
         working-directory: ${{ runner.temp }}
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter devsess --filter @devsess/cli build
+      - run: pnpm --filter devsess build
       - id: changesets
         uses: changesets/action@v1
         with:
@@ -64,3 +74,86 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # NO NODE_AUTH_TOKEN / NPM_TOKEN — auth is via OIDC, not a secret.
+      - id: cli-version
+        if: steps.changesets.outputs.published == 'true'
+        env:
+          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.published-packages }}
+        run: |
+          VERSION=$(echo "$PUBLISHED_PACKAGES" | jq -r '.[] | select(.name == "@devsess/cli") | .version')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  binaries:
+    needs: release
+    if: needs.release.outputs.cli-version != ''
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - label: darwin-arm64
+            runner: macos-latest
+          - label: darwin-x64
+            runner: macos-15-intel
+          - label: linux-x64
+            runner: ubuntu-latest
+          - label: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: pnpm/setup@v2
+        with:
+          cache: false
+          install: false
+      # tsdown builds the SEA with `node --build-sea`, which needs a recent Node.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 25
+          package-manager-cache: false
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build:exe
+      - run: |
+          mkdir -p packages/cli/build/releases
+          tar -czf packages/cli/build/releases/devsess-${{ matrix.label }}.tar.gz -C packages/cli/build devsess
+      - run: packages/cli/build/devsess --version
+      - uses: actions/upload-artifact@v7
+        with:
+          name: devsess-${{ matrix.label }}
+          path: packages/cli/build/releases/devsess-${{ matrix.label }}.tar.gz
+          if-no-files-found: error
+
+  homebrew:
+    needs: [release, binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: devsess-*
+          merge-multiple: true
+          path: packages/cli/build/releases
+
+      - name: Upload release assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.release.outputs.cli-version }}
+        run: |
+          TAG="@devsess/cli@${VERSION}"
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes "Release $VERSION"
+          gh release upload "$TAG" packages/cli/build/releases/*.tar.gz --clobber
+
+      - uses: oven-sh/setup-bun@v2
+      - name: Update Homebrew formula
+        working-directory: packages/cli
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.release.outputs.cli-version }}
+        run: bun run scripts/update-homebrew.ts

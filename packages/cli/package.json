@@ -1,6 +1,7 @@
 {
 	"name": "@devsess/cli",
-	"version": "0.7.0",
+	"version": "0.0.0",
+	"private": true,
 	"description": "The devsess CLI — run and manage isolated dev-session servers from a background daemon",
 	"license": "Apache-2.0",
 	"homepage": "https://devsess.fdarian.com",
@@ -29,10 +30,6 @@
 	},
 	"exports": {
 		"./package.json": "./package.json"
-	},
-	"publishConfig": {
-		"access": "public",
-		"provenance": true
 	},
 	"scripts": {
 		"build": "tsup",

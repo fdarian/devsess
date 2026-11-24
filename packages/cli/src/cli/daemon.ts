@@ -49,7 +49,7 @@ import {
 } from './request-dispatch';
 import { makeRunStart } from './run-start';
 import { makeRunStop } from './run-stop';
-import { selfScriptPath } from './self-invocation';
+import { selfScriptPath, stableExecPath } from './self-invocation';
 import { type LiveService, makeServiceState } from './service-state';
 import { makeSocketWriter } from './socket-writer';
 import { makeSubscriptions, type SocketState } from './subscriptions';
@@ -324,7 +324,7 @@ export const makeDaemon = (options: {
 					(runs): DaemonInfo => ({
 						pid: process.pid,
 						startedAt,
-						executable: process.execPath,
+						executable: stableExecPath(),
 						scriptPath,
 						packageVersion: devsessPackageJson.version,
 						protocolVersion: PROTOCOL_VERSION,

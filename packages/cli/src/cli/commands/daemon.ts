@@ -25,7 +25,7 @@ import { captureInvocation } from '../project-matching';
 import { RunResponseSchema } from '../protocol';
 import { isRunActive, type RunRecord } from '../registry';
 import { shortRunId } from '../run-id';
-import { selfInvocationArguments } from '../self-invocation';
+import { selfInvocationArguments, stableExecPath } from '../self-invocation';
 
 export class CommandError extends Schema.TaggedError<CommandError>()(
 	'devsess/cli/CommandError',
@@ -146,7 +146,7 @@ const daemonProgramArguments = (location: DaemonLocation) => [
 
 export const daemonJob = (location: DaemonLocation): DaemonJob => ({
 	plistPath: launchdPlistPath(),
-	programArguments: [process.execPath, ...daemonProgramArguments(location)],
+	programArguments: [stableExecPath(), ...daemonProgramArguments(location)],
 	logsDirectory: location.logsDirectory,
 });
 
@@ -173,7 +173,7 @@ export const ensureDaemon = (location: DaemonLocation) =>
 						)
 					: launchDetachedDaemon({
 							logsDirectory: location.logsDirectory,
-							command: process.execPath,
+							command: stableExecPath(),
 							args: daemonProgramArguments(location),
 						}),
 		});

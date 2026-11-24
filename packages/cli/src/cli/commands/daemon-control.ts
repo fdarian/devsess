@@ -29,7 +29,7 @@ import { Processes } from '../processes';
 import type { DaemonInfo, DaemonRequest } from '../protocol';
 import { DaemonInfo as DaemonInfoSchema, PROTOCOL_VERSION } from '../protocol';
 import type { RunRecord } from '../registry';
-import { selfScriptPath } from '../self-invocation';
+import { selfScriptPath, stableExecPath } from '../self-invocation';
 import {
 	DEFAULT_DAEMON_REQUEST_TIMEOUT_MS,
 	PROCESS_INSPECTION_TIMEOUT_MS,
@@ -272,9 +272,9 @@ const infoLines = (info: DaemonInfo) =>
 			lines.push(
 				`Warning: daemon version ${info.packageVersion} differs from current CLI version ${devsessPackageJson.version}.`,
 			);
-		if (info.executable !== process.execPath || info.scriptPath !== scriptPath)
+		if (info.executable !== stableExecPath() || info.scriptPath !== scriptPath)
 			lines.push(
-				`Warning: daemon binary path differs from the current CLI (${process.execPath}, ${scriptPath}).`,
+				`Warning: daemon binary path differs from the current CLI (${stableExecPath()}, ${scriptPath}).`,
 			);
 		return lines;
 	});

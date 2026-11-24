@@ -7,7 +7,7 @@ Monorepo for [`devsess`](packages/devsess) — scaffold dev scripts with reusabl
 | Path | Description |
 | --- | --- |
 | [`packages/devsess`](packages/devsess) | The `devsess` library (published to npm). |
-| [`packages/cli`](packages/cli) | The `devsess` CLI and daemon, published as `@devsess/cli`. |
+| [`packages/cli`](packages/cli) | The `devsess` CLI and daemon, released as binaries (`brew install fdarian/tap/devsess`). |
 | [`apps/docs`](apps/docs) | Documentation site, built with [Blume](https://useblume.dev). |
 
 ## Development
@@ -22,7 +22,7 @@ pnpm run format    # biome format
 pnpm run docs      # run the docs site locally
 ```
 
-The `devsess` CLI for detached, per-worktree service groups lives in `@devsess/cli`. Its configuration and command behavior are documented in the [CLI reference](packages/cli/docs/cli/index.md).
+The `devsess` CLI for detached, per-worktree service groups lives in `packages/cli`. Its configuration and command behavior are documented in the [CLI reference](packages/cli/docs/cli/index.md).
 
 ## License
 
