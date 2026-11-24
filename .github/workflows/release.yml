@@ -133,7 +133,8 @@ jobs:
 
   binaries:
     needs: cli-release-check
-    if: needs.cli-release-check.outputs.version != ''
+    # A failed `release` (library publish) is an ancestor; without a status function this job would be skipped.
+    if: ${{ !cancelled() && needs.cli-release-check.result == 'success' && needs.cli-release-check.outputs.version != '' }}
     permissions:
       contents: read
     strategy:
@@ -178,6 +179,7 @@ jobs:
 
   homebrew:
     needs: [cli-release-check, binaries]
+    if: ${{ !cancelled() && needs.binaries.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
